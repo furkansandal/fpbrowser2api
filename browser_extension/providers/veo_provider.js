@@ -1308,6 +1308,33 @@ async function pollVideo(tabId, at, operations, runtime, p) {
   throw new Error(`VEO video polling timeout; last=${JSON.stringify(last).slice(0, 300)}`);
 }
 
+// 视频放大接口的 videoInput.mediaId 需要"纯 media UUID"；而 base（约 720p）生成完成后
+// 拿到的 mediaName 往往是 base64url 编码的 protobuf "resource name"（形如 CAUS... 长串），
+// 直接传给放大接口会 404 NOT_FOUND（"Requested entity was not found"）。这里把 encoded
+// name 解码并提取其中的纯 UUID。解码后 UUID 顺序通常为 [projectId, mediaId, contentId]，
+// 因此当首个 UUID 等于已知 projectId 时取第 2 个（index 1），否则退回取第 1 个；无法解码 /
+// 无 UUID 时原样返回（best-effort，保持既有行为）。
+function plainMediaIdFromName(encodedName, knownProjectId) {
+  const raw = String(encodedName || "");
+  if (!raw) return raw;
+  // 已经是纯 UUID：原样返回。
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) return raw;
+  let decoded = "";
+  try {
+    let b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
+    const pad = b64.length % 4;
+    if (pad) b64 += "=".repeat(4 - pad);
+    decoded = atob(b64); // service worker 提供 atob；UUID 为 ASCII，直接在 binary string 上跑正则即可
+  } catch (e) {
+    return raw;
+  }
+  const uuids = decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) || [];
+  if (!uuids.length) return raw;
+  const proj = String(knownProjectId || "").toLowerCase();
+  if (proj && uuids[0].toLowerCase() === proj && uuids[1]) return uuids[1];
+  return uuids[0];
+}
+
 // 基于 base（约 720p）生成结果做一次异步视频放大（1080p/4K）。
 // 复用与视频生成相同的鉴权（Bearer）、recaptcha（VIDEO_GENERATION）、pageFetchJson（MAIN world fetch）
 // 以及 pollVideo 轮询机制。提交后通过 batchCheckAsyncVideoGenerationStatus 等待放大结果。
@@ -1471,13 +1498,16 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   let upsampleError = "";
   if (p.extension_video_want_upsample && generatedMediaId) {
     try {
+      // encoded resource name（CAUS...）会让放大接口 404；这里解出纯 media UUID 再提交。
+      const upsampleMediaId = plainMediaIdFromName(generatedMediaId, generatedProjectId || projectId);
       await runtime.progress(96, {
         stage: "upsample_video",
         target_resolution: p.extension_video_upsample_target_resolution,
-        model_key: p.extension_video_upsample_model_key
+        model_key: p.extension_video_upsample_model_key,
+        media_id: upsampleMediaId
       });
       const up = await upsampleVideo(tabId, {
-        mediaId: generatedMediaId,
+        mediaId: upsampleMediaId,
         targetResolution: p.extension_video_upsample_target_resolution,
         videoModelKey: p.extension_video_upsample_model_key,
         aspectRatio,
