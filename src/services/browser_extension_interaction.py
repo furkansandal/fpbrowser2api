@@ -134,6 +134,8 @@ def build_extension_launcher_url(
         base = _launcher_url_from_browser_base(browser_base_url) or f"http://127.0.0.1:{int(config.server_port)}/"
     if "://" not in base:
         base = "http://" + base
+    
+    print("launcher_url:", base)
 
     try:
         parts = urlsplit(base)
