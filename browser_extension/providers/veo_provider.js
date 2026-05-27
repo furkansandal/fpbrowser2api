@@ -1352,12 +1352,15 @@ async function upsampleVideo(tabId, opts, at, runtime, p) {
   } = opts || {};
   const recaptcha = await getRecaptchaToken(tabId, "VIDEO_GENERATION");
   if (!recaptcha) throw new Error("VEO video upscale recaptcha token not found");
+  // 与 upsampleImage 一致：payload 未带 tier 时动态拉取真实 tier（4K 放大可能需要付费 tier，
+  // 默认 PAYGATE_TIER_NOT_PAID 会导致 4K 失败）。
+  const tier = normalizePaygateTier(userPaygateTier || await fetchVeoUserPaygateTier(tabId, at));
   const body = {
     mediaGenerationContext: { batchId: crypto.randomUUID() },
     clientContext: {
       projectId: String(projectId || ""),
       tool: "PINHOLE",
-      userPaygateTier: userPaygateTier || "PAYGATE_TIER_NOT_PAID",
+      userPaygateTier: tier,
       sessionId: upsampleSessionId || sessionId(),
       recaptchaContext: { token: recaptcha, applicationType: "RECAPTCHA_APPLICATION_TYPE_WEB" }
     },
