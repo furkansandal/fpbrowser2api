@@ -8,6 +8,7 @@ const URLS = {
   videoI2VStartEnd: "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoStartAndEndImage",
   videoR2V: "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoReferenceImages",
   videoPoll: "https://aisandbox-pa.googleapis.com/v1/video:batchCheckAsyncVideoGenerationStatus",
+  upsampleVideo: "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoUpsampleVideo",
   upsampleImage: "https://aisandbox-pa.googleapis.com/v1/flow/upsampleImage",
   workflows: "https://aisandbox-pa.googleapis.com/v1/flowWorkflows"
 };
@@ -1307,6 +1308,59 @@ async function pollVideo(tabId, at, operations, runtime, p) {
   throw new Error(`VEO video polling timeout; last=${JSON.stringify(last).slice(0, 300)}`);
 }
 
+// 基于 base（约 720p）生成结果做一次异步视频放大（1080p/4K）。
+// 复用与视频生成相同的鉴权（Bearer）、recaptcha（VIDEO_GENERATION）、pageFetchJson（MAIN world fetch）
+// 以及 pollVideo 轮询机制。提交后通过 batchCheckAsyncVideoGenerationStatus 等待放大结果。
+async function upsampleVideo(tabId, opts, at, runtime, p) {
+  const {
+    mediaId,
+    targetResolution,
+    videoModelKey,
+    aspectRatio,
+    seed,
+    projectId,
+    workflowId,
+    sessionId: upsampleSessionId,
+    userPaygateTier
+  } = opts || {};
+  const recaptcha = await getRecaptchaToken(tabId, "VIDEO_GENERATION");
+  if (!recaptcha) throw new Error("VEO video upscale recaptcha token not found");
+  const body = {
+    mediaGenerationContext: { batchId: crypto.randomUUID() },
+    clientContext: {
+      projectId: String(projectId || ""),
+      tool: "PINHOLE",
+      userPaygateTier: userPaygateTier || "PAYGATE_TIER_NOT_PAID",
+      sessionId: upsampleSessionId || sessionId(),
+      recaptchaContext: { token: recaptcha, applicationType: "RECAPTCHA_APPLICATION_TYPE_WEB" }
+    },
+    requests: [
+      {
+        resolution: targetResolution,
+        aspectRatio,
+        seed: seed || randSeed(),
+        videoModelKey,
+        metadata: { workflowId: workflowId || "" },
+        videoInput: { mediaId }
+      }
+    ],
+    useV2ModelConfig: true
+  };
+  // pageFetchJson 内部会对 body 做 JSON.stringify，因此这里传对象而非字符串。
+  const tx = await pageFetchJson(tabId, URLS.upsampleVideo, { method: "POST", headers: authHeaders(at), body, attempts: 1 });
+  if (!tx || tx.status >= 400) throw new Error(`VEO video upscale submit failed: ${compactErrorResponse(tx)}`);
+  const submitMedia = Array.isArray(tx.json?.media) ? tx.json.media : [];
+  const submittedWorkflow = parseVideoSubmitWorkflow(tx.json);
+  const operations = normalizeVideoOperations(submitMedia);
+  if (!operations.length) throw new Error(`VEO video upscale submit missing operations: ${JSON.stringify(tx.json).slice(0, 500)}`);
+  const done = await pollVideo(tabId, at, operations, runtime, p);
+  return {
+    videoUrl: done.videoUrl,
+    mediaName: done.mediaName || submittedWorkflow.mediaName || "",
+    workflowId: done.workflowId || submittedWorkflow.workflowId || workflowId || ""
+  };
+}
+
 function stripI2vFl(modelKey) {
   return String(modelKey || "").replace("_fl_", "_").replace(/_fl$/, "");
 }
@@ -1407,22 +1461,63 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   const generatedWorkflowId = done.workflowId || submittedWorkflow.workflowId || "";
   const generatedProjectId = done.projectId || submittedWorkflow.projectId || projectId;
   const generatedMediaId = done.mediaName || submittedWorkflow.mediaName || "";
+
+  // 可选：base（约 720p）生成完成后，按 ext_payload 要求做一次视频放大（1080p/4K）。
+  // best-effort：放大失败（recaptcha/配额/超时/接口不兼容）时回退为 base 720p，仍返回视频。
+  let finalShareUrl = done.videoUrl;
+  let finalMediaId = generatedMediaId;
+  let upsampleApplied = false;
+  let upsampleResolution = "720p";
+  let upsampleError = "";
+  if (p.extension_video_want_upsample && generatedMediaId) {
+    try {
+      await runtime.progress(96, {
+        stage: "upsample_video",
+        target_resolution: p.extension_video_upsample_target_resolution,
+        model_key: p.extension_video_upsample_model_key
+      });
+      const up = await upsampleVideo(tabId, {
+        mediaId: generatedMediaId,
+        targetResolution: p.extension_video_upsample_target_resolution,
+        videoModelKey: p.extension_video_upsample_model_key,
+        aspectRatio,
+        seed: reqItem.seed,
+        projectId: generatedProjectId,
+        workflowId: generatedWorkflowId,
+        sessionId: sessionId(),
+        userPaygateTier: p.user_paygate_tier || p.userPaygateTier || "PAYGATE_TIER_NOT_PAID"
+      }, at, runtime, p);
+      if (up && up.videoUrl) {
+        finalShareUrl = up.videoUrl;
+        finalMediaId = up.mediaName || finalMediaId;
+        upsampleApplied = true;
+        upsampleResolution = p.extension_video_upsample_target_resolution === "VIDEO_RESOLUTION_4K" ? "4K" : "1080p";
+      }
+    } catch (e) {
+      upsampleError = String((e && e.message) || e || "");
+      console.warn("[veo] video upscale failed, returning base 720p:", upsampleError);
+    }
+  }
+
   const archived = archiveEnabled(p, "archive_workflow")
     ? await archiveGeneratedWorkflow(tabId, at, generatedWorkflowId, generatedProjectId, runtime, "archive_video_workflow")
     : false;
   if (archiveEnabled(p, "archive_uploaded_workflows")) await archiveUploadedWorkflows(tabId, at, uploaded, runtime, "cleanup_uploaded_workflows_done");
   await refreshProjectPageAfterArchive(98, tabId, p.project_page, runtime);
-  await runtime.progress(100, { stage: "done", video_url: done.videoUrl, workflow_id: generatedWorkflowId });
+  await runtime.progress(100, { stage: "done", video_url: finalShareUrl, workflow_id: generatedWorkflowId });
   return {
     type: "veo_workflow_video",
     message: mode === "r2v" ? "VEO Ingredients（多图参考）视频完成" : (mode === "i2v" ? "VEO 图生视频完成" : "VEO 文生视频完成"),
-    share_url: done.videoUrl,
+    share_url: finalShareUrl,
     thumb_url: (mode === "i2v" ? (p.i2v_urls || [])[0] : (mode === "r2v" ? (p.ingredients_urls || [])[0] : "")) || "",
     video_type: mode,
     model_key: modelKey,
     aspect_ratio: aspectRatio,
+    resolution: upsampleResolution,
+    upsample_ok: upsampleApplied,
+    upsample_error: upsampleError || undefined,
     project_id: projectId,
-    generated_media_id: generatedMediaId,
+    generated_media_id: finalMediaId,
     generated_workflow_id: generatedWorkflowId,
     workflow_archived: archived
   };

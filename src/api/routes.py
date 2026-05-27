@@ -80,6 +80,8 @@ class CreateVideoRequest(BaseModel):
     n: Optional[int] = Field(default=None, ge=1, le=4)
     size: Optional[str] = None
     quality: Optional[str] = None
+    # 视频分辨率（仅 veo-3-1 / veo-omni-flash 生效）：720p / 1080p / 4k；省略按 720p。
+    resolution: Optional[str] = None
     negative_prompt: Optional[str] = None
     seed: Optional[int] = None
     # 允许透传未来新增的视频参数。
@@ -105,6 +107,26 @@ GPT_IMAGE2_VIDEO_MODELS: Dict[str, str] = {
     "gpt-image2-2k": "2k",
     "gpt-image2-4k": "4k",
 }
+
+
+def _normalize_veo_video_resolution(raw: Any) -> str:
+    """规范化 veo 视频分辨率为 720p / 1080p / 4k；缺省按 720p，非法值抛 400。
+
+    仅用于 veo-3-1 / veo-omni-flash。1080p / 4k 会在生成后经浏览器插件做视频放大。
+    """
+    s = str(raw or "").strip().lower().replace(" ", "")
+    if not s:
+        return "720p"
+    if s in ("720p", "720", "1k"):
+        return "720p"
+    if s in ("1080p", "1080", "fhd"):
+        return "1080p"
+    if s in ("4k", "2160", "uhd", "4096", "3840"):
+        return "4k"
+    raise HTTPException(
+        status_code=400,
+        detail=f"unsupported resolution {raw!r}; supported: 720p / 1080p / 4k",
+    )
 
 
 def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
@@ -138,6 +160,8 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
         if duration != 8:
             raise HTTPException(status_code=400, detail="veo-3-1 only supports duration=8")
         payload["n_frames"] = 240
+        # 720p（默认/原行为）/ 1080p / 4k；1080p/4k 由插件在生成后做视频放大。
+        payload["resolution"] = _normalize_veo_video_resolution(payload.get("resolution"))
     elif model in {"veo-omni-flash"}:
         task_type_code = "veo_workflow"
         duration = payload.get("duration")
@@ -145,6 +169,8 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
             raise HTTPException(status_code=400, detail="veo-omni-flash only supports duration=10")
         payload["n_frames"] = 300
         payload["video_model"] = "abra_t2v_10s"
+        # 720p（默认/原行为）/ 1080p / 4k；1080p/4k 由插件在生成后做视频放大。
+        payload["resolution"] = _normalize_veo_video_resolution(payload.get("resolution"))
     elif model in GPT_IMAGE2_VIDEO_MODELS:
         task_type_code = "gpt_workflow"
         duration = payload.get("duration")

@@ -4536,6 +4536,25 @@ def _veo_resolve_image_output_resolution(payload: Dict[str, Any]) -> tuple[str, 
         return ("2K", True, UPSAMPLE_IMAGE_RESOLUTION_2K)
     return ("1K", False, None)
 
+
+def _veo_resolve_video_output_resolution(
+    payload: Dict[str, Any],
+) -> tuple[str, bool, Optional[str], Optional[str]]:
+    """返回 (展示用标签 '720p'|'1080p'|'4K', 是否需要视频放大, targetResolution 枚举, upsampler model_key)。
+
+    默认 720p，不放大（与原行为一致）。1080p / 4k 时由浏览器插件在生成后调用
+    ``video:batchAsyncGenerateVideoUpsampleVideo`` 做视频放大。
+    """
+    raw = payload.get("resolution") or payload.get("video_resolution")
+    if raw is None or str(raw).strip() == "":
+        return ("720p", False, None, None)
+    s = str(raw).strip().lower().replace(" ", "")
+    if s in ("4k", "2160", "uhd", "4096", "3840"):
+        return ("4K", True, "VIDEO_RESOLUTION_4K", "veo_3_1_upsampler_4k")
+    if s in ("1080p", "1080", "fhd"):
+        return ("1080p", True, "VIDEO_RESOLUTION_1080P", "veo_3_1_upsampler_1080p")
+    return ("720p", False, None, None)
+
 # ---------------------------------------------------------------------------
 # 入口函数
 # ---------------------------------------------------------------------------
@@ -4788,6 +4807,8 @@ async def veo_workflow(
             _ext_i2i_urls = _veo_collect_image_generation_reference_urls(payload) if _veo_payload_has_image_generation_references(payload) else []
             _ext_model_key = None
             _ext_video_aspect = None
+            # 视频放大仅在视频分支生效；图片分支保持默认（不放大）。
+            _ext_video_resolution_label, _ext_video_want_upsample, _ext_video_upsample_target, _ext_video_upsample_model_key = ("720p", False, None, None)
         else:
             _ext_model_key, _ext_video_aspect = _veo_resolve_extension_video_model_and_aspect(
                 payload,
@@ -4798,8 +4819,11 @@ async def veo_workflow(
             print(f"_ext_model_key:{_ext_model_key} _ext_video_aspect:{_ext_video_aspect}");
             _ext_image_aspect = None
             _ext_image_model = None
+            # 图片放大字段对视频保持默认（"1K"/False/None），避免误触发 flow/upsampleImage。
             _ext_resolution_label, _ext_want_upsample, _ext_upsample_target_resolution = ("1K", False, None)
             _ext_i2i_urls = []
+            # 视频分辨率：720p（默认/原行为）/ 1080p / 4k；1080p/4k 由插件在生成后做视频放大。
+            _ext_video_resolution_label, _ext_video_want_upsample, _ext_video_upsample_target, _ext_video_upsample_model_key = _veo_resolve_video_output_resolution(payload)
         # 保存对外返回用的原始图片 URL。后续 localize 只替换“插件上传用 URL”，
         # 不能污染 thumb_url 等需要返回给公网用户的字段。
         _original_ingredients_urls = list(ingredients_urls)
@@ -4864,6 +4888,10 @@ async def veo_workflow(
                 "extension_image_want_2k": _ext_want_upsample,
                 "extension_image_want_upsample": _ext_want_upsample,
                 "extension_image_upsample_target_resolution": _ext_upsample_target_resolution,
+                # 视频放大（720p 默认不放大；1080p/4k 由插件在生成后做视频 upscale）。
+                "extension_video_want_upsample": _ext_video_want_upsample,
+                "extension_video_upsample_target_resolution": _ext_video_upsample_target,
+                "extension_video_upsample_model_key": _ext_video_upsample_model_key,
             }
         )
         _ext_oss_upload = _veo_extension_oss_upload_config(ext_payload, resolution_label=_ext_resolution_label) if image_mode and _ext_want_upsample else {}
@@ -4871,6 +4899,12 @@ async def veo_workflow(
             ext_payload["oss_upload"] = _ext_oss_upload
             ext_payload["extension_oss_upload"] = _ext_oss_upload
         append_log(log_file, f"[veo][extension] dispatch workflow {_mode} project_id={project_id!r} model={_ext_model_key!r} ratio={_ext_video_aspect!r}")
+        if not image_mode and _ext_video_want_upsample:
+            append_log(
+                log_file,
+                f"[veo][extension] video upsample requested resolution={_ext_video_resolution_label!r} "
+                f"target={_ext_video_upsample_target!r} model_key={_ext_video_upsample_model_key!r}",
+            )
         # 如插件在 token 获取后意外断开，仍走统一的“中转页 fpb_* URL 触发 WS”接口；
         # Python 只短暂连接 CDP 打开中转页，随后立刻断开；目标页由插件延迟跳转打开。
         if await wait_extension_client(space_id, window_key, timeout_seconds=0.2) is None:
@@ -4892,7 +4926,8 @@ async def veo_workflow(
                 provider="veo",
                 payload=ext_payload,
                 progress_cb=progress_cb,
-                timeout_seconds=max_wait_seconds + 120.0,
+                # 视频放大需要再跑一轮 submit+poll，给额外时间，避免 1080p/4k 超时。
+                timeout_seconds=max_wait_seconds + 120.0 + (max_wait_seconds if _ext_video_want_upsample else 0.0),
             )
         except Exception as e:
             _violation_reason = _veo_content_violation_reason(e)
