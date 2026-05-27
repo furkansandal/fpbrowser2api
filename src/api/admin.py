@@ -4480,7 +4480,7 @@ async def convert_sora_session_token_to_access_token(
                 browser_access_key=access_key,
                 space_id=space_id,
                 window_key=window_key,
-                target_url=annotate_url_with_extension_config(target_url, space_id=space_id, window_key=window_key),
+                target_url=annotate_url_with_extension_config(target_url, space_id=space_id, window_key=window_key, browser_base_url=base_url),
                 headless=headless,
                 pure_mode=bool(ctx_row.get("pure_mode")) if ctx_row.get("pure_mode") is not None else True,
             )
