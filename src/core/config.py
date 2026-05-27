@@ -166,9 +166,10 @@ class Config:
         raw = os.getenv("FPB_EXTENSION_BRIDGE_URL", "")
         if raw.strip():
             return raw.strip()
-        base_url = str(self._config.get("extension_executor", {}).get("base_url", "") or "").strip();
-        bridge_url = f"ws://{base_url}/api/extension/ws"
-        return bridge_url
+        base_url = str(self._config.get("extension_executor", {}).get("base_url", "") or "").strip()
+        if not base_url:
+            return ""
+        return f"ws://{base_url}/api/extension/ws"
 
     @property
     def extension_launcher_url(self) -> str:
@@ -183,9 +184,10 @@ class Config:
         raw = os.getenv("FPB_EXTENSION_LAUNCHER_URL", "")
         if raw.strip():
             return raw.strip()
-        base_url = str(self._config.get("extension_executor", {}).get("base_url", "") or "").strip();
-        launcher_url = f"http://{base_url}/"
-        return launcher_url
+        base_url = str(self._config.get("extension_executor", {}).get("base_url", "") or "").strip()
+        if not base_url:
+            return ""
+        return f"http://{base_url}/"
 
     @property
     def extension_task_timeout_seconds(self) -> float:

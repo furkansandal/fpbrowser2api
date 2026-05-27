@@ -29,13 +29,22 @@ bridge `ws://88.99.252.117:8000/api/extension/ws` (server_port=8000 varsayımıy
 ## Öncelik zinciri (hem launcher hem bridge için)
 
 1. Açık `launcher_url=` argümanı (yalnız launcher; dış çağıran verirse) — en yüksek.
-2. Env (`FPB_EXTENSION_LAUNCHER_URL` / `FPB_EXTENSION_BRIDGE_URL`) veya **dolu**
-   `[extension_executor].base_url`.
+2. Env (`FPB_EXTENSION_LAUNCHER_URL` / `FPB_EXTENSION_BRIDGE_URL`) veya dolu
+   `[extension_executor].base_url` — **ancak host'u loopback DEĞİLSE** (bkz. loopback kuralı).
 3. **lan_addr host + `config.server_port`** (yeni, browser-bazlı varsayılan).
 4. (yalnız launcher) bridge_url'den türetilen http(s) host (mevcut davranış).
 5. `127.0.0.1:server_port` — son çare (aynı makine senaryosu).
 
 Karar: Elle yapılandırma (2) lan_addr türetmesini (3) override eder.
+
+### Loopback kuralı (kullanıcı kararı)
+Yapılandırılmış launcher/bridge URL'inin host'u **loopback** (`127.x` / `localhost` / `::1`)
+ise, bu uzak tarayıcıdan erişilemeyeceği için **override sayılmaz**; öncelik (3)'e (lan_addr)
+düşülür. `192.168.x` gibi gerçek bir LAN/host yazılıysa (2) yine kazanır. Bu, kullanıcının
+gerçek config'indeki `[extension_executor].base_url = "127.0.0.1:8000"` değerinin lan_addr
+türetmesini engellememesini sağlar. Uygulama: `_is_loopback_url(url)` helper'ı
+(`browser_extension_bridge.py`), `get_default_extension_bridge_url` ve
+`get_default_extension_launcher_url` içinde `if raw and not _is_loopback_url(raw): return raw`.
 
 ## Veri akışı
 
@@ -89,8 +98,17 @@ Karar: Elle yapılandırma (2) lan_addr türetmesini (3) override eder.
   hâlâ `[extension_executor].base_url`'e bağlı kalır — ayrı bir özellik. Talep halinde sonradan
   aynı paterne çekilebilir.
 
-## Doğrulama
-- `python -m py_compile` ile 4 dosyanın sözdizimi.
-- Değişen modüllerin import edilebilirliği.
-- Saf helper'ların öncelik mantığı için elle/birim test (lan_addr verili/boş, base_url verili/boş,
-  şemasız lan_addr senaryoları).
+## Doğrulama (tamamlandı)
+- `python3 -m py_compile` → 4 dosya OK.
+- `core.config` import + property davranışı doğrulandı.
+- Saf helper öncelik mantığı gerçek config (`base_url=127.0.0.1:8000`, `server_port=8000`) ile
+  8 senaryoda test edildi, **8/8 geçti**:
+  1. config loopback + lan_addr `88.99.252.117:50000` → launcher `http://88.99.252.117:8000/`,
+     bridge `ws://88.99.252.117:8000/api/extension/ws` ✓
+  2. şemasız lan_addr `88.99.252.117:50000` → `http://88.99.252.117:8000/` ✓
+  3. lan_addr yok + config loopback → son çare `http://127.0.0.1:8000/` ✓
+  4. config gerçek LAN IP `192.168.1.4:8000` → config kazanır, lan_addr yok sayılır ✓
+  5. env non-loopback override → kazanır ✓
+- NOT: Tam modül import'u bu ortamda fastapi/venv olmadığı için çalıştırılamadı; helper'lar saf
+  (`urlsplit` + `config.server_port`) olduğundan mantık birebir kaynak kopyasıyla doğrulandı.
+  Deploy ortamında modül import testi çalıştırılabilir.

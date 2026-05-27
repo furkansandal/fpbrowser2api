@@ -23,12 +23,30 @@ from .browser_extension_bridge import (
     get_default_extension_bridge_url,
     get_extension_client,
     wait_extension_client,
+    _is_loopback_url,
 )
 from .playwright_broswer_context import append_log
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
 
 
-def get_default_extension_launcher_url() -> str:
+def _launcher_url_from_browser_base(browser_base_url: Optional[str]) -> str:
+    """从浏览器 lan_addr（browser_base_url）推导出同 host 的 launcher 首页地址。
+
+    只取 host，端口固定用 Python 后端的 config.server_port（lan_addr 自身的端口
+    通常是 Roxy API 端口，不可用）。无法取到 host 时返回 ""，交给下一优先级。
+    """
+    raw = str(browser_base_url or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = "http://" + raw
+    host = urlsplit(raw).hostname
+    if not host:
+        return ""
+    return f"http://{host}:{int(config.server_port)}/"
+
+
+def get_default_extension_launcher_url(browser_base_url: Optional[str] = None) -> str:
     """插件配置中转页 URL。
 
     ``trigger_veo_extension_ws_connection_via_window`` 不再直接打开目标站点，
@@ -36,16 +54,20 @@ def get_default_extension_launcher_url() -> str:
     ``fpb_space_id`` / ``fpb_window_key`` / ``fpb_bridge_url`` / ``redirect_url``。
 
     优先级：
-    1. 环境变量 ``FPB_EXTENSION_LAUNCHER_URL``；
-    2. ``config/setting.toml`` 的 ``[extension_executor].launcher_url``；
+    1. 环境变量 ``FPB_EXTENSION_LAUNCHER_URL`` 或 ``[extension_executor].base_url``；
+    2. 根据 ``browser_base_url``（lan_addr）host + ``config.server_port`` 推导；
     3. 根据 ``bridge_url`` 推导出同 host 的 http(s) 首页；
     4. 本机 ``server_port``。
     """
     raw = config.extension_launcher_url
-    if raw:
+    if raw and not _is_loopback_url(raw):
         return raw
 
-    bridge = get_default_extension_bridge_url()
+    derived = _launcher_url_from_browser_base(browser_base_url)
+    if derived:
+        return derived
+
+    bridge = get_default_extension_bridge_url(browser_base_url)
     try:
         p = urlsplit(bridge)
         if p.netloc and p.scheme in {"ws", "wss"}:
@@ -98,6 +120,7 @@ def build_extension_launcher_url(
     space_id: str,
     window_key: str,
     launcher_url: Optional[str] = None,
+    browser_base_url: Optional[str] = None,
 ) -> str:
     """构建插件配置中转页 URL。
 
@@ -106,9 +129,9 @@ def build_extension_launcher_url(
     ``http://192.168.1.9:8000/#fpb_space_id=...&fpb_window_key=...``
     ``&fpb_bridge_url=ws%3A%2F%2F...&redirect_url=https%3A%2F%2F...``
     """
-    base = str(launcher_url or get_default_extension_launcher_url() or "").strip()
+    base = str(launcher_url or get_default_extension_launcher_url(browser_base_url) or "").strip()
     if not base:
-        base = f"http://127.0.0.1:{int(config.server_port)}/"
+        base = _launcher_url_from_browser_base(browser_base_url) or f"http://127.0.0.1:{int(config.server_port)}/"
     if "://" not in base:
         base = "http://" + base
 
@@ -119,7 +142,7 @@ def build_extension_launcher_url(
             {
                 "fpb_space_id": str(space_id or "").strip(),
                 "fpb_window_key": str(window_key or "").strip(),
-                "fpb_bridge_url": get_default_extension_bridge_url(),
+                "fpb_bridge_url": get_default_extension_bridge_url(browser_base_url),
                 "redirect_url": str(redirect_url or "").strip(),
             }
         )
@@ -135,7 +158,7 @@ def build_extension_launcher_url(
         return (
             f"{base}{sep}"
             f"fpb_space_id={space_id}&fpb_window_key={window_key}"
-            f"&fpb_bridge_url={get_default_extension_bridge_url()}"
+            f"&fpb_bridge_url={get_default_extension_bridge_url(browser_base_url)}"
             f"&redirect_url={redirect_url}"
         )
 
@@ -269,11 +292,13 @@ async def trigger_veo_extension_ws_connection_via_window(
     sid, wkey = _extension_ids_from_session(sess, space_id=space_id, window_key=window_key)
     log_file = log_file or (Path(getattr(sess, "monitor_log_path", "")) if getattr(sess, "monitor_log_path", None) else MONITOR_LOG_FILE)
     redirect = _normalize_http_url(target_url, "https://labs.google/fx")
+    browser_base_url = str(getattr(getattr(sess, "pw_ctx", None), "base_url", "") or "")
     annotated_launcher = build_extension_launcher_url(
         redirect_url=redirect,
         space_id=sid,
         window_key=wkey,
         launcher_url=launcher_url,
+        browser_base_url=browser_base_url,
     )
     lock = getattr(sess, "_bring_drafts_lock", None)
     if lock is not None:
