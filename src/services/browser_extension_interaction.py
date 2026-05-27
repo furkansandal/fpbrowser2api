@@ -302,6 +302,12 @@ async def trigger_veo_extension_ws_connection_via_window(
         launcher_url=launcher_url,
         browser_base_url=browser_base_url,
     )
+    # 调试：打印实际使用的 launcher / bridge URL（host 取自 lan_addr）。
+    print(
+        f"[extension] lan_addr={browser_base_url!r} -> launcher={annotated_launcher!r} "
+        f"bridge={get_default_extension_bridge_url(browser_base_url)!r}",
+        flush=True,
+    )
     lock = getattr(sess, "_bring_drafts_lock", None)
     if lock is not None:
         async with lock:
