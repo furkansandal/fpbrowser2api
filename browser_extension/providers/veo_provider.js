@@ -1308,31 +1308,28 @@ async function pollVideo(tabId, at, operations, runtime, p) {
   throw new Error(`VEO video polling timeout; last=${JSON.stringify(last).slice(0, 300)}`);
 }
 
-// 视频放大接口的 videoInput.mediaId 需要"纯 media UUID"；而 base（约 720p）生成完成后
-// 拿到的 mediaName 往往是 base64url 编码的 protobuf "resource name"（形如 CAUS... 长串），
-// 直接传给放大接口会 404 NOT_FOUND（"Requested entity was not found"）。这里把 encoded
-// name 解码并提取其中的纯 UUID。解码后 UUID 顺序通常为 [projectId, mediaId, contentId]，
-// 因此当首个 UUID 等于已知 projectId 时取第 2 个（index 1），否则退回取第 1 个；无法解码 /
-// 无 UUID 时原样返回（best-effort，保持既有行为）。
-function plainMediaIdFromName(encodedName, knownProjectId) {
+// 视频放大接口的 videoInput.mediaId 需要"视频内容 id"，即播放 URL
+// （flow-content.google/video/<UUID>）中的 UUID —— 等于 mediaName 解码后的最后一个 UUID
+// （field5 = contentId），而不是 field3 的 media id。传 field3 会 404 NOT_FOUND。
+// 解码后 UUID 顺序通常为 [projectId, mediaId(field3), contentId(field5)]。
+// 优先从 videoUrl 取内容 id；否则解码 encoded name 取最后一个 UUID；都不行时原样返回（best-effort）。
+function videoUpscaleMediaId(videoUrl, encodedName) {
+  // 1) 最可靠：播放 URL 里的内容 id（与手动可用请求一致）。
+  const m = String(videoUrl || "").match(/\/video\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+  if (m) return m[1];
   const raw = String(encodedName || "");
   if (!raw) return raw;
   // 已经是纯 UUID：原样返回。
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(raw)) return raw;
-  let decoded = "";
   try {
     let b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
     const pad = b64.length % 4;
     if (pad) b64 += "=".repeat(4 - pad);
-    decoded = atob(b64); // service worker 提供 atob；UUID 为 ASCII，直接在 binary string 上跑正则即可
-  } catch (e) {
-    return raw;
-  }
-  const uuids = decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) || [];
-  if (!uuids.length) return raw;
-  const proj = String(knownProjectId || "").toLowerCase();
-  if (proj && uuids[0].toLowerCase() === proj && uuids[1]) return uuids[1];
-  return uuids[0];
+    const decoded = atob(b64); // service worker 提供 atob；UUID 为 ASCII，直接在 binary string 上跑正则即可
+    const uuids = decoded.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) || [];
+    if (uuids.length) return uuids[uuids.length - 1]; // 最后一个 = contentId（field5）
+  } catch (e) { /* fall through */ }
+  return raw;
 }
 
 // 基于 base（约 720p）生成结果做一次异步视频放大（1080p/4K）。
@@ -1502,7 +1499,7 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   if (p.extension_video_want_upsample && generatedMediaId) {
     try {
       // encoded resource name（CAUS...）会让放大接口 404；这里解出纯 media UUID 再提交。
-      const upsampleMediaId = plainMediaIdFromName(generatedMediaId, generatedProjectId || projectId);
+      const upsampleMediaId = videoUpscaleMediaId(finalShareUrl, generatedMediaId);
       await runtime.progress(96, {
         stage: "upsample_video",
         target_resolution: p.extension_video_upsample_target_resolution,
