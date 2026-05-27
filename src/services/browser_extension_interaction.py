@@ -88,6 +88,29 @@ def _short_text(value: Any, *, max_len: int = 500) -> str:
     return s[: max(10, max_len - 3)] + "..."
 
 
+def _redact_launcher_url(url: Any) -> str:
+    """日志安全：隐去 launcher/redirect URL 中的 fpb_bridge_token 等敏感参数。
+
+    host/port、space_id/window_key、bridge_url 等非敏感字段保留，便于排查；
+    只把 token 类参数替换为 ``***REDACTED***``。
+    """
+    s = str(url or "")
+    if not s:
+        return s
+    secret_keys = {"fpb_bridge_token", "token", "access_token"}
+
+    def _mask(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        return [(k, "REDACTED" if k.lower() in secret_keys else v) for k, v in pairs]
+
+    try:
+        parts = urlsplit(s)
+        query = urlencode(_mask(parse_qsl(parts.query, keep_blank_values=True)))
+        fragment = urlencode(_mask(parse_qsl(parts.fragment, keep_blank_values=True)))
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, query, fragment))
+    except Exception:
+        return "***REDACT_FAILED***"
+
+
 def _extension_ids_from_session(
     sess: Any,
     *,
@@ -302,9 +325,9 @@ async def trigger_veo_extension_ws_connection_via_window(
         launcher_url=launcher_url,
         browser_base_url=browser_base_url,
     )
-    # 调试：打印实际使用的 launcher / bridge URL（host 取自 lan_addr）。
+    # 调试：打印实际使用的 launcher / bridge URL（host 取自 lan_addr）。token 已脱敏。
     print(
-        f"[extension] lan_addr={browser_base_url!r} -> launcher={annotated_launcher!r} "
+        f"[extension] lan_addr={browser_base_url!r} -> launcher={_redact_launcher_url(annotated_launcher)!r} "
         f"bridge={get_default_extension_bridge_url(browser_base_url)!r}",
         flush=True,
     )
@@ -335,7 +358,7 @@ async def trigger_veo_extension_ws_connection_via_window(
         log_file,
         "[extension] opened launcher page via _bring_target_page_to_front and disconnected CDP "
         f"space_id={sid!r} window_key={wkey!r} "
-        f"launcher={_short_text(annotated_launcher, max_len=350)!r} "
+        f"launcher={_short_text(_redact_launcher_url(annotated_launcher), max_len=350)!r} "
         f"redirect={_short_text(redirect, max_len=250)!r}",
     )
     await asyncio.sleep(4);
