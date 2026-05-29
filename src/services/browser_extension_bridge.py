@@ -72,16 +72,44 @@ def should_use_extension_executor(payload: Dict[str, Any]) -> bool:
     return bool(config.extension_executor_enabled)
 
 
-def get_default_extension_bridge_url() -> str:
+def _is_loopback_url(url: str) -> bool:
+    """URL'in host'u loopback (127.x / localhost / ::1) mı? Bunlar uzak tarayıcıdan erişilemez,
+    bu yüzden override sayılmaz; lan_addr türetmesine düşülür."""
+    host = (urlsplit(str(url or "")).hostname or "").strip().lower()
+    return host == "localhost" or host == "::1" or host.startswith("127.")
+
+
+def _bridge_url_from_browser_base(browser_base_url: Optional[str]) -> str:
+    """从浏览器 lan_addr（browser_base_url）推导出同 host 的 WebSocket 地址。
+
+    只取 host，端口固定用 Python 后端的 config.server_port（lan_addr 自身的端口
+    通常是 Roxy API 端口，不可用）。无法取到 host 时返回 ""，交给下一优先级。
+    """
+    raw = str(browser_base_url or "").strip()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = "http://" + raw
+    host = urlsplit(raw).hostname
+    if not host:
+        return ""
+    return f"ws://{host}:{int(config.server_port)}/api/extension/ws"
+
+
+def get_default_extension_bridge_url(browser_base_url: Optional[str] = None) -> str:
     """浏览器插件默认连接的 WebSocket 地址。
 
-    优先读取 config/setting.toml 的 [extension_executor].bridge_url；
-    也可用环境变量 FPB_EXTENSION_BRIDGE_URL 覆盖，例如：
-    ws://192.168.2.10:8002/api/extension/ws
+    优先级：
+    1. config（环境变量 FPB_EXTENSION_BRIDGE_URL 或 [extension_executor].base_url）；
+    2. 根据 browser_base_url（lan_addr）host + config.server_port 推导；
+    3. 本机 ws://127.0.0.1:{server_port}/api/extension/ws。
     """
     raw = config.extension_bridge_url
-    if raw:
+    if raw and not _is_loopback_url(raw):
         return raw
+    derived = _bridge_url_from_browser_base(browser_base_url)
+    if derived:
+        return derived
     return f"ws://127.0.0.1:{int(config.server_port)}/api/extension/ws"
 
 
@@ -90,6 +118,7 @@ def annotate_url_with_extension_config(
     *,
     space_id: str,
     window_key: str,
+    browser_base_url: Optional[str] = None,
     google_account: Optional[str] = None,
     google_password: Optional[str] = None,
     google_efa: Optional[str] = None,
@@ -109,7 +138,7 @@ def annotate_url_with_extension_config(
             {
                 "fpb_space_id": str(space_id or "").strip(),
                 "fpb_window_key": str(window_key or "").strip(),
-                "fpb_bridge_url": get_default_extension_bridge_url(),
+                "fpb_bridge_url": get_default_extension_bridge_url(browser_base_url),
             }
         )
         token = config.extension_bridge_token
@@ -129,7 +158,7 @@ def annotate_url_with_extension_config(
         return (
             f"{u}{sep}"
             f"fpb_space_id={space_id}&fpb_window_key={window_key}"
-            f"&fpb_bridge_url={get_default_extension_bridge_url()}"
+            f"&fpb_bridge_url={get_default_extension_bridge_url(browser_base_url)}"
             f"{('&fpb_google_account=' + str(google_account).strip()) if google_account else ''}"
             f"{('&fpb_google_password=' + str(google_password)) if google_password else ''}"
             f"{('&fpb_google_efa=' + str(google_efa).strip()) if google_efa else ''}"

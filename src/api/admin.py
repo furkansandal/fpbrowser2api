@@ -4565,6 +4565,7 @@ async def convert_sora_session_token_to_access_token(
                     target_url,
                     space_id=space_id,
                     window_key=window_key,
+                    browser_base_url=base_url,
                     google_account=google_account,
                     google_password=google_password,
                     google_efa=google_efa,
