@@ -11,6 +11,8 @@ let connectSeq = 0;
 const HEARTBEAT_INTERVAL_MS = 15000;
 const NEWAPI_CHARGE_BASE_URL = "https://www.newtoken.club";
 const NEWAPI_CHARGE_MODEL = "fpbrowser-use";
+// 临时关闭 NewAPI 扣费。需要恢复时改为 true 即可。
+const NEWAPI_CHARGE_ENABLED = true;
 const VEO_HUMAN_ACTIVITY_ACTIONS = new Set(["human_activity", "simulate_human_activity"]);
 let status = {
   bridgeUrl: "",
@@ -118,6 +120,10 @@ function sleep(ms) {
 }
 
 async function chargeNewapiUsage(reason, meta = {}) {
+  if (!NEWAPI_CHARGE_ENABLED) {
+    await pushLog("info", "NewAPI 扣费已临时关闭，跳过", { reason, model: NEWAPI_CHARGE_MODEL, meta });
+    return { ok: true, skipped: true, reason: "newapi_charge_disabled" };
+  }
   const cfg = await getConfig();
   const token = String(cfg.bridgeToken || "").trim();
   if (!token) {
@@ -522,10 +528,25 @@ function isGoogleLoginUrl(raw) {
   }
 }
 
+function isGoogleAutoLoginWatchUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    const h = u.hostname.toLowerCase();
+    return u.protocol === "https:" && (h === "labs.google" || h === "google.com" || h.endsWith(".google.com"));
+  } catch (_) {
+    return false;
+  }
+}
+
+function hasGoogleSignedOutText(text) {
+  return /you(?:'|’| are)?re not signed in|you are not signed in|not signed in|ログインしていません|ログインしていない|ログインが必要|ログインしてください|nicht angemeldet|sie sind nicht angemeldet|du bist nicht angemeldet/i.test(String(text || ""));
+}
+
 function shouldGoogleAutoLoginActOnPageResult(result) {
   if (!result) return false;
   if (result.hasPassword || result.hasEmail || result.hasOtp || result.hasAccountPicker) return true;
   const text = String(result.title || "") + "\n" + String(result.bodyText || "");
+  if (hasGoogleSignedOutText(text)) return true;
   return /choose an account|use another account|sign in|signed out|选择帐号|选择账号|登录|konto auswählen|anderes konto verwenden|über google anmelden|abgemeldet/i.test(text);
 }
 
@@ -620,18 +641,24 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
           }
           return true;
         };
-        const inputText = async (el, text) => {
+        const inputText = async (el, text, options = {}) => {
           if (!el) return false;
           await clickHuman(el);
           await sleep(80);
           const v = String(text || "");
+          const minDelay = Math.max(0, Number(options.minDelayMs ?? 8) || 0);
+          const maxDelay = Math.max(minDelay, Number(options.maxDelayMs ?? 24) || minDelay);
+          const charDelay = async () => {
+            if (maxDelay <= 0) return;
+            await sleep(minDelay + Math.floor(Math.random() * (maxDelay - minDelay + 1)));
+          };
           if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
             try { el.select(); } catch (_) {}
             try { document.execCommand("delete"); } catch (_) {}
             for (const ch of v) {
               try { document.execCommand("insertText", false, ch); } catch (_) {}
               el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: ch }));
-              await sleep(8 + Math.floor(Math.random() * 16));
+              await charDelay();
             }
             if (el.value !== v) {
               const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -666,6 +693,11 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
           if (!candidates.length) return false;
           await clickHuman(candidates[0]);
           return true;
+        };
+        const clickNextAndWait = async (waitMs) => {
+          const ok = await clickNext();
+          if (ok && waitMs > 0) await sleep(waitMs);
+          return ok;
         };
         const looksLikeAccountPickerPage = () => {
           const u = String(location.href || "").toLowerCase();
@@ -708,13 +740,13 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
         // 若先扫账号文本会误点左侧账号区域，导致一直 clicked_account_picker。
         const pw = q(["input[type='password']"]);
         if (pw.el) {
-          await inputText(pw.el, cfg.googlePassword);
+          await inputText(pw.el, cfg.googlePassword, { minDelayMs: 90, maxDelayMs: 180 });
           await clickNext();
           return { done: false, action: "password", selector: pw.selector, url };
         }
         const em = q(["#identifierId", "input[name='identifier']", "input[type='email']"]);
         if (em.el) {
-          await inputText(em.el, cfg.googleAccount);
+          await inputText(em.el, cfg.googleAccount, { minDelayMs: 90, maxDelayMs: 180 });
           await clickNext();
           return { done: false, action: "email", selector: em.selector, url };
         }
@@ -722,7 +754,7 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
         if (otp.el) {
           if (!cfg.totpCode) return { done: false, action: "need_2fa", selector: otp.selector, url };
           await inputText(otp.el, cfg.totpCode);
-          await clickNext();
+          await clickNextAndWait(5000);
           return { done: false, action: "totp", selector: otp.selector, url };
         }
         if (await clickGmailPicker()) return { done: false, action: "clicked_account_picker", url };
@@ -790,7 +822,7 @@ const googleAutoLoginLastByTab = new Map();
 let googleAutoLoginLastConfigWarnAt = 0;
 
 async function maybeRunGoogleAutoLoginForTab(tabId, url, reason = "tab_event") {
-  if (!tabId || !isGoogleAccountsUrl(url)) return { skipped: true, reason: "not_google_accounts_page" };
+  if (!tabId || !isGoogleAutoLoginWatchUrl(url)) return { skipped: true, reason: "not_google_watch_page" };
 
   const cfg = await getConfig();
   if (!cfg.googleAutoLoginWatchEnabled) return { skipped: true, reason: "disabled" };
@@ -817,6 +849,11 @@ async function maybeRunGoogleAutoLoginForTab(tabId, url, reason = "tab_event") {
     detected = await detectGoogleLoginPageInTab(tabId).catch(() => null);
     if (!shouldGoogleAutoLoginActOnPageResult(detected)) {
       return { skipped: true, reason: "not_google_login_dom", url, detected };
+    }
+    if (!isGoogleAccountsUrl(url) && hasGoogleSignedOutText(String(detected?.title || "") + "\n" + String(detected?.bodyText || ""))) {
+      await pushLog("info", "Google signed-out page detected, redirecting to accounts.google.com", { tab_id: tabId, url, reason, detected });
+      await chrome.tabs.update(tabId, { url: "https://accounts.google.com/", active: true });
+      url = "https://accounts.google.com/";
     }
   }
 
@@ -1093,7 +1130,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const url = String(changeInfo.url || tab?.url || "");
-  if (!url || !isGoogleAccountsUrl(url)) return;
+  if (!url || !isGoogleAutoLoginWatchUrl(url)) return;
   const statusValue = String(changeInfo.status || tab?.status || "");
   // 仅在 URL 变化或页面 complete 时触发，不轮询页面，适合大量浏览器实例低资源运行。
   if (changeInfo.url || statusValue === "complete") {

@@ -229,6 +229,13 @@ function isTransientPageFetchError(e) {
   const s = String((e && e.message) || e || "");
   return /empty result|frame.*(removed|detached|destroyed)|cannot access.*contents|extension context invalidated|no tab with id|tab.*closed|target closed|execution context.*destroyed/i.test(s);
 }
+
+function isNonRetryableVeoSubmitError(e) {
+  const s = String((e && e.message) || e || "");
+  if (!/\bVEO\s+(?:image|video)\s+submit\s+failed:/i.test(s)) return false;
+  return /\bINVALID_ARGUMENT\b/i.test(s) || /\bPUBLIC_ERROR_USER_QUOTA_REACHED\b/i.test(s);
+}
+
 function archiveEnabled(p, key = "archive_workflow") {
   const v = p && Object.prototype.hasOwnProperty.call(p, key) ? p[key] : true;
   return v !== false;
@@ -443,11 +450,12 @@ async function resetLabsGoogleLocalStorageAndReloadForRetry(progress, tabId, pro
   }
 }
 
-async function pageFetchJson(tabId, url, { method = "GET", headers = {}, body = null, attempts = 3 } = {}) {
+async function pageFetchJson(tabId, url, { method = "GET", headers = {}, body = null, attempts = 3, timeoutMs = 0 } = {}) {
   let lastErr = null;
   let lastAttempt = 0;
   const reqMethod = String(method || "GET").toUpperCase();
   const maxAttempts = Math.max(1, Number.parseInt(attempts, 10) || 1);
+  const requestTimeoutMs = Math.max(0, Number(timeoutMs || 0) || 0);
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const attemptNo = attempt + 1;
     lastAttempt = attemptNo;
@@ -460,25 +468,43 @@ async function pageFetchJson(tabId, url, { method = "GET", headers = {}, body = 
         const frames = await chrome.scripting.executeScript({
           target: { tabId },
           world: "MAIN",
-          args: [url, { method, headers, body }],
+          args: [url, { method, headers, body, timeoutMs: requestTimeoutMs }],
           func: async (u, opts) => {
+            const timeoutMs = Math.max(0, Number(opts.timeoutMs || 0) || 0);
+            const controller = timeoutMs > 0 && typeof AbortController !== "undefined" ? new AbortController() : null;
+            let timer = null;
             const init = {
               method: opts.method || "GET",
               headers: opts.headers || {},
               credentials: "include"
             };
+            if (controller) {
+              init.signal = controller.signal;
+              timer = setTimeout(() => {
+                try { controller.abort(); } catch (_) {}
+              }, timeoutMs);
+            }
             if (opts.body !== null && opts.body !== undefined) {
               init.body = JSON.stringify(opts.body);
             }
-            const resp = await fetch(u, init);
-            const text = await resp.text();
-            const hdrs = {};
             try {
-              for (const [k, v] of resp.headers.entries()) hdrs[k] = v;
-            } catch (_) {}
-            let json = null;
-            try { json = text ? JSON.parse(text) : null; } catch (_) {}
-            return { status: resp.status, headers: hdrs, text, json, url: resp.url };
+              const resp = await fetch(u, init);
+              const text = await resp.text();
+              const hdrs = {};
+              try {
+                for (const [k, v] of resp.headers.entries()) hdrs[k] = v;
+              } catch (_) {}
+              let json = null;
+              try { json = text ? JSON.parse(text) : null; } catch (_) {}
+              return { status: resp.status, headers: hdrs, text, json, url: resp.url };
+            } catch (e) {
+              const name = String((e && e.name) || "");
+              const msg = String((e && e.message) || e || "unknown error");
+              if (name === "AbortError") throw new Error(`fetch timeout after ${timeoutMs}ms`);
+              throw new Error(msg);
+            } finally {
+              if (timer) clearTimeout(timer);
+            }
           }
         });
         return Array.isArray(frames) && frames[0] ? frames[0].result : null;
@@ -1679,6 +1705,7 @@ async function runImageWorkflow(tabId, p, at, runtime) {
   let parsed = null;
   let submitErr = "";
   const maxImageSubmitAttempts = 3; // 首次提交 + 失败后连续重试 3 次
+  const imageSubmitTimeoutMs = Math.max(10000, Number(p.image_submit_timeout_ms || p.submit_timeout_ms || 150000) || 150000);
   for (let attempt = 0; attempt < maxImageSubmitAttempts; attempt++) {
     try {
       const recaptcha = await getRecaptchaToken(tabId, "IMAGE_GENERATION");
@@ -1702,13 +1729,14 @@ async function runImageWorkflow(tabId, p, at, runtime) {
           imageInputs
         }]
       };
-      await runtime.progress(10, { stage: "submit_image_task", workflow_kind: "image", attempt: attempt + 1, max_attempts: maxImageSubmitAttempts });
-      tx = await pageFetchJson(tabId, submitUrl, { method: "POST", headers: authHeaders(at), body, attempts: 1 });
+      await runtime.progress(10, { stage: "submit_image_task", workflow_kind: "image", attempt: attempt + 1, max_attempts: maxImageSubmitAttempts, timeout_ms: imageSubmitTimeoutMs });
+      tx = await pageFetchJson(tabId, submitUrl, { method: "POST", headers: authHeaders(at), body, attempts: 1, timeoutMs: imageSubmitTimeoutMs });
       if (tx.status >= 400) throw new Error(`VEO image submit failed: ${compactErrorResponse(tx)}`);
       parsed = parseImageResult(tx.json);
       break;
     } catch (e) {
       submitErr = String(e && e.message ? e.message : e || "");
+      if (isNonRetryableVeoSubmitError(e)) throw e;
       if (/empty result|result null|missing fifeUrl|result undefined/i.test(submitErr)) {
         const recovered = await recoverWorkflowAfterEmptySubmit(tabId, at, projectId, runtime, "image");
         if (recovered && recovered.workflowId) {
@@ -1976,6 +2004,8 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   let submittedWorkflow = { workflowId: "", projectId: "", mediaName: "" };
   let submitErr = "";
   const maxVideoSubmitAttempts = 3; // 首次提交 + 失败后连续重试 3 次
+  const videoSubmitTimeoutMs = Math.max(10000, Number(p.video_submit_timeout_ms || p.submit_timeout_ms || 90000) || 90000);
+  const userPaygateTier = normalizePaygateTier(p.user_paygate_tier || p.userPaygateTier || await fetchVeoUserPaygateTier(tabId, at));
   for (let attempt = 0; attempt < maxVideoSubmitAttempts; attempt++) {
     try {
       const recaptcha = await getRecaptchaToken(tabId, "VIDEO_GENERATION");
@@ -1985,21 +2015,22 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
         sessionId: sessionId(),
         projectId: String(projectId),
         tool: "PINHOLE",
-        userPaygateTier: p.user_paygate_tier || p.userPaygateTier || (r2vVideoUpload ? "PAYGATE_TIER_TWO" : "PAYGATE_TIER_NOT_PAID")
+        userPaygateTier
+      };
+      const mediaGenerationContext = {
+        batchId: crypto.randomUUID(),
+        audioFailurePreference: "BLOCK_SILENCED_VIDEOS"
       };
       const body = mode === "r2v"
         ? {
-            mediaGenerationContext: {
-              batchId: crypto.randomUUID(),
-              ...(r2vVideoUpload ? { audioFailurePreference: "BLOCK_SILENCED_VIDEOS" } : {})
-            },
+            mediaGenerationContext,
             clientContext,
             requests: [reqItem],
             ...(r2vVideoUpload ? {} : { useV2ModelConfig: true })
           }
-        : { clientContext, requests: [reqItem] };
-      await runtime.progress(10, { stage: "submit_task", video_mode: mode, attempt: attempt + 1, max_attempts: maxVideoSubmitAttempts });
-      const tx = await pageFetchJson(tabId, submitUrl, { method: "POST", headers: authHeaders(at), body, attempts: 1 });
+        : { mediaGenerationContext, clientContext, requests: [reqItem] };
+      await runtime.progress(10, { stage: "submit_task", video_mode: mode, attempt: attempt + 1, max_attempts: maxVideoSubmitAttempts, timeout_ms: videoSubmitTimeoutMs, user_paygate_tier: userPaygateTier });
+      const tx = await pageFetchJson(tabId, submitUrl, { method: "POST", headers: authHeaders(at), body, attempts: 1, timeoutMs: videoSubmitTimeoutMs });
       if (tx.status >= 400) throw new Error(`VEO video submit failed: ${compactErrorResponse(tx)}`);
       const submitMedia = Array.isArray(tx.json?.media) ? tx.json.media : [];
       submittedWorkflow = parseVideoSubmitWorkflow(tx.json);
@@ -2009,6 +2040,7 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
       break;
     } catch (e) {
       submitErr = String(e && e.message ? e.message : e || "");
+      if (isNonRetryableVeoSubmitError(e)) throw e;
       if (attempt + 1 < maxVideoSubmitAttempts) {
         await runtime.progress(10, {
           stage: "submit_video_retry",
@@ -2056,7 +2088,7 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
         projectId: generatedProjectId,
         workflowId: generatedWorkflowId,
         sessionId: sessionId(),
-        userPaygateTier: p.user_paygate_tier || p.userPaygateTier || (r2vVideoUpload ? "PAYGATE_TIER_TWO" : "PAYGATE_TIER_NOT_PAID")
+        userPaygateTier
       }, at, runtime, p);
       if (up && up.videoUrl) {
         finalShareUrl = up.videoUrl;
