@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=3840, initial-scale=1" />
+  <title>FPBrowser2API Veo / Google Flow Akisi</title>
+  <style>
+    :root {
+      --ink: #102033;
+      --muted: #526171;
+      --line: #c8d3df;
+      --blue: #1769e0;
+      --cyan: #0a93b5;
+      --green: #198754;
+      --orange: #d97706;
+      --red: #c2410c;
+      --bg: #f7f9fc;
+      --panel: #ffffff;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      margin: 0;
+      width: 3840px;
+      height: 2160px;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, "SF Pro Display", "Segoe UI", Arial, sans-serif;
+    }
+
+    .canvas {
+      position: relative;
+      width: 3840px;
+      height: 2160px;
+      padding: 112px 140px 96px;
+      background:
+        linear-gradient(90deg, rgba(23,105,224,0.05), transparent 34%, rgba(25,135,84,0.05)),
+        radial-gradient(circle at 14% 14%, rgba(10,147,181,0.13), transparent 22%),
+        radial-gradient(circle at 86% 85%, rgba(217,119,6,0.10), transparent 24%),
+        #f7f9fc;
+    }
+
+    .header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 80px;
+      margin-bottom: 72px;
+    }
+
+    .title-block {
+      max-width: 2140px;
+    }
+
+    .eyebrow {
+      color: var(--blue);
+      font-size: 34px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 86px;
+      line-height: 1.04;
+      letter-spacing: 0;
+      font-weight: 900;
+    }
+
+    .subtitle {
+      margin-top: 26px;
+      color: var(--muted);
+      font-size: 34px;
+      line-height: 1.42;
+      max-width: 2050px;
+    }
+
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(2, auto);
+      gap: 18px 28px;
+      padding: 26px 32px;
+      background: rgba(255,255,255,0.88);
+      border: 2px solid #d8e1ea;
+      border-radius: 24px;
+      box-shadow: 0 20px 55px rgba(16,32,51,0.08);
+      font-size: 25px;
+      color: var(--muted);
+      min-width: 620px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 18px;
+      height: 18px;
+      border-radius: 99px;
+      background: var(--blue);
+      display: inline-block;
+    }
+
+    .dot.green { background: var(--green); }
+    .dot.orange { background: var(--orange); }
+    .dot.cyan { background: var(--cyan); }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 38px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .lane {
+      min-height: 1000px;
+      background: rgba(255,255,255,0.82);
+      border: 2px solid #d8e1ea;
+      border-radius: 28px;
+      padding: 34px 30px 30px;
+      box-shadow: 0 22px 70px rgba(16,32,51,0.08);
+    }
+
+    .lane-title {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-bottom: 28px;
+      min-height: 84px;
+    }
+
+    .lane-index {
+      width: 60px;
+      height: 60px;
+      border-radius: 18px;
+      display: grid;
+      place-items: center;
+      background: var(--blue);
+      color: white;
+      font-size: 30px;
+      font-weight: 900;
+      flex: 0 0 auto;
+    }
+
+    .lane:nth-child(2) .lane-index { background: var(--cyan); }
+    .lane:nth-child(3) .lane-index { background: #6554c0; }
+    .lane:nth-child(4) .lane-index { background: var(--green); }
+    .lane:nth-child(5) .lane-index { background: var(--orange); }
+    .lane:nth-child(6) .lane-index { background: var(--red); }
+
+    .lane-title h2 {
+      margin: 0;
+      font-size: 34px;
+      line-height: 1.12;
+      font-weight: 900;
+      letter-spacing: 0;
+    }
+
+    .node {
+      background: var(--panel);
+      border: 2px solid var(--line);
+      border-radius: 22px;
+      padding: 24px 24px 22px;
+      margin-bottom: 22px;
+      min-height: 144px;
+      box-shadow: 0 12px 28px rgba(16,32,51,0.06);
+    }
+
+    .node.key {
+      border-color: rgba(23,105,224,0.42);
+      background: #f4f8ff;
+    }
+
+    .node.green {
+      border-color: rgba(25,135,84,0.42);
+      background: #f3fbf6;
+    }
+
+    .node.orange {
+      border-color: rgba(217,119,6,0.44);
+      background: #fff8ed;
+    }
+
+    .node.red {
+      border-color: rgba(194,65,12,0.38);
+      background: #fff5f1;
+    }
+
+    .node-title {
+      font-size: 28px;
+      font-weight: 900;
+      line-height: 1.18;
+      margin-bottom: 14px;
+      letter-spacing: 0;
+    }
+
+    .node-code {
+      display: inline-block;
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-size: 21px;
+      line-height: 1.25;
+      color: #123a70;
+      background: rgba(23,105,224,0.10);
+      border: 1px solid rgba(23,105,224,0.18);
+      border-radius: 10px;
+      padding: 6px 10px;
+      margin: 0 0 12px;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+
+    .node p,
+    .node li {
+      margin: 0;
+      color: var(--muted);
+      font-size: 22px;
+      line-height: 1.34;
+      letter-spacing: 0;
+    }
+
+    .node ul {
+      padding-left: 24px;
+      margin: 0;
+    }
+
+    .node li + li {
+      margin-top: 6px;
+    }
+
+    .decision-band {
+      position: relative;
+      z-index: 2;
+      display: grid;
+      grid-template-columns: 1.05fr 1.1fr 1.1fr 1.1fr 1.1fr 1.05fr;
+      gap: 38px;
+      margin-top: 44px;
+    }
+
+    .decision {
+      background: #102033;
+      color: white;
+      border-radius: 24px;
+      padding: 26px 28px;
+      min-height: 192px;
+      box-shadow: 0 22px 55px rgba(16,32,51,0.18);
+    }
+
+    .decision h3 {
+      margin: 0 0 12px;
+      font-size: 28px;
+      line-height: 1.14;
+      font-weight: 900;
+    }
+
+    .decision p {
+      margin: 0;
+      color: rgba(255,255,255,0.76);
+      font-size: 21px;
+      line-height: 1.32;
+    }
+
+    .footer {
+      position: absolute;
+      left: 140px;
+      right: 140px;
+      bottom: 74px;
+      display: grid;
+      grid-template-columns: 1.4fr 1fr 1fr;
+      gap: 34px;
+      z-index: 2;
+    }
+
+    .footer-box {
+      background: rgba(255,255,255,0.88);
+      border: 2px solid #d8e1ea;
+      border-radius: 24px;
+      padding: 26px 30px;
+      min-height: 154px;
+      box-shadow: 0 18px 50px rgba(16,32,51,0.07);
+    }
+
+    .footer-box h3 {
+      margin: 0 0 12px;
+      font-size: 28px;
+      font-weight: 900;
+    }
+
+    .footer-box p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 22px;
+      line-height: 1.35;
+    }
+
+    .connector-svg {
+      position: absolute;
+      inset: 0;
+      width: 3840px;
+      height: 2160px;
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    .flow-label {
+      font-size: 24px;
+      font-weight: 800;
+      fill: #526171;
+    }
+  </style>
+</head>
+<body>
+  <main class="canvas">
+    <svg class="connector-svg" viewBox="0 0 3840 2160" aria-hidden="true">
+      <defs>
+        <marker id="arrow-blue" markerWidth="18" markerHeight="18" refX="15" refY="9" orient="auto" markerUnits="strokeWidth">
+          <path d="M 0 0 L 18 9 L 0 18 z" fill="#1769e0" />
+        </marker>
+        <marker id="arrow-green" markerWidth="18" markerHeight="18" refX="15" refY="9" orient="auto" markerUnits="strokeWidth">
+          <path d="M 0 0 L 18 9 L 0 18 z" fill="#198754" />
+        </marker>
+        <marker id="arrow-orange" markerWidth="18" markerHeight="18" refX="15" refY="9" orient="auto" markerUnits="strokeWidth">
+          <path d="M 0 0 L 18 9 L 0 18 z" fill="#d97706" />
+        </marker>
+      </defs>
+      <path d="M 690 788 C 780 788, 805 788, 886 788" stroke="#1769e0" stroke-width="8" fill="none" marker-end="url(#arrow-blue)" />
+      <path d="M 1260 788 C 1350 788, 1374 788, 1454 788" stroke="#1769e0" stroke-width="8" fill="none" marker-end="url(#arrow-blue)" />
+      <path d="M 1830 788 C 1916 788, 1942 788, 2022 788" stroke="#198754" stroke-width="8" fill="none" marker-end="url(#arrow-green)" />
+      <path d="M 2400 788 C 2484 788, 2510 788, 2590 788" stroke="#198754" stroke-width="8" fill="none" marker-end="url(#arrow-green)" />
+      <path d="M 2968 788 C 3058 788, 3084 788, 3164 788" stroke="#d97706" stroke-width="8" fill="none" marker-end="url(#arrow-orange)" />
+
+      <path d="M 3400 1250 C 3400 1510, 450 1510, 450 1270" stroke="#8fa1b3" stroke-width="5" fill="none" stroke-dasharray="18 16" marker-end="url(#arrow-blue)" opacity="0.72" />
+      <text x="1510" y="1486" class="flow-label">progress / polling / final result DB uzerinden kullaniciya doner</text>
+    </svg>
+
+    <section class="header">
+      <div class="title-block">
+        <div class="eyebrow">FPBrowser2API · Veo / Google Flow</div>
+        <h1>API isteginden browser extension icindeki Flow calistirmasina kadar tum zincir</h1>
+        <p class="subtitle">Python tarafı task kabul eder, pencere ve proje secimini yapar, sonra isi fingerprint browser icindeki extension'a devreder. Gercek submit, upload, reCAPTCHA, poll ve upscale islemleri login olmus `labs.google` oturumunda calisir.</p>
+      </div>
+      <aside class="legend">
+        <div class="legend-item"><span class="dot"></span> Python API / scheduler</div>
+        <div class="legend-item"><span class="dot green"></span> WebSocket bridge</div>
+        <div class="legend-item"><span class="dot orange"></span> Browser extension</div>
+        <div class="legend-item"><span class="dot cyan"></span> Fingerprint browser</div>
+      </aside>
+    </section>
+
+    <section class="main-grid">
+      <article class="lane">
+        <div class="lane-title"><span class="lane-index">1</span><h2>Public API</h2></div>
+        <div class="node key">
+          <div class="node-title">OpenAI / NewAPI uyumlu giris</div>
+          <div class="node-code">POST /v1/videos</div>
+          <p>`veo-3-1`, `veo-omni-flash` ve edit modeli buradan task'a cevrilir.</p>
+        </div>
+        <div class="node">
+          <div class="node-title">Payload normalize</div>
+          <ul>
+            <li>`duration` dogrulanir</li>
+            <li>`n_frames` set edilir</li>
+            <li>`resolution` 720p / 1080p / 4k olur</li>
+          </ul>
+        </div>
+        <div class="node">
+          <div class="node-title">Task kaydi</div>
+          <p>Request DB'ye queued task olarak yazilir ve kullaniciya hemen `task_id` doner.</p>
+        </div>
+      </article>
+
+      <article class="lane">
+        <div class="lane-title"><span class="lane-index">2</span><h2>Scheduler & Window</h2></div>
+        <div class="node key">
+          <div class="node-title">TaskService secimi</div>
+          <div class="node-code">task_type_code = veo_workflow</div>
+          <p>Quota, cooldown, concurrency ve window pool durumuna gore mapping secilir.</p>
+        </div>
+        <div class="node">
+          <div class="node-title">Fingerprint window</div>
+          <ul>
+            <li>`space_id`</li>
+            <li>`window_key`</li>
+            <li>Roxy / browser base URL</li>
+            <li>proxy, cookie, localStorage</li>
+          </ul>
+        </div>
+        <div class="node">
+          <div class="node-title">Runtime dispatch</div>
+          <p>`_run_task` handler'a bakar ve `veo_workflow(...)` fonksiyonunu cagirir.</p>
+        </div>
+      </article>
+
+      <article class="lane">
+        <div class="lane-title"><span class="lane-index">3</span><h2>Python Veo Executor</h2></div>
+        <div class="node key">
+          <div class="node-title">Mode karari</div>
+          <ul>
+            <li>`n_frames == 1`: image</li>
+            <li>`Ingredients_images` / `video_url`: r2v</li>
+            <li>`images` / first-last frame: i2v</li>
+            <li>aksi halde: t2v</li>
+          </ul>
+        </div>
+        <div class="node">
+          <div class="node-title">Project & token hazirligi</div>
+          <p>`project_id` payload, `veo_url` veya DB'deki `veo_flow_projects` kaydindan bulunur. Session token cache okunur, short token gerekirse extension'dan yenilenir.</p>
+        </div>
+        <div class="node">
+          <div class="node-title">Asset lokalizasyonu</div>
+          <p>Referans gorsel/video URL'leri gerekirse backend tarafinda indirilip browser'in erisecegi lokal asset URL'lerine cevrilir.</p>
+        </div>
+      </article>
+
+      <article class="lane">
+        <div class="lane-title"><span class="lane-index">4</span><h2>Extension Bridge</h2></div>
+        <div class="node green">
+          <div class="node-title">Launcher URL</div>
+          <div class="node-code">/#fpb_space_id=...&fpb_window_key=...</div>
+          <p>Python kisa sure CDP ile kendi launcher sayfasini acar, config'i extension'a verir ve CDP'yi kapatir.</p>
+        </div>
+        <div class="node green">
+          <div class="node-title">WebSocket register</div>
+          <div class="node-code">/api/extension/ws</div>
+          <p>Extension `hello` mesajiyla `space_id|window_key` anahtarina kaydolur.</p>
+        </div>
+        <div class="node green">
+          <div class="node-title">Task protokolu</div>
+          <ul>
+            <li>`task.start`: ise basla</li>
+            <li>`task.progress`: DB progress</li>
+            <li>`task.done` / `task.error`: final</li>
+          </ul>
+        </div>
+      </article>
+
+      <article class="lane">
+        <div class="lane-title"><span class="lane-index">5</span><h2>Browser Extension</h2></div>
+        <div class="node orange">
+          <div class="node-title">runVeoTask</div>
+          <p>`labs.google` project tab'i acilir, sayfa erisimi kontrol edilir, access token ve reCAPTCHA token alinir.</p>
+        </div>
+        <div class="node orange">
+          <div class="node-title">Flow submit</div>
+          <ul>
+            <li>T2V: `batchAsyncGenerateVideoText`</li>
+            <li>I2V: start / start-end image</li>
+            <li>R2V: reference images</li>
+            <li>Video edit: uploaded video input</li>
+          </ul>
+        </div>
+        <div class="node orange">
+          <div class="node-title">Page context fetch</div>
+          <p>`pageFetchJson` istekleri MAIN world'de calisir; cookie, user session, proxy ve browser fingerprint korunur.</p>
+        </div>
+      </article>
+
+      <article class="lane">
+        <div class="lane-title"><span class="lane-index">6</span><h2>Poll & Result</h2></div>
+        <div class="node red">
+          <div class="node-title">Status polling</div>
+          <div class="node-code">batchCheckAsyncVideoGenerationStatus</div>
+          <p>Media status ve failure reasons okunur; progress API'ye yansitilir.</p>
+        </div>
+        <div class="node red">
+          <div class="node-title">Opsiyonel upscale</div>
+          <p>`resolution=1080p/4k` ise base video uzerinden `batchAsyncGenerateVideoUpsampleVideo` denenir. Fail olursa 720p base result korunur.</p>
+        </div>
+        <div class="node red">
+          <div class="node-title">Final response</div>
+          <p>`share_url`, `generated_media_id`, `generated_workflow_id`, `resolution`, `upsample_ok` ve hata bilgileri DB result alanina yazilir.</p>
+        </div>
+      </article>
+    </section>
+
+    <section class="decision-band">
+      <div class="decision">
+        <h3>API yalnizca orkestrator</h3>
+        <p>Gercek Flow istegi server'dan degil, browser extension icinden atilir.</p>
+      </div>
+      <div class="decision">
+        <h3>Project zorunlu</h3>
+        <p>`project_id` yoksa payload, URL veya window'a bagli Flow proje listesinden bulunmalidir.</p>
+      </div>
+      <div class="decision">
+        <h3>Mode payload'dan cikar</h3>
+        <p>Referans gorsel/video alanlari T2V, I2V ve R2V ayrimini belirler.</p>
+      </div>
+      <div class="decision">
+        <h3>Token iki katmanli</h3>
+        <p>Long session token DB'de cache'lenir, short access token Flow sayfasindan tazelenir.</p>
+      </div>
+      <div class="decision">
+        <h3>Browser guveni kullanilir</h3>
+        <p>Cookie, proxy, localStorage, reCAPTCHA ve fingerprint pencereye aittir.</p>
+      </div>
+      <div class="decision">
+        <h3>Upscale best-effort</h3>
+        <p>1080p/4K basarisiz olursa task komple fail olmaz; base video doner.</p>
+      </div>
+    </section>
+
+    <section class="footer">
+      <div class="footer-box">
+        <h3>Kisa mental model</h3>
+        <p>FPBrowser2API bir "browser-backed API gateway" gibi calisir: API task'i olusturur, Python dogru pencereyi secer, extension ise Google Flow'u login olmus gercek browser oturumunda calistirir.</p>
+      </div>
+      <div class="footer-box">
+        <h3>Giris dosyalari</h3>
+        <p>`src/api/routes.py`, `src/services/task_service.py`, `src/services/veo_workflow_executor.py`</p>
+      </div>
+      <div class="footer-box">
+        <h3>Browser dosyalari</h3>
+        <p>`browser_extension/background.js`, `browser_extension/providers/veo_provider.js`, `content/fpb_config_content.js`</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
