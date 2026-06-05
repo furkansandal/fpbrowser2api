@@ -647,6 +647,31 @@ class FPBrowserClient:
         }
         return await self._roxy_account_batch_create(base_url=base_url, token=access_key, data=payload)
 
+    async def update_account(
+        self,
+        *,
+        vendor: str,
+        base_url: str,
+        access_key: Optional[str],
+        space_id: str,
+        account: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """修改平台账号（RoxyBrowser：POST /account/modify）。"""
+        vendor = (vendor or "roxy").strip().lower()
+        base_url = (base_url or "").strip().rstrip("/")
+        space_id = (space_id or "").strip()
+        if not base_url or not space_id:
+            raise RuntimeError("update_account 参数不足：base_url/space_id 不能为空")
+        if vendor not in ("roxy", "roxybrowser", "generic"):
+            raise RuntimeError(f"暂不支持 vendor={vendor} 的 update_account，请设置为 roxy")
+        try:
+            workspace_id = int(space_id)
+        except Exception:
+            raise RuntimeError("RoxyBrowser 的 space_id 请填写 workspaceId（纯数字）")
+        payload = dict(account or {})
+        payload["workspaceId"] = int(workspace_id)
+        return await self._roxy_account_update(base_url=base_url, token=access_key, data=payload)
+
     async def delete_accounts(
         self,
         *,
@@ -1308,6 +1333,9 @@ class FPBrowserClient:
 
     async def _roxy_account_batch_create(self, *, base_url: str, token: Optional[str], data: Dict[str, Any]) -> Dict[str, Any]:
         return await self._roxy_post(base_url, token, "/account/batch_create", data or {})
+
+    async def _roxy_account_update(self, *, base_url: str, token: Optional[str], data: Dict[str, Any]) -> Dict[str, Any]:
+        return await self._roxy_post(base_url, token, "/account/modify", data or {})
 
     async def _roxy_account_delete(self, *, base_url: str, token: Optional[str], data: Dict[str, Any]) -> Dict[str, Any]:
         return await self._roxy_post(base_url, token, "/account/delete", data or {})

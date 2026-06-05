@@ -146,7 +146,8 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
         task_type_code = "dreamina_workflow"
     elif model in {"nana-banana-2"}:
         task_type_code = "veo_workflow"
-        payload["n_frames"] = 1
+        payload["n_frames"] = "1"
+        payload["duration"] = 1
         payload["image_model_name"] = "NARWHAL"
         raw_resolution = payload.get("resolution")
         if raw_resolution is None:
@@ -158,7 +159,8 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
         payload["resolution"] = raw_resolution
     elif model in {"nana-banana-pro"}:
         task_type_code = "veo_workflow"
-        payload["n_frames"] = 1
+        payload["n_frames"] = "1"
+        payload["duration"] = 1
         payload["image_model_name"] = "GEM_PIX_2"
         raw_resolution = payload.get("resolution")
         if raw_resolution is None:
@@ -170,12 +172,14 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
         payload["resolution"] = raw_resolution
     elif model in {"nana-banana-2-4k"}:
         task_type_code = "veo_workflow"
-        payload["n_frames"] = 1
+        payload["n_frames"] = "1"
+        payload["duration"] = 1
         payload["image_model_name"] = "NARWHAL"
         payload["resolution"] = "4k"
     elif model in {"nana-banana-pro-4k"}:
         task_type_code = "veo_workflow"
-        payload["n_frames"] = 1
+        payload["n_frames"] = "1"
+        payload["duration"] = 1
         payload["image_model_name"] = "GEM_PIX_2"
         payload["resolution"] = "4k"
     elif model in {"veo-3-1"}:
@@ -203,7 +207,7 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
         duration = payload.get("duration")
         if duration != 8:
             raise HTTPException(status_code=400, detail="veo-omni-flash only supports duration=8")
-        payload["n_frames"] = 300
+        payload["n_frames"] = 240
         payload["video_model"] = "abra_t2v_10s"
         payload["model"] = "veo-omni-flash"
         payload["resolution"] = _normalize_veo_video_resolution(payload.get("resolution"))
@@ -227,7 +231,7 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
         if (payload.get("images") or payload.get("image") or payload.get("image_url")) and not payload.get("operation"):
             payload["operation"] = "edit"
     else:
-        task_type_code = model
+        raise HTTPException(status_code=400, detail=f"model name is required!!")
     return task_type_code, payload
 
 

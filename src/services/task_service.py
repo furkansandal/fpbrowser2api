@@ -71,7 +71,7 @@ from .grok_workflow_executor import (
 )
 from .veo_workflow_executor import (
     _veo_resolve_n_frames,
-    _veo_payload_video_model_override,
+    _veo_payload_video_model_is_omni,
     _veo_payload_image_model_4k,
     VeoAccessKeepaliveRefresher,
     get_or_create_veo_session,
@@ -137,13 +137,17 @@ def _remaining_quota_exclusive_floor_for_pick(
         return 3, credit_threthold,plan_type
     if code == "veo_workflow":
         credit_threthold = 0;
-        if _veo_payload_image_model_4k(payload or {}): #4k图片，0积分 至少pro账号
-            plan_type = 1
+        if payload is None:
             return 0,credit_threthold,plan_type
-        elif _veo_payload_video_model_override(payload or {}) is not None: #参考视频，40积分 任意账号
-            return 40,credit_threthold,plan_type
-        elif _veo_resolve_n_frames(payload or {}) > 1: #视频，30积分 任意账号
-            return 30,credit_threthold,plan_type
+        elif _veo_payload_image_model_4k(payload or {}): #4k图片，0积分 至少pro账号
+            plan_type = 0
+            return 0,credit_threthold,plan_type
+        #elif _veo_payload_video_model_is_omni(payload or {}): #参考视频，20积分 任意账号
+        #    return 20,credit_threthold,plan_type
+        elif _veo_resolve_n_frames(payload or {}) == 300: #视频，20积分 任意账号
+            return 15,15,plan_type
+        elif _veo_resolve_n_frames(payload or {}) == 240: #视频，20积分 任意账号
+            return 20,20,plan_type
         else:
             return 0,credit_threthold,plan_type #普通图片，0积分 任意账号
     if code == "grok_workflow":
@@ -164,7 +168,7 @@ class TaskService:
         # 任务 payload 仍保留一份内存副本供执行器使用；DB 侧仅保存一个“可查看/可检索”的 prompt 字符串
         self._task_payloads: dict[str, Dict[str, Any]] = {}
         # 1) payload["prompt"] 本身的长度上限（便于查看，也避免超长文本撑爆 DB）
-        self._payload_prompt_max_chars: int = 1000
+        self._payload_prompt_max_chars: int = 500
         # 2) 最终落库到 tasks.prompt 的总长度上限（兼容某些历史/自定义 schema 的较短字段）
         self._prompt_max_chars: int = 2000
 
@@ -375,6 +379,14 @@ class TaskService:
                 break
 
     async def _window_pool_reconcile_once(self) -> None:
+        """
+        try:
+            if not self._window_pool_reconcile_serial.locked():
+                return
+        except Exception:
+            return
+        """
+
         async with self._window_pool_reconcile_serial:
             await self._window_pool_reconcile_once_impl()
 
@@ -409,27 +421,20 @@ class TaskService:
             handler = (t.create_task_handler or "").strip()
             if handler:
                 active_window_pool_handlers.add(handler)
-            credit_threthold = 1;
-            plan_type = 0
-            if handler in ("veo_workflow",):
-                hi = await self.db.task_type_has_mapping_remaining_quota_above(code, 30)
-                floor = 30 if hi else 10
-            else:
-                floor,credit_threthold,plan_type = _remaining_quota_exclusive_floor_for_pick(code, None)
+            floor,credit_threthold,plan_type = _remaining_quota_exclusive_floor_for_pick(code, None)
             try:
                 ids = await self.db.list_window_pool_target_mapping_ids(
                     code, self._browser_pool_limit, floor, credit_threthold, plan_type
                 )
                 mids = sorted(int(x) for x in ids)
-                if mids:
-                    logger.info(
-                        "window_pool new_targets task_type=%s floor=%s credit_threshold=%s count=%d mids=%s",
-                        code,
-                        floor,
-                        credit_threthold,
-                        len(mids),
-                        mids,
-                    )
+                logger.info(
+                    "window_pool new_targets task_type=%s floor=%s credit_threshold=%s count=%d mids=%s",
+                    code,
+                    floor,
+                    credit_threthold,
+                    len(mids),
+                    mids,
+                )
             except Exception as e:
                 logger.warning("window_pool targets %s: %s", code, e)
                 continue
@@ -454,12 +459,11 @@ class TaskService:
                 to_close.extend(old_set)
             else:
                 to_close.extend(old_set - new_targets[code])
-        if to_close:
-            logger.info(
-                "window_pool to_close mappings: count=%d mids=%s",
-                len(to_close),
-                sorted(to_close),
-            )
+        logger.info(
+            "window_pool to_close mappings: count=%d mids=%s",
+            len(to_close),
+            sorted(to_close),
+        )
         for mid in to_close:
             if self._window_pool_stop.is_set():
                 return
@@ -475,12 +479,11 @@ class TaskService:
             old_set = prev.get(code, set())
             for mid in new_set - old_set:
                 to_open.append((code, mid))
-        if to_open:
-            logger.info(
-                "window_pool to_open mappings: count=%d mids=%s",
-                len(to_open),
-                [mid for _, mid in to_open],
-            )
+        logger.info(
+            "window_pool to_open mappings: count=%d mids=%s",
+            len(to_open),
+            [mid for _, mid in to_open],
+        )
         for code, mid in to_open:
             if self._window_pool_stop.is_set():
                 return
@@ -493,7 +496,7 @@ class TaskService:
                 logger.warning(
                     "window_pool open mapping=%s failed; keep mapping enabled", mid
                 )
-            await asyncio.sleep(0)
+            await asyncio.sleep(30)
 
     async def _window_pool_open_mapping(self, mapping_id: int) -> bool:
         if self._window_pool_stop.is_set():
@@ -1033,6 +1036,49 @@ class TaskService:
         def _dumps(obj: Any) -> str:
             return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), default=str)
 
+        def _looks_like_base64_image(s: str) -> bool:
+            text = (s or "").strip()
+            if not text:
+                return False
+            lower = text[:64].lower()
+            if lower.startswith("data:image/") and ";base64," in lower:
+                return True
+            if text.startswith(("http://", "https://", "file://")):
+                return False
+            if len(text) < 512:
+                return False
+            sample = text[:1024]
+            allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\r\n"
+            return all(ch in allowed for ch in sample)
+
+        def _summarize_image_value(value: Any, *, label: str) -> Any:
+            if isinstance(value, str):
+                text = value.strip()
+                if _looks_like_base64_image(text):
+                    return {
+                        "omitted": "base64_image",
+                        "orig_chars": len(value),
+                        "preview": self._truncate_text(text, 80, label=label),
+                    }
+                if len(text) > 200:
+                    return self._truncate_text(text, 200, label=label)
+                return value
+            if isinstance(value, dict):
+                summarized = dict(value)
+                for k in ("url", "src", "data", "base64", "image", "image_url"):
+                    if k in summarized:
+                        summarized[k] = _summarize_image_value(summarized[k], label=f"{label}.{k}")
+                return summarized
+            return value
+
+        def _summarize_image_field(value: Any, *, field: str) -> Any:
+            if isinstance(value, list):
+                return [
+                    _summarize_image_value(item, label=f"{field}[{idx}]")
+                    for idx, item in enumerate(value)
+                ]
+            return _summarize_image_value(value, label=field)
+
         total_max = max(64, int(self._prompt_max_chars or 0))
         prompt_max = max(0, int(self._payload_prompt_max_chars or 0))
 
@@ -1047,6 +1093,12 @@ class TaskService:
         if "prompt" in base_payload or orig_prompt:
             base_payload["prompt"] = self._truncate_text(orig_prompt, prompt_max, label="prompt")
 
+        for image_field in ("images", "Ingredients_images", "ingredients_images","first_image_url","last_image_url"):
+            if image_field in base_payload:
+                base_payload[image_field] = _summarize_image_field(
+                    base_payload[image_field], field=image_field
+                )
+
         try:
             s = _dumps(base_payload)
         except Exception:
@@ -1055,36 +1107,7 @@ class TaskService:
 
         if len(s) <= total_max:
             return s
-
-        # 若整段 JSON 仍超长：降级为最小可查看 JSON（保证总长度 <= 2000 且尽量保持可解析）
-        minimal_flag_key = "_payload_trimmed"
-        prompt_text = str(base_payload.get("prompt") or "")
-
-        def _minimal_json(prompt_val: str) -> str:
-            return _dumps({"prompt": prompt_val, minimal_flag_key: True})
-
-        # 二分裁剪 prompt（在不超过字段级上限的前提下），直到 minimal JSON 满足 total_max
-        hi = len(prompt_text)
-        lo = 0
-        best = ""
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            cand_prompt = self._truncate_text(prompt_text, mid, label="prompt_db")
-            cand = _minimal_json(cand_prompt)
-            if len(cand) <= total_max:
-                best = cand
-                lo = mid + 1
-            else:
-                hi = mid - 1
-
-        if best:
-            return best
-
-        # 最后兜底：即使 prompt 为空也要可落库
-        empty = _minimal_json("")
-        if len(empty) <= total_max:
-            return empty
-        return empty[:total_max]
+        raise RuntimeError(f"参数长度超过{total_max}个字符了")
 
     async def submit_task(
         self,
@@ -1272,7 +1295,14 @@ class TaskService:
         - 挑选排序由 DB 决定（consecutive_errors 最低优先，其次 remaining_quota 最少优先）
         - 若任务类型开启窗口池：仅从 `_window_pool_targets` 内由 DB 单事务 `pick_and_reserve_window_from_pool` 原子挑选（与全局 pick 相同：+60s error_cooldown_until，避免高并发下多任务盯上同一 mapping）；池为空或无可用则返回 None（不回退全局 pick）
         """
-        floor,credit_threthold,plan_type = _remaining_quota_exclusive_floor_for_pick(task_type_code, payload)
+        floor, credit_threthold, plan_type = _remaining_quota_exclusive_floor_for_pick(task_type_code, payload)
+        logger.info(
+            "_pick_window floor=%s credit_threthold=%s plan_type=%s task_type_code=%s",
+            floor,
+            credit_threthold,
+            plan_type,
+            task_type_code,
+        )
         try:
             tt = await self.db.get_task_type_by_code(task_type_code)
         except Exception:

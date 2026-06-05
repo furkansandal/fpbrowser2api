@@ -542,8 +542,15 @@ class Database:
                 pass
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_window_status_created ON tasks(window_pk, status, created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_id ON tasks(status, id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_violation ON tasks(status, content_violation)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type_status_id ON tasks(task_type_code, status, id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_window_ip ON tasks(window_ip)")
+            # 管理后台任务列表：默认按创建时间倒序分页。
+            # 没有该索引时 SQLite 会扫描旧索引后额外构建临时 B-Tree 排序，历史任务多时刷新明显变慢。
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_created_id_desc ON tasks(created_at DESC, id DESC)")
+            # 管理后台队列条：统计违规任务。content_violation 之前没有独立索引，
+            # `SUM(CASE ...) FROM tasks` 会读取整张 tasks 表（包含大 prompt/result 字段的 2GB 库尤其慢）。
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_content_violation ON tasks(content_violation)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_types_code ON task_types(code)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_browsers_project_id ON browsers(project_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_spaces_browser_id ON spaces(browser_id)")
@@ -963,8 +970,11 @@ class Database:
             if await self._table_exists(db, "tasks"):
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_window_status_created ON tasks(window_pk, status, created_at)")
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_id ON tasks(status, id)")
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_violation ON tasks(status, content_violation)")
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_type_status_id ON tasks(task_type_code, status, id)")
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_window_ip ON tasks(window_ip)")
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_created_id_desc ON tasks(created_at DESC, id DESC)")
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_tasks_content_violation ON tasks(content_violation)")
 
             if await self._table_exists(db, "browsers"):
                 await db.execute("CREATE INDEX IF NOT EXISTS idx_browsers_project_id ON browsers(project_id)")
@@ -5357,6 +5367,7 @@ class Database:
                   AND m.deleted = 0 AND m.enabled = 1
                   AND w.deleted = 0 AND w.enabled = 1
                   AND b.deleted = 0
+                  AND COALESCE(w.window_status, 0) = 1
                   AND TRIM(COALESCE(m.sora_access_token, '')) <> ''
                   AND TRIM(COALESCE(m.sora_access_expires, '')) <> ''
                   AND (m.consecutive_errors < t.continuous_error_threshold)
@@ -5364,6 +5375,65 @@ class Database:
                 """
             )
             #AND COALESCE(w.window_status, 0) = 1
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def _veo_balance_refresh_list_candidates(self) -> List[Dict[str, Any]]:
+        """List all enabled open VEO pool windows for periodic balance refresh."""
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT
+                  m.id AS mapping_id,
+                  m.window_pk,
+                  m.remaining_quota,
+                  m.sora_remaining_count,
+                  m.sora_access_token,
+                  m.sora_access_expires,
+                  m.cooldown_until,
+                  m.error_cooldown_until,
+                  m.inflight_slots,
+                  m.headless,
+                  m.pure_mode,
+                  (
+                    SELECT v.project_id FROM veo_flow_projects v
+                    WHERE v.task_type_window_id = m.id AND v.deleted = 0
+                    ORDER BY v.updated_at DESC, v.id DESC
+                    LIMIT 1
+                  ) AS current_project_id,
+                  t.code AS task_code,
+                  t.concurrency AS task_concurrency,
+                  t.continuous_error_threshold,
+                  t.continuous_error_close_window_threshold,
+                  t.timeout_seconds,
+                  t.create_task_handler,
+                  t.error_retry_count,
+                  t.default_target_url,
+                  w.window_key,
+                  w.window_status,
+                  w.proxy_addr AS window_ip,
+                  s.space_id,
+                  b.vendor AS browser_vendor,
+                  b.lan_addr AS browser_base_url,
+                  b.access_key AS browser_access_key
+                FROM task_type_windows m
+                JOIN task_types t ON t.id = m.task_type_id
+                JOIN windows w ON w.id = m.window_pk
+                JOIN spaces s ON s.id = w.space_pk
+                JOIN browsers b ON b.id = s.browser_id
+                WHERE t.deleted = 0 AND t.enabled = 1
+                  AND COALESCE(t.window_pool_enabled, 0) != 0
+                  AND t.create_task_handler = 'veo_workflow'
+                  AND m.deleted = 0 AND m.enabled = 1
+                  AND w.deleted = 0 AND w.enabled = 1
+                  AND b.deleted = 0
+                  AND COALESCE(w.window_status, 0) = 1
+                  AND COALESCE(m.inflight_slots, 0) = 0
+                  AND (m.consecutive_errors < t.continuous_error_threshold)
+                ORDER BY m.updated_at ASC, m.id ASC
+                """
+            )
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
@@ -5854,25 +5924,26 @@ class Database:
     async def task_status_summary(self) -> Dict[str, int]:
         """Return counts: running, completed, failed (excluding violation), violation."""
         async with self._read_conn() as db:
-            cur = await db.execute(
-                """
-                SELECT
-                    SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running,
-                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-                    SUM(CASE WHEN status = 'failed' AND COALESCE(content_violation, 0) = 0 THEN 1 ELSE 0 END) AS failed,
-                    SUM(CASE WHEN COALESCE(content_violation, 0) = 1 THEN 1 ELSE 0 END) AS violation
-                FROM tasks
-                """
+            # 不要用 `SUM(CASE ...) FROM tasks` 一次扫全表：
+            # tasks 表里 prompt/result_json 可能很大，历史库上该 SQL 会退化为整表扫描，
+            # 导致管理后台 `/api/admin/queue-info` 和任务页刷新被阻塞数秒甚至十几秒。
+            # 拆成多个可走索引的 COUNT，SQLite 会使用 status/content_violation 索引。
+            async def _count(sql: str, params: tuple[Any, ...] = ()) -> int:
+                cur = await db.execute(sql, params)
+                row = await cur.fetchone()
+                try:
+                    return int((row[0] if row else 0) or 0)
+                except Exception:
+                    return 0
+
+            running = await _count("SELECT COUNT(*) FROM tasks WHERE status = ?", ("running",))
+            completed = await _count("SELECT COUNT(*) FROM tasks WHERE status = ?", ("completed",))
+            failed = await _count(
+                "SELECT COUNT(*) FROM tasks WHERE status = ? AND COALESCE(content_violation, 0) = 0",
+                ("failed",),
             )
-            row = await cur.fetchone()
-            if not row:
-                return {"running": 0, "completed": 0, "failed": 0, "violation": 0}
-            return {
-                "running": int(row[0] or 0),
-                "completed": int(row[1] or 0),
-                "failed": int(row[2] or 0),
-                "violation": int(row[3] or 0),
-            }
+            violation = await _count("SELECT COUNT(*) FROM tasks WHERE content_violation = 1")
+            return {"running": running, "completed": completed, "failed": failed, "violation": violation}
 
     async def count_tasks(
         self,

@@ -46,6 +46,12 @@
         white-space: normal;
         overflow-wrap: anywhere;
       }
+      .mapping-table [data-role="proxySearchText"] {
+        display: block;
+        margin-top: .18rem;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
 
       /* 更紧凑的配置区，让窗口绑定成为主视觉 */
       .card-body-compact { padding: 0.65rem .85rem; }
@@ -355,7 +361,7 @@
                       <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted small ms-1" id="balanceSummaryAll">总余额: 0</span> <span class="text-muted" id="balanceSortHint">↕</span></th>
                       <th class="sort-head col-drafts" id="thDrafts" title="点击按草稿数排序">草稿数 <span class="text-muted" id="draftsSortHint">↕</span></th>
                       <th class="sort-head" id="thSpaceName" title="点击按空间名称排序">空间名称 <span class="text-muted" id="spaceNameSortHint">↕</span></th>
-                      <th class="sort-head" id="thSpace" title="点击按会员过期时间排序">会员信息 <span class="text-muted" id="spaceSortHint">↕</span></th>
+                      <th class="sort-head" id="thSpace" title="点击切换：按会员过期时间 / 按会员数字大小排序">会员信息 <span class="text-muted" id="spaceSortHint">↕</span></th>
                       <th class="sort-head col-proxy" id="thProxy" title="点击按代理排序（同代理聚合）">代理 <span class="text-muted" id="proxySortHint">↕</span></th>
                       <th>测IP</th>
                       <th title="指纹浏览器窗口内核版本（Roxy /browser/mdf 的 coreVersion，参见官方文档）">内核</th>
@@ -1111,6 +1117,18 @@
         return `${ip}|${country}|安全:${risk}-${asnType}|绑:${bind}|成功:${succ}`;
       }
 
+      function proxySearchIpText(p, fallbackAddr = "") {
+        const ip = String(p?.last_ip || p?.host || fallbackAddr || "").trim();
+        return ip || "-";
+      }
+
+      function syncProxySearchText(control, ipText) {
+        const mid = String(control?.dataset?.mid || "").trim();
+        if (!mid) return;
+        const searchEl = document.querySelector(`[data-role="proxySearchText"][data-mid="${CSS.escape(mid)}"]`);
+        if (searchEl) searchEl.textContent = `IP: ${String(ipText || "-").trim() || "-"}`;
+      }
+
       function inferProxyIdByAddrFromItems(dsAddr, items) {
         const addr = String(dsAddr || "").trim();
         const list = Array.isArray(items) ? items : [];
@@ -1151,9 +1169,10 @@
         const items = normalizeProxies(proxyItems || proxiesCache.get(spk) || []);
         const counts = {};
         (state.mappings || []).forEach(m => {
-          const mSpk = parseInt(String(m?.space_pk || "0"), 10) || 0;
-          if (spk > 0 && mSpk !== spk) return;
           let pid = parseInt(String(m?.proxy_id || "0"), 10) || 0;
+          // 统计口径：当前任务类型下跨项目空间的绑定数。
+          // 注意这里不能按 space_pk 过滤；同一个任务类型可以绑定多个项目空间，代理列表里的“绑”
+          // 应展示该任务类型所有空间的窗口绑定总数，而不是单个空间内的绑定数。
           // 兼容老数据：proxy_id=0 但 proxy_addr 实际命中本地代理列表时，也计入当前任务类型的该代理绑定数。
           if (pid <= 0 && m?.proxy_addr) pid = inferProxyIdByAddrFromItems(m.proxy_addr, items);
           if (pid <= 0) return;
@@ -1334,6 +1353,10 @@
             ? `<option value="__custom__" selected disabled>(自定义代理) ${escapeHtml(customLabel || "-")}</option>`
             : "";
 
+          const searchIp = looksCustom
+            ? proxySearchIpText(null, dsAddr)
+            : (curIdNum <= 0 ? "-" : proxySearchIpText(curItem, dsAddr));
+
           const numberedAvailableOptions = available.map((p) => {
             const expiredPrefix = isProxyExpired(p) ? "[已过期] " : "";
             const displayId = parseInt(String(p.id || 0), 10) || 0;
@@ -1347,6 +1370,7 @@
             ${numberedAvailableOptions}
           `;
           sel.value = looksCustom ? "__custom__" : String(curIdNum || 0);
+          syncProxySearchText(sel, searchIp);
         });
       }
 
@@ -1423,9 +1447,26 @@
         });
       }
 
+      function syncProxySearchTextsCached(spacePk) {
+        const items = withCurrentTaskTypeBindingCounts(spacePk, proxiesCache.get(spacePk) || []);
+        const controls = document.querySelectorAll(`[data-role="proxySelect"][data-space_pk="${spacePk}"], [data-role="proxyDisplay"][data-space_pk="${spacePk}"]`);
+        controls.forEach(el => {
+          const dsAddr = String(el.dataset.proxy_addr || "").trim();
+          const selectedVal = el instanceof HTMLSelectElement ? String(el.value || "") : "";
+          const curRaw = selectedVal && selectedVal !== "__custom__" ? selectedVal : String(el.dataset.current_proxy_id || "0");
+          const curIdNum = parseInt(String(curRaw || "0"), 10) || 0;
+          const curItem = curIdNum > 0 ? items.find(x => String(x.proxy_id) === String(curIdNum)) : null;
+          const ipText = selectedVal === "__custom__"
+            ? proxySearchIpText(null, dsAddr)
+            : (curIdNum <= 0 ? "-" : proxySearchIpText(curItem, dsAddr));
+          syncProxySearchText(el, ipText);
+        });
+      }
+
       function fillProxyControlsCached(spacePk) {
         fillProxySelectsCached(spacePk);
         fillProxyDisplaysCached(spacePk);
+        syncProxySearchTextsCached(spacePk);
         syncAnalyzeProxyButtons();
       }
 
@@ -2755,6 +2796,29 @@
           });
           return items;
         }
+        if (key === "subscription_plan_number") {
+          const getPlanNumber = (m) => {
+            const text = String(m?.sora_plan_title || "");
+            const nums = text.match(/\d+(?:\.\d+)?/g);
+            if (!nums || !nums.length) return null;
+            return Math.max(...nums.map(x => Number(x)).filter(x => Number.isFinite(x)));
+          };
+          items.sort((a, b) => {
+            const av = getPlanNumber(a);
+            const bv = getPlanNumber(b);
+            const aMissing = av == null;
+            const bMissing = bv == null;
+            if (aMissing !== bMissing) return aMissing ? 1 : -1;
+            const a1 = aMissing ? 0 : av;
+            const b1 = bMissing ? 0 : bv;
+            if (a1 !== b1) return (a1 - b1) * sign;
+            const at = parseTimeMs(a?.sora_subscription_end) ?? Number.MAX_SAFE_INTEGER;
+            const bt = parseTimeMs(b?.sora_subscription_end) ?? Number.MAX_SAFE_INTEGER;
+            if (at !== bt) return at - bt;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
         if (key === "sora_access_expires") {
           items.sort((a, b) => {
             const av = parseTimeMs(a?.sora_access_expires);
@@ -2827,11 +2891,21 @@
         const mk = (hintEl, active) => {
           if (!hintEl) return;
           if (!active) {
-            hintEl.textContent = "↕";
+            hintEl.textContent = "\u2195";
             hintEl.className = "text-muted";
             return;
           }
-          hintEl.textContent = ui.mappingSortDir === "asc" ? "↑" : "↓";
+          hintEl.textContent = ui.mappingSortDir === "asc" ? "\u2191" : "\u2193";
+          hintEl.className = "text-primary";
+        };
+        const mkText = (hintEl, active, text) => {
+          if (!hintEl) return;
+          if (!active) {
+            hintEl.textContent = "\u2195";
+            hintEl.className = "text-muted";
+            return;
+          }
+          hintEl.textContent = `${text}${ui.mappingSortDir === "asc" ? "\u2191" : "\u2193"}`;
           hintEl.className = "text-primary";
         };
         mk(document.getElementById("balanceSortHint"), ui.mappingSortKey === "remaining_quota");
@@ -2839,7 +2913,11 @@
         mk(document.getElementById("winStatusSortHint"), ui.mappingSortKey === "window_status");
         mk(document.getElementById("proxySortHint"), ui.mappingSortKey === "proxy");
         mk(document.getElementById("spaceNameSortHint"), ui.mappingSortKey === "space_name");
-        mk(document.getElementById("spaceSortHint"), ui.mappingSortKey === "subscription_end");
+        mkText(
+          document.getElementById("spaceSortHint"),
+          ui.mappingSortKey === "subscription_end" || ui.mappingSortKey === "subscription_plan_number",
+          ui.mappingSortKey === "subscription_plan_number" ? "\u6570\u5b57" : "\u65f6\u95f4"
+        );
         mk(document.getElementById("accessTokenSortHint"), ui.mappingSortKey === "sora_access_expires");
         mk(document.getElementById("statusSortHint"), ui.mappingSortKey === "consecutive_errors");
         mk(document.getElementById("coolingSortHint"), ui.mappingSortKey === "cooling");
@@ -3104,7 +3182,7 @@
             <td>
               <div class="mono truncate-1"><span class="fw-semibold" data-role="planTitle" data-mid="${m.id}">${escapeHtml(m.sora_plan_title || "-")}</span></div>
               <div class="small2 text-muted d-flex flex-wrap gap-2 align-items-center mt-1">
-                <span><span class="fw-semibold mono quota-click" title="点击按会员过期时间排序" data-role="subscriptionEnd" data-mid="${m.id}">${escapeHtml(formatDateTimeShanghai(m.sora_subscription_end))}</span></span>
+                <span><span class="fw-semibold mono quota-click" title="点击切换：按会员过期时间 / 按会员数字大小排序" data-role="subscriptionEnd" data-mid="${m.id}">${escapeHtml(formatDateTimeShanghai(m.sora_subscription_end))}</span></span>
                 <button class="btn btn-outline-secondary btn-sm py-0 px-1" title="刷新会员信息" data-act="refreshSubscription" data-mid="${m.id}">⟳</button>
               </div>
             </td>
@@ -3122,6 +3200,7 @@
                   data-proxy_addr="${escapeHtml(String(m.proxy_addr || ""))}"
                   data-proxy_country="${escapeHtml(String(m.proxy_country || ""))}"
                 ><option value="">(加载代理中...)</option></select>
+                <div class="mono small2 text-muted" data-role="proxySearchText" data-mid="${escapeHtml(String(m.id ?? ""))}">IP: ${escapeHtml(String(m.proxy_addr || "-"))}</div>
               ` : `
                 <span
                   class="mono"
@@ -3135,6 +3214,7 @@
                   data-proxy_addr="${escapeHtml(String(m.proxy_addr || ""))}"
                   data-proxy_country="${escapeHtml(String(m.proxy_country || ""))}"
                 >(加载代理中...)</span>
+                <div class="mono small2 text-muted" data-role="proxySearchText" data-mid="${escapeHtml(String(m.id ?? ""))}">IP: ${escapeHtml(String(m.proxy_addr || "-"))}</div>
               `}
             </td>
             <td>
@@ -3186,8 +3266,8 @@
             </td>
             ${_isVeo ? `
             <td>
-              <button type="button" class="btn btn-outline-primary btn-sm" title="查看并管理该窗口绑定的 Flow 项目" data-act="veoProjects" data-mid="${m.id}">
-                管理（${Number(m.veo_flow_project_count ?? 0) || 0}）
+              <button type="button" class="btn btn-outline-primary btn-sm" title="一键删除旧 Flow 项目并创建新项目；不打开管理弹窗" data-act="veoProjectReset" data-mid="${m.id}">
+                重建（${Number(m.veo_flow_project_count ?? 0) || 0}）
               </button>
             </td>
             ` : `
@@ -3301,7 +3381,7 @@
           } else if (role === "winName") {
             toggleSort("window_name", "asc");
           } else if (role === "subscriptionEnd") {
-            toggleSort("subscription_end", "asc");
+            toggleSubscriptionSort();
           } else if (role === "taskStats") {
             if (!Number.isNaN(mid)) openSuccessModalByMappingId(mid);
           } else if (role === "draftsCount") {
@@ -3347,6 +3427,16 @@
 
       function toggleQuotaSort() {
         return toggleSort("remaining_quota", "desc");
+      }
+
+      function toggleSubscriptionSort() {
+        if (ui.mappingSortKey === "subscription_end") {
+          return toggleSort("subscription_plan_number", "desc");
+        }
+        if (ui.mappingSortKey === "subscription_plan_number") {
+          return toggleSort("subscription_end", "asc");
+        }
+        return toggleSort("subscription_end", "asc");
       }
 
       function getSpacePksFromItems(items) {
@@ -3396,6 +3486,35 @@
         if (baseInp) baseInp.value = "";
         await loadVeoProjectsModalList();
         veoProjectsBsModal.show();
+      }
+
+      async function resetVeoProject(mappingId, btn) {
+        if (!canEditTaskTypeConfig()) return toast("当前账号无权操作", "warning");
+        const mid = parseInt(String(mappingId || ""), 10);
+        if (!mid) return toast("缺少绑定 ID", "warning");
+        const hl = getMappingHeadless(mid);
+        const qs = new URLSearchParams();
+        if (hl) qs.set("headless", "true");
+        const qstr = qs.toString();
+        const url = `/api/admin/task-type-windows/${mid}/veo-flow-projects/reset${qstr ? `?${qstr}` : ""}`;
+        try {
+          setBtnBusy(btn, true, { loadingText: "重建中", keepWidth: false });
+          const d = await postJson(url, { method: "POST", body: "{}" });
+          const cnt = Number(d?.veo_flow_project_count ?? 0) || 0;
+          patchMappingInState(mid, { veo_flow_project_count: cnt });
+          if (btn) {
+            btn.textContent = `重建（${cnt}）`;
+            btn.title = d?.project_name ? `已重建：${d.project_name}` : "一键删除旧 Flow 项目并创建新项目；不打开管理弹窗";
+          }
+          toast(`已重建项目：删除 ${Number(d?.deleted_count ?? 0) || 0}，创建 ${d?.project_name || d?.project_id || ""}`, "success");
+          loadMappings({ preserveSelection: true }).catch(() => {});
+        } catch (e) {
+          toast(e.message || "重建项目失败", "error");
+        } finally {
+          setBtnBusy(btn, false);
+          const cnt = Number((state.mappings || []).find(x => String(x.id) === String(mid))?.veo_flow_project_count ?? 0) || 0;
+          if (btn) btn.textContent = `重建（${cnt}）`;
+        }
       }
 
       async function loadVeoProjectsModalList() {
@@ -3469,6 +3588,8 @@
           patchMappingInState(mid, { veo_flow_project_count: d.veo_flow_project_count });
           const cntBtn = document.querySelector(`button[data-act="veoProjects"][data-mid="${mid}"]`);
           if (cntBtn) cntBtn.textContent = `管理（${d.veo_flow_project_count ?? 0}）`;
+          const resetBtn = document.querySelector(`button[data-act="veoProjectReset"][data-mid="${mid}"]`);
+          if (resetBtn) resetBtn.textContent = `重建（${d.veo_flow_project_count ?? 0}）`;
           await loadVeoProjectsModalList();
           await loadMappings({ preserveSelection: true });
         } catch (e) {
@@ -3495,6 +3616,8 @@
           patchMappingInState(mid, { veo_flow_project_count: d?.veo_flow_project_count });
           const cntBtn = document.querySelector(`button[data-act="veoProjects"][data-mid="${mid}"]`);
           if (cntBtn) cntBtn.textContent = `管理（${d?.veo_flow_project_count ?? 0}）`;
+          const resetBtn = document.querySelector(`button[data-act="veoProjectReset"][data-mid="${mid}"]`);
+          if (resetBtn) resetBtn.textContent = `重建（${d?.veo_flow_project_count ?? 0}）`;
           await loadVeoProjectsModalList();
           await loadMappings({ preserveSelection: true });
         } catch (e) {
@@ -3637,6 +3760,9 @@
         }
         if (act === "veoProjects") {
           return openVeoProjectsModal(mappingId);
+        }
+        if (act === "veoProjectReset") {
+          return resetVeoProject(mappingId, el);
         }
         if (act === "refreshSubscription") {
           return refreshSubscription(mappingId);
@@ -4971,7 +5097,7 @@
             window_pks: ids,
             daily_quota: 0,
             remaining_quota: parseInt(document.getElementById("winRemainQuota").value, 10) || 0,
-            enabled: true,
+            enabled: false,
           };
           const r = await adminFetch(`/api/admin/task-types/${typeId}/windows`, { method: "POST", body: JSON.stringify(payload) });
           if (!r) return;
@@ -5111,10 +5237,12 @@
             }
           } catch {}
 
-          // 基于当前任务类型的窗口绑定列表重新统计代理绑定数（不统计其它任务类型）。
+          // 基于当前任务类型的窗口绑定列表重新统计代理绑定数（跨项目空间；不统计其它任务类型）。
           try {
-            await refreshProxyBindingCounts(spacePk);
-            fillProxyControlsCached(spacePk);
+            const spacePks = getSpacePksFromItems(state.mappings || []);
+            const targets = spacePks.length ? spacePks : [spacePk];
+            await Promise.allSettled(targets.map(spk => refreshProxyBindingCounts(spk)));
+            targets.forEach(spk => fillProxyControlsCached(spk));
           } catch {}
         } catch (e) {
           toast(e.message || "修改代理失败", "error");
@@ -5859,7 +5987,7 @@
       document.getElementById("thWinStatus")?.addEventListener("click", () => toggleSort("window_status", "desc"));
       document.getElementById("thProxy")?.addEventListener("click", () => toggleSort("proxy", "asc"));
       document.getElementById("thSpaceName")?.addEventListener("click", () => toggleSort("space_name", "asc"));
-      document.getElementById("thSpace")?.addEventListener("click", () => toggleSort("subscription_end", "asc"));
+      document.getElementById("thSpace")?.addEventListener("click", () => toggleSubscriptionSort());
       document.getElementById("thAccessTokenExpires")?.addEventListener("click", () => toggleSort("sora_access_expires", "asc"));
       document.getElementById("thStatus")?.addEventListener("click", () => toggleSort("consecutive_errors", "desc"));
       document.getElementById("thCooling")?.addEventListener("click", () => toggleSort("cooling", "asc"));

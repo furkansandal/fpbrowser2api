@@ -371,7 +371,7 @@
             <div class="text-muted small mb-2" id="accountPasswordMeta">-</div>
             <label class="form-label">新密码</label>
             <input class="form-control form-control-sm mono" id="accountPasswordInput" type="text" placeholder="请输入新密码" autocomplete="off" />
-            <div class="form-text">仅更新本地数据库密码，不会同步到指纹浏览器。</div>
+            <div class="form-text">会先同步更新指纹浏览器账号密码，成功后再更新本地数据库。</div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
@@ -2940,7 +2940,7 @@
           if (!r) return;
           const d = await r.json();
           if (!r.ok) throw new Error(d.detail || "修改密码失败");
-          toast(d.message || "密码已更新", "success");
+          toast(d.message || "密码已更新，并已同步到指纹浏览器", "success");
           await refreshAccounts(accountsState.spacePk);
           fillAccountSelects(spk);
         } catch (e) {

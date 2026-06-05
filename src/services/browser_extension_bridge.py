@@ -276,7 +276,20 @@ async def _handle_client_message(client: ExtensionClient, msg: Dict[str, Any]) -
         err = msg.get("error") or {}
         message = str((err or {}).get("message") or "extension task failed")
         status_code = int((err or {}).get("status_code") or 502)
-        if "PUBLIC_ERROR_UNUSUAL_ACTIVITY" in message or str((err or {}).get("reason") or "") == "PUBLIC_ERROR_UNUSUAL_ACTIVITY":
+        raw_reason = str((err or {}).get("reason") or "")
+        quota_exhausted = (
+            "PUBLIC_ERROR_USER_QUOTA_REACHED" in message
+            or raw_reason == "PUBLIC_ERROR_USER_QUOTA_REACHED"
+            or (
+                "VEO video submit failed: 429" in message
+                and "RESOURCE_EXHAUSTED" in message
+            )
+        )
+        if (
+            "PUBLIC_ERROR_UNUSUAL_ACTIVITY" in message
+            or raw_reason == "PUBLIC_ERROR_UNUSUAL_ACTIVITY"
+            #or quota_exhausted
+        ):
             fut.set_exception(RuntimeError(message))
         else:
             exc = NonPenalizedTaskError(message, status_code=status_code)

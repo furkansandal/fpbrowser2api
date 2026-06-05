@@ -32,7 +32,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse, urlunparse
 
 import httpx
 from ..core.config import config as app_config
@@ -62,6 +62,34 @@ from .browser_extension_interaction import (
 
 async def _noop_progress_cb(progress: int, data: Dict[str, Any]) -> None:
     return None
+
+
+def _veo_rewrite_flow_content_url(value: str) -> str:
+    raw = str(value or "")
+    if not raw:
+        return raw
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return raw
+    if (parsed.hostname or "").lower() != "flow-content.google":
+        return raw
+    netloc = "aoss.aimh8.com"
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
+def _veo_rewrite_flow_content_urls(value: Any) -> Any:
+    if isinstance(value, str):
+        return _veo_rewrite_flow_content_url(value)
+    if isinstance(value, list):
+        return [_veo_rewrite_flow_content_urls(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_veo_rewrite_flow_content_urls(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _veo_rewrite_flow_content_urls(item) for key, item in value.items()}
+    return value
 
 
 def _veo_int_env(name: str, default: int, *, min_value: int, max_value: int) -> int:
@@ -97,7 +125,9 @@ _VEO_LOCAL_IMAGE_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(
 _VEO_LOCAL_IMAGE_LOCKS: Dict[str, asyncio.Lock] = {}
 _VEO_LOCAL_IMAGE_LOCKS_GUARD = asyncio.Lock()
 _VEO_LOCAL_IMAGE_LAST_CLEANUP = 0.0
-
+_VEO_OMNI_T2V_MODEL="abra_t2v_10s"
+_VEO_OMNI_R2V_MODEL="abra_r2v_10s"
+_VEO_OMNI_VEDIT_MODEL ="abra_edit"
 
 def _veo_local_image_cache_ttl_seconds() -> float:
     return _veo_float_env("VEO_LOCAL_IMAGE_CACHE_TTL_SECONDS", 1 * 3600, min_value=0.0, max_value=30 * 86400)
@@ -267,6 +297,27 @@ def _veo_is_local_asset_url(raw: str) -> bool:
     try:
         u = urlparse(str(raw or "").strip())
         return u.path.startswith(f"/assets/{_VEO_LOCAL_IMAGE_CACHE_SUBDIR}/")
+    except Exception:
+        return False
+
+
+def _veo_is_base64_media_value(raw: Any) -> bool:
+    s = str(raw or "").strip()
+    if not s:
+        return False
+    if re.match(r"^data:(image|video)/[a-zA-Z0-9.+-]+;base64,", s, flags=re.S):
+        return True
+    if s.lower().startswith("data:") and ";base64," in s[:128].lower():
+        return True
+    if len(s) < 256 or re.match(r"^https?://", s, flags=re.I):
+        return False
+    compact = re.sub(r"\s+", "", s)
+    if len(compact) < 256 or len(compact) % 4 != 0:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", compact):
+        return False
+    try:
+        return bool(base64.b64decode(compact[:4096], validate=True))
     except Exception:
         return False
 
@@ -895,7 +946,7 @@ async def _veo_materialize_image_for_extension(
     parsed = urlparse(raw)
     if parsed.scheme.lower() not in {"http", "https", "data"}:
         raise NonPenalizedTaskError(
-            f"VEO 输入图片地址协议不支持：仅支持 http/https/data URL，got={safe_trim(raw, 300)!r}",
+            f"VEO 输入图片地址协议不支持：仅支持 http/https URL or base64数据，got={safe_trim(raw, 300)!r}",
             status_code=400,
             content_violation=True,
         )
@@ -921,7 +972,14 @@ async def _veo_materialize_image_for_extension(
         try:
             data = base64.b64decode(m.group(2), validate=False)
         except Exception as e:
-            raise NonPenalizedTaskError(f"VEO 输入图片 data URL 解码失败：{safe_trim(str(e), 300)}", status_code=400) from e
+            raise NonPenalizedTaskError(f"VEO 输入图片 data URL 解码失败：{safe_trim(str(e), 300)}", status_code=400,content_violation=True) from e
+        max_data_image_bytes = 500 * 1024
+        if len(data) > max_data_image_bytes:
+            raise NonPenalizedTaskError(
+                f"VEO 输入图片 data base64 数据不能超过 500KB，当前约 {len(data) / 1024:.1f}KB",
+                status_code=400,
+                content_violation=True,
+            )
         local_path = await _veo_write_bytes_to_local_image_cache(data, content_type=mime, source_label=f"data:{mime}")
     else:
         try:
@@ -1243,6 +1301,101 @@ async def _veo_extension_upload_upsample_data_url_to_oss(
         append_log(log_file, f"[veo][extension][image] upload upsample data URL to OSS failed, keep data URL: {e}")
         return out
 
+
+def _veo_4k_external_upscaler_url() -> str:
+    return os.getenv("VEO_4K_UPSCALER_URL", "").strip() or "http://192.168.1.12:18080/v1/upscale"
+
+
+def _veo_pick_generated_1k_image_url(result: Dict[str, Any]) -> str:
+    for key in ("origin_image_url", "image_url", "share_url", "url"):
+        u = str((result or {}).get(key) or "").strip()
+        if u and not u.startswith("data:"):
+            return u
+    return ""
+
+
+async def _veo_external_upscale_1k_to_4k(
+    result: Dict[str, Any],
+    *,
+    progress_cb: ProgressCB,
+    log_file: Path,
+) -> Dict[str, Any]:
+    if not isinstance(result, dict) or str(result.get("type") or "") != "veo_workflow_image":
+        return result
+
+    source_url = _veo_pick_generated_1k_image_url(result)
+    if not source_url:
+        raise NonPenalizedTaskError("VEO 4K 放大失败：未获取到 1K 图片地址", status_code=502)
+
+    endpoint = _veo_4k_external_upscaler_url()
+    await progress_cb(99, {"stage": "external_4k_upscale", "image_url": source_url, "upscaler_url": endpoint})
+    append_log(log_file, f"[veo][extension][image] external 4K upscale start source={safe_trim(source_url, 260)!r}")
+
+    data: Dict[str, Any] = {}
+    upsample_ok = False
+    upsample_error = ""
+    try:
+        timeout = httpx.Timeout(
+            connect=_veo_float_env("VEO_4K_UPSCALER_CONNECT_TIMEOUT_SECONDS", 15.0, min_value=1.0, max_value=120.0),
+            read=_veo_float_env("VEO_4K_UPSCALER_READ_TIMEOUT_SECONDS", 1800.0, min_value=5.0, max_value=3600.0),
+            write=_veo_float_env("VEO_4K_UPSCALER_WRITE_TIMEOUT_SECONDS", 30.0, min_value=1.0, max_value=300.0),
+            pool=_veo_float_env("VEO_4K_UPSCALER_POOL_TIMEOUT_SECONDS", 30.0, min_value=1.0, max_value=300.0),
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(endpoint, json={"image_url": source_url})
+        body = resp.text
+        if resp.status_code >= 400:
+            raise RuntimeError(f"status={resp.status_code}; response={safe_trim(body, 500)}")
+        data = resp.json()
+        upscaled_url = str((data or {}).get("image_url") or "").strip()
+        if not upscaled_url:
+            raise RuntimeError(f"missing image_url in response: {safe_trim(body, 500)}")
+        upsample_ok = True
+    except Exception as e:
+        upscaled_url = source_url
+        upsample_error = f"VEO 4K 放大失败，已返回 1K 图片：{safe_trim(str(e), 500)}"
+        append_log(log_file, f"[veo][extension][image] external 4K upscale failed, fallback to 1K: {e}")
+
+    out = dict(result)
+    out["origin_image_url"] = source_url
+    out["share_url"] = upscaled_url
+    out["image_url"] = upscaled_url
+    out["url"] = upscaled_url
+    out["resolution"] = "4K" if upsample_ok else "1K"
+    out["upsample_ok"] = upsample_ok
+    out["upsample_url"] = upscaled_url
+    out["upsample_provider"] = "external_image_upscaler"
+    if upsample_error:
+        out["upsample_error"] = upsample_error
+    if data:
+        out["upscaler_response"] = data
+    if data.get("width") is not None:
+        out["width"] = data.get("width")
+    if data.get("height") is not None:
+        out["height"] = data.get("height")
+    out["result_urls"] = [upscaled_url]
+    append_log(
+        log_file,
+        (
+            "[veo][extension][image] external 4K upscale done "
+            if upsample_ok
+            else "[veo][extension][image] external 4K upscale fallback "
+        )
+        + f"source={safe_trim(source_url, 180)!r} url={safe_trim(upscaled_url, 260)!r}",
+    )
+    await progress_cb(
+        100,
+        {
+            "stage": "external_4k_upscale_done" if upsample_ok else "external_4k_upscale_failed_fallback_1k",
+            "image_url": upscaled_url,
+            "origin_image_url": source_url,
+            "width": data.get("width"),
+            "height": data.get("height"),
+            "upsample_error": upsample_error,
+        },
+    )
+    return out
+
 # ---------------------------------------------------------------------------
 # 辅助函数
 # ---------------------------------------------------------------------------
@@ -1258,12 +1411,13 @@ def _short_err_msg(err: Any, *, max_len: int = 120) -> str:
     return s[: max(10, max_len - 3)] + "..."
 
 _VEO_CONTENT_VIOLATION_REASON_MESSAGES = {
-    "PUBLIC_ERROR_UNSAFE_GENERATION": "视频生成失败，内容包含PUBLIC_ERROR_UNSAFE_GENERATION(不安全的)内容，请手动再试一次。",
+    "PUBLIC_ERROR_UNSAFE_GENERATION": "生成失败，内容包含PUBLIC_ERROR_UNSAFE_GENERATION(不安全的)内容，请手动再试一次。",
     # Veo 轮询失败时插件会把 mediaStatus.status 写入错误文本；
     # 该状态包含音频/内容过滤等审核失败（例如 PUBLIC_ERROR_AUDIO_FILTERED）。
     "MEDIA_GENERATION_STATUS_FAILED": "视频生成失败，内容审核未通过[MEDIA_GENERATION_STATUS_FAILED]",
     # flow/uploadImage 在参考图疑似包含未成年人/儿童照片时返回此 reason。
     "PUBLIC_ERROR_MINOR_UPLOAD": "上传参考图失败，参考图中包含未成年人/儿童照片[PUBLIC_ERROR_MINOR_UPLOAD]",
+    "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED": "上传参考图失败，参考图中包含公众人物/知名人物[PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED]",
     "VEO_REFERENCE_VIDEO_DURATION_VIOLATION": "参考视频时长不能超过30秒",
 }
 
@@ -3255,6 +3409,8 @@ class VeoAccessKeepaliveRefresher:
         self._inflight_jobs: set[tuple[int, str, str]] = set()
         # mapping_id -> (sora_access_expires, attempted_at). 同一个 expires 只预约一次保活/刷新组合。
         self._attempted: dict[int, tuple[str, float]] = {}
+        self._balance_refresh_cursor = 0
+        self._next_balance_refresh_at = 0.0
 
     def start(self) -> None:
         """启动 VEO 保活调度器（幂等）。"""
@@ -3378,12 +3534,8 @@ class VeoAccessKeepaliveRefresher:
             return False
 
         delay = max(0.0, float(delay_seconds or 0.0))
-        if kind == "token_refresh":
-            coro = self._refresh_expired_access_token_after_delay(row, delay)
-            name = f"veo_access_token_refresh_{mapping_id}"
-        else:
-            coro = self._access_keepalive_after_delay(row, delay)
-            name = f"veo_access_keepalive_{mapping_id}"
+        coro = self._refresh_expired_access_token_after_delay(row, delay)
+        name = f"veo_access_token_refresh_{mapping_id}"
 
         self._inflight_jobs.add(key)
         worker = asyncio.create_task(coro, name=name)
@@ -3413,7 +3565,6 @@ class VeoAccessKeepaliveRefresher:
         self,
         row: Dict[str, Any],
         *,
-        keepalive_delay_seconds: float,
         token_refresh_delay_seconds: float,
     ) -> tuple[bool, bool, bool]:
         try:
@@ -3421,21 +3572,20 @@ class VeoAccessKeepaliveRefresher:
         except Exception:
             mapping_id = 0
         if mapping_id <= 0:
-            return False, False
+            return False
         expires_s = str(row.get("sora_access_expires") or "").strip()
         if not expires_s:
-            return False, False
+            return False
         prev = self._attempted.get(mapping_id)
         if prev and prev[0] == expires_s:
-            return False, False
-
+            return False
+        logger.info(
+            "_schedule_keepalive_with_token_refresh scheduled: mapping_id=%d delay=%.1fs",
+            mapping_id,
+            token_refresh_delay_seconds,
+        )
         # 同一个 expires 同时预约：1) 到期前 margin 文生图保活；2) 到期后 10s 刷新 token。
         self._attempted[mapping_id] = (expires_s, time.monotonic())
-        keepalive_ok = self._schedule_worker(
-            row,
-            delay_seconds=keepalive_delay_seconds,
-            job_kind="keepalive",
-        )
 
         token_ok = self._schedule_worker(
             row,
@@ -3443,9 +3593,15 @@ class VeoAccessKeepaliveRefresher:
             job_kind="token_refresh",
         )
 
-        if not keepalive_ok and not token_ok:
+        double_token_ok = self._schedule_worker(
+            row,
+            delay_seconds=token_refresh_delay_seconds+30.0,
+            job_kind="double_token_refresh",
+        )
+
+        if not token_ok:
             self._attempted.pop(mapping_id, None)
-        return keepalive_ok,token_ok
+        return token_ok
 
     async def _sleep_or_stopped(self, delay_seconds: float) -> bool:
         delay = max(0.0, float(delay_seconds or 0.0))
@@ -3456,48 +3612,6 @@ class VeoAccessKeepaliveRefresher:
             return True
         except asyncio.TimeoutError:
             return self.stop_event.is_set()
-
-    async def _access_keepalive_after_delay(self, row: Dict[str, Any], delay_seconds: float) -> None:
-        if await self._sleep_or_stopped(delay_seconds):
-            return
-        try:
-            mapping_id = int(row.get("mapping_id") or row.get("id") or 0)
-        except Exception:
-            mapping_id = 0
-        if mapping_id <= 0:
-            return
-
-        # 触发前复查 expires：如果期间普通任务/刷新任务已经更新过 token，就不再消耗一次文生图。
-        original_expires = str(row.get("sora_access_expires") or "").strip()
-        try:
-            ctx = await self.db.get_task_type_window_context(mapping_id)
-        except Exception:
-            ctx = None
-        if not ctx:
-            return
-        current_expires = str(ctx.get("sora_access_expires") or "").strip()
-        if current_expires != original_expires:
-            logger.debug("veo access keepalive skipped: mapping=%s expires changed", mapping_id)
-            return
-        seconds_left = self._seconds_until_expiry(current_expires)
-        if seconds_left is None:
-            return
-        if seconds_left <= 0:
-            logger.debug(
-                "veo access keepalive skipped: mapping=%s already expired; token refresh job will handle",
-                mapping_id,
-            )
-            return
-        margin = max(1.0, float(self.keepalive_margin_seconds or 300.0))
-        if seconds_left > margin + 30.0:
-            logger.debug(
-                "veo access keepalive skipped: mapping=%s not within margin seconds_left=%.1f margin=%.1f",
-                mapping_id,
-                seconds_left,
-                margin,
-            )
-            return
-        await self._access_keepalive_one(row)
 
     async def _refresh_expired_access_token_after_delay(
         self, row: Dict[str, Any], delay_seconds: float
@@ -3605,6 +3719,87 @@ class VeoAccessKeepaliveRefresher:
                 except Exception:
                     pass
 
+    async def _refresh_balance_one(self, row: Dict[str, Any]) -> bool:
+        async with self._semaphore:
+            if self.stop_event.is_set():
+                return False
+            picked = self._row_to_picked(row)
+            if picked.create_task_handler != "veo_workflow":
+                return False
+            if not picked.window_key or not picked.browser_base_url:
+                return False
+            reserved = await self._try_reserve_mapping(picked.mapping_id)
+            if not reserved:
+                logger.debug("veo balance refresh skipped: mapping=%s already busy", picked.mapping_id)
+                return False
+            try:
+                project_id = str(picked.project_id or "").strip()
+                picked.default_target_url = _veo_project_page_url(
+                    project_id=project_id,
+                    hint_url=picked.default_target_url or "https://labs.google/fx",
+                )
+                logger.info(
+                    "veo balance refresh start: mapping=%s target=%s",
+                    picked.mapping_id,
+                    picked.default_target_url,
+                )
+                info = await refresh_veo_balance_via_extension(
+                    db=self.db,
+                    picked=picked,
+                    refresh_timeout_seconds=max(10.0, min(60.0, float(self.keepalive_timeout or 60.0))),
+                    signal_window_pool_replenish=self.signal_window_pool_replenish,
+                    auto_triger_connection=True,
+                    force_refresh_token=False,
+                )
+                logger.info(
+                    "veo balance refresh done: mapping=%s credits=%s",
+                    picked.mapping_id,
+                    (info or {}).get("credits") if info else None,
+                )
+                return bool(info)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning("veo balance refresh failed: mapping=%s err=%s", picked.mapping_id, e)
+                return False
+            finally:
+                try:
+                    await self.db.release_mapping_slot(picked.mapping_id)
+                except Exception:
+                    pass
+
+    async def _refresh_balances_round_robin(self, rows: List[Dict[str, Any]]) -> None:
+        if not rows:
+            self._balance_refresh_cursor = 0
+            return
+        rows = list(rows)
+        start = self._balance_refresh_cursor % len(rows)
+        ordered = rows[start:] + rows[:start]
+        ok = 0
+        skipped_or_failed = 0
+        logger.info("veo balance refresh round start: windows=%d start=%d", len(ordered), start)
+        for row in ordered:
+            if self.stop_event.is_set():
+                return
+            try:
+                if await self._refresh_balance_one(row):
+                    ok += 1
+                else:
+                    skipped_or_failed += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                skipped_or_failed += 1
+                logger.warning("veo balance refresh mapping=%s err=%s", row.get("mapping_id") or row.get("id"), e)
+            finally:
+                self._balance_refresh_cursor += 1
+            try:
+                await asyncio.wait_for(self.stop_event.wait(), timeout=random.uniform(0.1, 0.5))
+                return
+            except asyncio.TimeoutError:
+                pass
+        logger.info("veo balance refresh round done: ok=%d skipped_or_failed=%d", ok, skipped_or_failed)
+
     async def _loop(self) -> None:
         """VEO 窗口池：按扫描周期预约到期前保活，并同步预约过期后 token 刷新。"""
         while not self.stop_event.is_set():
@@ -3625,9 +3820,7 @@ class VeoAccessKeepaliveRefresher:
                 schedule_horizon = scan_interval + margin
 
                 rows = await self.db._veo_keepalive_list_candidates()
-                scheduled_keepalive = 0
                 scheduled_token_refresh = 0
-                scheduled_expired_token_refresh = 0
                 now_mono = time.monotonic()
                 # 简单清理，避免长期运行时 attempted 字典无限增长。
                 if len(self._attempted) > 10000:
@@ -3658,24 +3851,24 @@ class VeoAccessKeepaliveRefresher:
                         # 如果进程启动/扫描时已经进入 margin，保活会立即跑，但刷新仍对齐 expires+50s，
                         # 避免被错误推迟到 now+margin+30s。
                         intended_keepalive_delay = seconds_left - margin
-                        keepalive_delay = max(0.0, intended_keepalive_delay)
                         token_refresh_delay = max(0.0, intended_keepalive_delay + margin + 30.0)
-                        keepalive_ok, token_ok = self._schedule_keepalive_with_token_refresh(
+                        token_ok = self._schedule_keepalive_with_token_refresh(
                             row,
-                            keepalive_delay_seconds=keepalive_delay,
                             token_refresh_delay_seconds=token_refresh_delay,
                         )
-                        if keepalive_ok:
-                            scheduled_keepalive += 1
                         if token_ok:
                             scheduled_token_refresh += 1
 
-                if scheduled_keepalive or scheduled_token_refresh or scheduled_expired_token_refresh:
+                now_mono = time.monotonic()
+                if now_mono >= self._next_balance_refresh_at:
+                    self._next_balance_refresh_at = now_mono + scan_interval * 6
+                    balance_rows = await self.db._veo_balance_refresh_list_candidates()
+                    await self._refresh_balances_round_robin(balance_rows)
+
+                if scheduled_token_refresh :
                     logger.info(
-                        "veo access keepalive scheduled: keepalive=%d token_refresh=%d expired_token_refresh=%d scan_interval=%.1fs horizon=%.1fs",
-                        scheduled_keepalive,
+                        "veo access keepalive scheduled: token_refresh=%d scan_interval=%.1fs horizon=%.1fs",
                         scheduled_token_refresh,
-                        scheduled_expired_token_refresh,
                         scan_interval,
                         schedule_horizon,
                     )
@@ -3693,90 +3886,6 @@ class VeoAccessKeepaliveRefresher:
                 except asyncio.TimeoutError:
                     pass
 
-    async def _access_keepalive_one(self, row: Dict[str, Any]) -> None:
-        async with self._semaphore:
-            if self.stop_event.is_set():
-                return
-            picked = self._row_to_picked(row)
-            if picked.create_task_handler != "veo_workflow":
-                return
-            if not picked.window_key or not picked.browser_base_url:
-                return
-            reserved = await self._try_reserve_mapping(picked.mapping_id)
-            if not reserved:
-                expires_s = str(row.get("sora_access_expires") or "").strip()
-                prev = self._attempted.get(picked.mapping_id)
-                if prev and prev[0] == expires_s:
-                    self._attempted.pop(picked.mapping_id, None)
-                logger.debug("veo access keepalive skipped: mapping=%s already busy", picked.mapping_id)
-                return
-            project_id = str(picked.project_id or "").strip()
-            project_page = _veo_project_page_url(
-                project_id=project_id,
-                hint_url=picked.default_target_url or "https://labs.google/fx",
-            )
-            picked.default_target_url = project_page
-            timeout_seconds = max(60.0, min(float(picked.timeout_seconds or 1800), self.keepalive_timeout))
-            payload: Dict[str, Any] = {
-                "prompt": "A simple calm blue sky with soft white clouds, clean minimal composition.",
-                "n_frames": 1,
-                "executor": "extension",
-                "source": "veo_access_keepalive_refresher",
-                "keepalive": True,
-                "auto_keepalive": True,
-                "veo_url": project_page,
-                "target_url": project_page,
-                "image_model_name": "NARWHAL",
-                "aspect_ratio": "16:9",
-                "veo_image_resolution": "1K",
-                "ctx_idle_close_seconds": 30.0,
-                "veo_pending_max_wait_seconds": max(30.0, timeout_seconds - 60.0),
-                "veo_pending_poll_interval_seconds": 5.0,
-            }
-            if project_id:
-                payload["veo_project_id"] = project_id
-
-            async def progress_cb(_p: int, _payload: Optional[Dict[str, Any]] = None) -> None:
-                return None
-
-            logger.info(
-                "veo access keepalive start: mapping=%s expires=%s",
-                picked.mapping_id,
-                picked.sora_access_expires,
-            )
-            result = None
-            try:
-                # access_token/access_expires 传 None：强制由插件重新读取最新 short token，
-                # 避免旧 expires 在 5 分钟窗口内被继续复用。
-                result, project_page = await asyncio.wait_for(
-                    veo_workflow(
-                        payload,
-                        progress_cb,
-                        browser_vendor=picked.browser_vendor,
-                        browser_base_url=picked.browser_base_url,
-                        browser_access_key=picked.browser_access_key,
-                        space_id=picked.space_id,
-                        window_key=picked.window_key,
-                        timeout_seconds=timeout_seconds,
-                        access_token=None,
-                        access_expires=None,
-                        headless=picked.headless,
-                        pure_mode=picked.pure_mode,
-                        db=self.db,
-                        task_type_window_id=picked.mapping_id,
-                    ),
-                    timeout=timeout_seconds,
-                )
-                picked.default_target_url = project_page
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning("veo access keepalive failed: mapping=%s err=%s", picked.mapping_id, e)
-            finally:
-                try:
-                    await self.db.release_mapping_slot(picked.mapping_id)
-                except Exception:
-                    pass
 
 
 def _veo_payload_looks_like_i2v(payload: Dict[str, Any]) -> bool:
@@ -3969,12 +4078,12 @@ def _veo_collect_ingredients_image_urls(payload: Dict[str, Any]) -> List[str]:
     if not isinstance(raw, list):
         return []
     if len(raw) > 8:
-        raise NonPenalizedTaskError("Ingredients 模式最多支持 8 张参考图", status_code=400)
+        raise NonPenalizedTaskError("Ingredients 模式最多支持 8 张参考图", status_code=400, content_violation=True)
     out: List[str] = []
     for it in raw:
         u = _veo_extract_url_from_image_item(it)
         if not u:
-            raise NonPenalizedTaskError("Ingredients_images 中存在无法解析的图片地址", status_code=400)
+            raise NonPenalizedTaskError("Ingredients_images 中存在无法解析的图片地址", status_code=400, content_violation=True)
         out.append(u)
     return out
 
@@ -4118,6 +4227,30 @@ def _veo_payload_video_model_override(payload: Dict[str, Any]) -> Optional[str]:
     model = str(raw).strip()
     return model or None
 
+def _veo_payload_video_model_is_omni(payload: Dict[str, Any]) -> bool:
+    raw = (payload or {}).get("video_model")
+    if raw is None:
+        return False
+    model = str(raw).strip()
+    if model == _VEO_OMNI_T2V_MODEL or model == "veo-omni-flash":
+        return True;
+    return False
+
+def _veo_payload_video_model_uses_r2v_for_i2v_refs(payload: Dict[str, Any]) -> bool:
+    payload = payload or {}
+    candidates = (
+        payload.get("video_model"),
+        payload.get("extension_model_key"),
+        payload.get("model"),
+        payload.get("veo_model"),
+        payload.get("videoModelKey"),
+    )
+    for raw in candidates:
+        model = str(raw or "").strip().lower()
+        if model in {_VEO_OMNI_T2V_MODEL, _VEO_OMNI_VEDIT_MODEL}:
+            return True
+    return False
+
 def _veo_payload_image_model_4k(payload: Dict[str, Any]) -> bool:
     resolution = (payload or {}).get("resolution")
     n_frames = (payload or {}).get("n_frames")
@@ -4154,10 +4287,10 @@ def _veo_resolve_extension_video_model_and_aspect(
 
     override_model = _veo_payload_video_model_override(payload)
     if override_model:
-        if override_model == "abra_t2v_10s":
-            override_model = "abra_t2v_10s"
+        if override_model == _VEO_OMNI_T2V_MODEL:
+            override_model = _VEO_OMNI_T2V_MODEL
         elif override_model == "veo-omni-flash":
-            override_model = "abra_t2v_10s"
+            override_model = _VEO_OMNI_T2V_MODEL
         else:
             override_model = model_key;
         model_key = override_model
@@ -4985,7 +5118,7 @@ def _veo_resolve_n_frames(payload: Dict[str, Any]) -> int:
         iv = 0
     if iv == 1:
         return 1
-    return _pick_n_frames(duration_v)
+    return iv
 
 
 _VEO_KNOWN_IMAGE_ASPECT_RATIOS = frozenset(
@@ -5224,6 +5357,7 @@ async def veo_workflow(
         want_i2v = False
 
     i2v_urls: List[str] = []
+    r2v_from_i2v_urls: List[str] = []
     if want_i2v:
         i2v_urls = _veo_collect_i2v_image_urls(payload)
         if len(i2v_urls) == 0:
@@ -5233,6 +5367,12 @@ async def veo_workflow(
                 else "图生视频需要提供 1-2 张图片（first_image_url / image_url / images 等）",
                 status_code=400,
             )
+        if _veo_payload_video_model_uses_r2v_for_i2v_refs(payload):
+            r2v_from_i2v_urls = list(i2v_urls)
+            ingredients_urls.extend(i2v_urls)
+            want_ingredients = True
+            want_i2v = False
+            i2v_urls = []
 
     labs_hint = str(payload.get("veo_url") or payload.get("target_url") or "").strip() or "https://labs.google/fx"
     project_id = str(
@@ -5416,6 +5556,9 @@ async def veo_workflow(
             _ext_image_aspect = _veo_resolve_image_aspect_ratio(payload)
             _ext_image_model = _veo_resolve_image_model_name(payload)
             _ext_resolution_label, _ext_want_upsample, _ext_upsample_target_resolution = _veo_resolve_image_output_resolution(payload)
+            _ext_want_external_4k = _ext_resolution_label == "4K"
+            if _ext_want_external_4k:
+                _ext_resolution_label, _ext_want_upsample, _ext_upsample_target_resolution = ("1K", False, None)
             _ext_i2i_urls = _veo_collect_image_generation_reference_urls(payload) if _veo_payload_has_image_generation_references(payload) else []
             _ext_model_key = None
             _ext_video_aspect = None
@@ -5428,13 +5571,16 @@ async def veo_workflow(
                 want_i2v=want_i2v,
                 window_balance=_ext_window_balance,
             )
-            if want_ingredients and ingredients_video_urls:
-                _ext_model_key = "abra_edit"
+            if want_ingredients:
+                _ext_model_key = _VEO_OMNI_R2V_MODEL
+                if ingredients_video_urls:
+                    _ext_model_key = _VEO_OMNI_VEDIT_MODEL
             print(f"_ext_model_key:{_ext_model_key} _ext_video_aspect:{_ext_video_aspect}");
             _ext_image_aspect = None
             _ext_image_model = None
             # 图片放大字段对视频保持默认（"1K"/False/None），避免误触发 flow/upsampleImage。
             _ext_resolution_label, _ext_want_upsample, _ext_upsample_target_resolution = ("1K", False, None)
+            _ext_want_external_4k = False
             _ext_i2i_urls = []
             # 视频分辨率：720p（默认/原行为）/ 1080p / 4k；1080p/4k 由插件在生成后做视频放大。
             _ext_video_resolution_label, _ext_video_want_upsample, _ext_video_upsample_target, _ext_video_upsample_model_key = _veo_resolve_video_output_resolution(payload)
@@ -5442,6 +5588,8 @@ async def veo_workflow(
         # 不能污染 thumb_url 等需要返回给公网用户的字段。
         _original_ingredients_urls = list(ingredients_urls)
         _original_i2v_urls = list(i2v_urls)
+        if r2v_from_i2v_urls:
+            _original_i2v_urls = list(r2v_from_i2v_urls)
         if _veo_extension_local_image_cache_enabled(payload):
             # 输入图不要让指纹浏览器通过海外代理直连原图；Python 服务端先直连下载并
             # 暴露为 http://<base_url>/assets/veo_image_cache/...，插件再读取这个
@@ -5519,6 +5667,22 @@ async def veo_workflow(
                         f"end_frame_index={_ext_video_reference_meta.get('end_frame_index')}",
                     )
         ext_payload = dict(payload)
+
+        if image_mode:
+            if _ext_want_external_4k:
+                ext_payload["resolution"] = "1k"
+                ext_payload["image_resolution"] = "1k"
+                ext_payload["veo_image_resolution"] = "1k"
+            ext_prompt = str(ext_payload.get("prompt") or "").strip()
+            image_text_locale_hint = (
+                "文字要求：输出图片中所有可读文字、文案、标题、标签、包装辅助文案如果前面提示词没有特别指定，优先使用简体中文。"
+                "人物要求：输出图片的人物人种如果前面提示词中没有特别指定，优先使用中国或东亚模特。"
+            )
+            if image_text_locale_hint not in ext_prompt:
+                ext_payload["prompt"] = f"{ext_prompt}\n\n{image_text_locale_hint}"
+            else:
+                ext_payload["prompt"] = ext_prompt
+
         if _ext_video_reference_meta:
             # Python 服务端已经下载到本机缓存，顺手 ffprobe 最快且能拿到真实 fps/帧数；
             # 下发给插件，避免插件只能用 <video>.duration 后按固定 8fps 猜 endFrameIndex。
@@ -5659,14 +5823,28 @@ async def veo_workflow(
                 _public_thumb = str(_original_i2v_urls[0] or "").strip()
             elif want_ingredients and _original_ingredients_urls:
                 _public_thumb = str(_original_ingredients_urls[0] or "").strip()
+            if _veo_is_base64_media_value(_public_thumb):
+                _public_thumb = ""
+            _existing_thumb = str(_ext_result.get("thumb_url") or "").strip()
             # 双保险：即使浏览器插件未及时重载，仍在 Python 返回前把本地缓存地址
             # 还原为用户传入的公网原图，避免把 192.168.x.x 暴露给外部调用方。
+            if _existing_thumb and _veo_is_base64_media_value(_existing_thumb):
+                _ext_result = dict(_ext_result)
+                _ext_result["thumb_url"] = ""
+                _existing_thumb = ""
             if _public_thumb and (
-                not str(_ext_result.get("thumb_url") or "").strip()
-                or _veo_is_local_asset_url(str(_ext_result.get("thumb_url") or ""))
+                not _existing_thumb
+                or _veo_is_local_asset_url(_existing_thumb)
             ):
                 _ext_result = dict(_ext_result)
                 _ext_result["thumb_url"] = _public_thumb
+        if isinstance(_ext_result, dict) and image_mode and _ext_want_external_4k:
+            _ext_result = await _veo_external_upscale_1k_to_4k(
+                _ext_result,
+                progress_cb=progress_cb,
+                log_file=log_file,
+            )
+        _ext_result = _veo_rewrite_flow_content_urls(_ext_result)
         return _ext_result, project_page
 
     raise NonPenalizedTaskError(

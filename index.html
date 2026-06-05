@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AI 生成接口说明文档</title>
+  <style>
+    :root{--bg:#0b1020;--text:#162033;--muted:#64748b;--line:#e6edf5;--brand:#635bff;--brand2:#00b7ff;--code:#0f172a;--shadow:0 20px 60px rgba(15,23,42,.14)}
+    *{box-sizing:border-box}body{margin:0;font:14px/1.65 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;background:#f6f8fc;color:var(--text)}
+    .app{display:grid;grid-template-columns:300px 1fr;min-height:100vh}.side{position:sticky;top:0;height:100vh;background:linear-gradient(180deg,var(--bg),#111a32);color:#e5eefc;padding:22px 18px;overflow:auto}
+    .brand{display:flex;gap:12px;align-items:center;margin-bottom:20px}.logo{width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,var(--brand),var(--brand2));display:grid;place-items:center;box-shadow:0 12px 30px rgba(99,91,255,.35);font-size:20px}.brand h1{font-size:17px;margin:0}.brand p{margin:2px 0 0;color:#9fb0ce;font-size:12px}
+    .search{position:relative;margin:14px 0 18px}.search input{width:100%;padding:12px 14px 12px 38px;border:1px solid rgba(255,255,255,.12);border-radius:14px;background:rgba(255,255,255,.07);color:#fff;outline:none}.search span{position:absolute;left:13px;top:10px;opacity:.75}
+    .group{margin:18px 10px 8px;color:#93a4c2;font-size:12px;font-weight:800;letter-spacing:.08em}.nav{width:100%;border:0;background:transparent;color:#d8e3f8;text-align:left;border-radius:14px;padding:12px;margin:4px 0;cursor:pointer;display:flex;gap:10px}.nav:hover{background:rgba(255,255,255,.08)}.nav.active{background:linear-gradient(135deg,rgba(99,91,255,.28),rgba(0,183,255,.18));box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}.nav i{font-style:normal;width:26px;height:26px;border-radius:9px;display:grid;place-items:center;background:rgba(255,255,255,.1)}.nav b{display:block}.nav small{display:block;color:#9fb0ce;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:210px}
+    .note{margin-top:22px;padding:14px;border-radius:16px;background:rgba(255,255,255,.07);color:#b8c6df;font-size:12px}.note code{color:#fff}
+    .hero{background:radial-gradient(circle at 20% 0%,rgba(99,91,255,.18),transparent 28%),radial-gradient(circle at 80% 10%,rgba(0,183,255,.16),transparent 30%);padding:34px 42px 18px}.hero>div,.wrap{max-width:1120px;margin:0 auto}.crumb{color:var(--muted);font-size:13px}.hero h2{font-size:32px;line-height:1.2;margin:12px 0 10px;letter-spacing:-.03em}.hero p{margin:0;color:#526072}.pills{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}.pill{display:inline-flex;gap:7px;padding:7px 10px;border-radius:999px;background:#fff;border:1px solid var(--line);box-shadow:0 4px 16px rgba(15,23,42,.04);font-size:12px;color:#475569}.pill strong{color:#0f172a}
+    .wrap{padding:22px 42px 56px}.layout{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:22px;align-items:start}.doc{background:#fff;border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:30px 34px;min-width:0}.toc{position:sticky;top:20px;background:#fff;border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:0 12px 34px rgba(15,23,42,.08)}.toc h3{font-size:13px;margin:0 0 10px}.toc a{display:block;color:#64748b;text-decoration:none;padding:6px 8px;border-radius:9px;font-size:12px}.toc a:hover{background:#f1f5f9;color:#0f172a}
+    .back-home{position:fixed;left:18px;top:18px;z-index:20;display:none;align-items:center;gap:8px;padding:9px 12px;border-radius:12px;background:#fff;color:#0f172a;text-decoration:none;border:1px solid var(--line);box-shadow:0 12px 30px rgba(15,23,42,.12);font-weight:700}.back-home:hover{color:var(--brand)}
+    .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}.api-card{display:flex;flex-direction:column;gap:12px;min-height:190px;background:#fff;border:1px solid var(--line);border-radius:18px;padding:20px;text-decoration:none;color:var(--text);box-shadow:0 12px 34px rgba(15,23,42,.08)}.api-card:hover{transform:translateY(-2px);box-shadow:var(--shadow);border-color:#c7d2fe}.api-card h3{font-size:18px;margin:0}.api-card p{margin:0;color:#64748b}.api-card .go{margin-top:auto;color:var(--brand);font-weight:800}.api-card .tag{align-self:flex-start;padding:4px 8px;border-radius:999px;background:#eef2ff;color:#3730a3;font-size:12px;font-weight:700}
+    article h1{font-size:28px;line-height:1.25;margin:0 0 18px;padding-bottom:16px;border-bottom:1px solid var(--line)}article h2{font-size:22px;margin:30px 0 12px}article h3{font-size:17px;margin:22px 0 10px}article p{color:#334155}blockquote{margin:16px 0;padding:13px 16px;border-left:4px solid var(--brand);background:#f5f7ff;border-radius:0 12px 12px 0}code:not(pre code){background:#eef2ff;color:#3730a3;padding:2px 6px;border-radius:7px}pre{position:relative;margin:14px 0 20px;background:var(--code);color:#e2e8f0;border-radius:16px;overflow:hidden;border:1px solid #1e293b}pre code{display:block;padding:18px;overflow:auto;font:12.5px/1.65 Consolas,monospace}.copy{position:absolute;right:10px;top:10px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.08);color:#cbd5e1;border-radius:10px;padding:5px 9px;font-size:12px;cursor:pointer}
+    table{width:100%;border-collapse:separate;border-spacing:0;margin:16px 0;border:1px solid var(--line);border-radius:14px;overflow:hidden}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f8fafc}tr:last-child td{border-bottom:0}hr{border:0;border-top:1px solid var(--line);margin:24px 0}.empty{display:none;color:#9fb0ce;text-align:center;padding:20px 8px}
+    @media(max-width:980px){.app{grid-template-columns:1fr}.side{position:relative;height:auto}.layout{grid-template-columns:1fr}.toc{display:none}.hero,.wrap{padding-left:18px;padding-right:18px}.doc{padding:22px 18px}}
+  </style>
+</head>
+<body>
+  <a class="back-home" id="backHome" href="https://www.newtoken.club">← 返回 newtoken.club</a>
+  <div class="app">
+    <aside class="side">
+      <div class="brand"><div class="logo">⚡</div><div><h1>生成接口中心</h1><p>Image & Video API Docs</p></div></div>
+      <div class="search"><span>⌕</span><input id="q" placeholder="搜索模型、文件、字段..."></div>
+      <nav id="nav"></nav><div id="empty" class="empty">没有匹配的接口</div>
+      <div class="note"><b>扩展方式</b><br>在脚本中的 <code>DOCS</code> 数组新增对象，即可自动加入导航；推荐按 <code>type</code> 分组。</div>
+    </aside>
+    <main>
+      <section class="hero"><div><div class="crumb">开发者文档 / <span id="crumb"></span></div><h2 id="title"></h2><p id="desc"></p><div class="pills" id="meta"></div></div></section>
+      <div class="wrap"><div id="content"></div></div>
+    </main>
+  </div>
+  <script>
+    const DOCS=[
+  {
+    "id": "gpt-image-2",
+    "type": "image",
+    "title": "GPT Image 2",
+    "displayTitle": "🎨 GPT Image · 异步 API 接入文档（`/v1/videos` 统一版）",
+    "file": "图片生成接口-gpt-image2.md",
+    "endpoint": "POST /v1/videos · GET /v1/videos/{id}",
+    "models": [],
+    "content": "# 🎨 GPT Image · 异步 API 接入文档（`/v1/videos` 统一版）\n\n> **唯一路径**：`POST /v1/videos`（提交） + `GET /v1/videos/{id}`（轮询） —— NEW API 原生异步任务支持，**0 配置即用**，自带进度条 +\n\n---\n\n##文生图\n\n```bash\n# ① 提交（走 /v1/videos，NEW API 自动当异步任务跟踪 → 进度条 + 失败退款 + 任务历史）\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer apikey\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"gpt-image-2-2K\",\n    \"prompt\": \"retro neon poster, cyberpunk girl\",\n    \"aspect_ratio\": \"9:16\"\n  }'\n---\n\n##多图生图\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer apikey\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"gpt-image-2-2K\",\n    \"prompt\": \"the character from the reference photo, in a futuristic city\",\n    \"aspect_ratio\": \"16:9\",\n    \"image_urls\": [\n      \"https://your-cdn.com/character.jpg\",\n      \"https://your-cdn.com/scene.jpg\"\n    ]\n  }'\n\n---\n\n## 1. 完整调用流程\n\n### Step 1 · 提交任务\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer apikey\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"gpt-image-2-2K\",\n    \"prompt\": \"retro neon poster\",\n    \"image_urls\": [\"https://your-cdn.com/ref.jpg\"]\n  }'\n```\n\n立即返回（< 1 秒）：\n\n```json\n{\n  \"id\": \"8c7e4b...\",\n  \"task_id\": \"8c7e4b...\",\n  \"object\": \"video\",\n  \"created_at\": 1714200000,\n  \"status\": \"queued\",\n  \"progress\": 0,\n  \"video_url\": null,\n  \"prompt\": \"retro neon poster\",\n  \"aspect_ratio\": \"16:9\",\n  \"model\": \"gpt-image-2-2K-16x9\"\n}\n```\n\n### Step 2 · 轮询任务\n**轮询策略**：\n### Step 3 · 状态判断\n\n| `status` | 含义 | 该做什么 |\n|---|---|---|\n| `queued` | 排队中 | 继续轮询 |\n| `in_progress` | 生成中（progress 0–99） | 继续轮询 |\n| `completed` | 完成 | 取 `video_url`（图片直链 .png） |\n| `failed` | 失败 | 看 `error.message` |\n\n完成响应：\n\n```json\n{\n  \"id\": \"8c7e4b...\",\n  \"object\": \"video\",\n  \"status\": \"completed\",\n  \"progress\": 100,\n  \"video_url\": \"https://YOUR-HOST/generated/8c7e4b....png\",\n  \"completed_at\": 1714200068,\n  \"aspect_ratio\": \"9:16\"\n}\n```\n"
+  },
+  {
+    "id": "nana-banana",
+    "type": "image",
+    "title": "Nana Banana",
+    "displayTitle": "🖼️ Nana Banana 2 / Nana Banana Pro · 图片异步 API 接入文档（`/v1/videos`）",
+    "file": "图片生成接口-nana-banana.md",
+    "endpoint": "POST /v1/videos · GET /v1/videos/{id}",
+    "models": [
+      "nana-banana-2",
+      "nana-banana-pro"
+    ],
+    "content": "# 🖼️ Nana Banana 2 / Nana Banana Pro · 图片异步 API 接入文档（`/v1/videos`）\n\n> **提交任务**：`POST /v1/videos`  \n> **查询进度**：`GET /v1/videos/{task_id}`  \n> 支持：文生图、多参考图生成图片\n\n虽然入口路径是 `/v1/videos`，但这两个模型的最终结果是图片；完成后读取 `image_url` 或 `url`。\n\n## 1. 支持模型\n\n| 模型 | 输出 | 说明 |\n|---|---|---|\n| `nana-banana-2` | 图片 | 标准图片生成 |\n| `nana-banana-pro` | 图片 | Pro 图片生成 |\n\n## 2. 完整调用流程\n\n### Step 1 · 提交任务\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"nana-banana-2\",\n    \"prompt\": \"a cute banana mascot wearing sunglasses, studio lighting, high detail\",\n    \"aspect_ratio\": \"1:1\",\n    \"resolution\": \"1k\"\n  }'\n```\n\n立即返回：\n\n```json\n{\n  \"id\": \"v_8c7e4b...\",\n  \"task_id\": \"v_8c7e4b...\",\n  \"object\": \"video\",\n  \"created_at\": 1714200000000,\n  \"status\": \"queued\",\n  \"progress\": 0,\n  \"model\": \"nana-banana-2\",\n  \"video_url\": null,\n  \"metadata\": { \"result_urls\": [] },\n  \"aspect_ratio\": \"1:1\",\n  \"prompt\": \"a cute banana mascot wearing sunglasses, studio lighting, high detail\"\n}\n```\n\n### Step 2 · 轮询任务\n\n```bash\ncurl https://xxx.xxx.xxx/v1/videos/v_8c7e4b... \\\n  -H \"Authorization: Bearer api-key\"\n```\n\n完成响应：\n\n```json\n{\n  \"id\": \"v_8c7e4b...\",\n  \"task_id\": \"v_8c7e4b...\",\n  \"object\": \"video\",\n  \"created_at\": 1714200000000,\n  \"status\": \"completed\",\n  \"progress\": 100,\n  \"model\": \"nana-banana-2\",\n  \"video_url\": null,\n  \"image_url\": \"https://xxx.xxx.xxx/generated/image.jpg\",\n  \"url\": \"https://xxx.xxx.xxx/generated/image.jpg\",\n  \"metadata\": {\n    \"result_urls\": [\"https://xxx.xxx.xxx/generated/image.jpg\"]\n  },\n  \"completed_at\": 1714200180000\n}\n```\n\n| `status` | 含义 | 该做什么 |\n|---|---|---|\n| `queued` | 排队中 | 继续轮询 |\n| `processing` | 生成中 | 继续轮询 |\n| `completed` | 已完成 | 取 `image_url` 或 `url` |\n| `failed` | 失败 | 查看 `error.message` |\n\n建议每 3–5 秒轮询一次。\n\n## 3. 调用示例\n\n### 3.1 Nana Banana 2 · 文生图\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"nana-banana-2\",\n    \"prompt\": \"a playful banana mascot in a modern 3D icon style\",\n    \"aspect_ratio\": \"1:1\",\n    \"resolution\": \"1k\"\n  }'\n```\n\n### 3.2 Nana Banana 2 · 多参考图生成图片\n\n最多 10 张参考图。\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"nana-banana-2\",\n    \"prompt\": \"make a poster using the character style and product reference\",\n    \"aspect_ratio\": \"4:3\",\n    \"resolution\": \"1k\",\n    \"images\": [\n      \"https://your-cdn.com/character.jpg\",\n      \"https://your-cdn.com/product.jpg\"\n    ]\n  }'\n```\n\n### 3.3 Nana Banana Pro · 文生图\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"nana-banana-pro\",\n    \"prompt\": \"premium editorial product photo, luxury magazine style, soft studio light\",\n    \"aspect_ratio\": \"16:9\",\n    \"resolution\": \"2k\"\n  }'\n```\n\n### 3.4 Nana Banana Pro · 多参考图生成图片\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"nana-banana-pro\",\n    \"prompt\": \"create a premium campaign image using all references\",\n    \"aspect_ratio\": \"9:16\",\n    \"resolution\": \"2k\",\n    \"images\": [\n      \"https://your-cdn.com/product.jpg\",\n      \"https://your-cdn.com/background-style.jpg\",\n      \"https://your-cdn.com/brand-color.jpg\"\n    ]\n  }'\n```\n\n单参考图也可以使用：\n\n```json\n{\n  \"image_url\": \"https://your-cdn.com/reference.jpg\"\n}\n```\n\n## 4. 请求字段\n\n| 字段 | 类型 | 必填 | 说明 |\n|---|---|---|---|\n| `model` | string | ✅ | `nana-banana-2` 或 `nana-banana-pro` |\n| `prompt` | string | ✅ | 生成提示词 |\n| `aspect_ratio` | string | ❌ | 默认 `16:9`；支持 `1:1` / `4:3` / `3:4` / `16:9` / `9:16` |\n| `resolution` | string | ❌ | 默认 `1k`；支持 `1k` / `2k` |\n| `images` | string[] | ❌ | 多参考图 URL 数组，最多 10 张 |\n| `image_url` / `first_image_url` | string | ❌ | 单参考图 URL |\n| `duration` | int | ❌ | 图片生成不需要传 |\n\n## 5. 响应字段\n\n| 字段 | 类型 | 说明 |\n|---|---|---|\n| `id` / `task_id` | string | 任务 ID |\n| `object` | string | 固定为 `video`（接口兼容字段） |\n| `created_at` | int | 创建时间戳，毫秒 |\n| `status` | string | `queued` / `processing` / `completed` / `failed` |\n| `progress` | int | 0–100 |\n| `model` | string | 请求模型 |\n| `video_url` | null | 图片模型通常为 `null` |\n| `image_url` | string\\|null | 完成后的图片地址 |\n| `url` | string\\|null | 最终结果地址，通常等于 `image_url` |\n| `metadata.result_urls` | string[] | 最终结果地址数组 |\n| `completed_at` | int | 完成时间戳，毫秒 |\n| `error.message` | string | 失败原因 |\n"
+  },
+  {
+    "id": "sora-2",
+    "type": "video",
+    "title": "Sora 2",
+    "displayTitle": "🎬 Sora 2 · 异步 API 接入文档（`/v1/videos` 统一版）",
+    "file": "视频生成接口-sora-2.md",
+    "endpoint": "POST /v1/videos · GET /v1/videos/{id}",
+    "models": [
+      "sora-2"
+    ],
+    "content": "# 🎬 Sora 2 · 异步 API 接入文档（`/v1/videos` 统一版）\n> **唯一路径**：`POST /v1/videos`（提交） + `GET /v1/videos/{id}`（轮询） —— NEW API 原生异步任务支持\nsora-2只支持一张参考图\n\n## 1. 完整调用流程\n### Step 1 · 提交任务\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"sora-2\",\n    \"prompt\": \"...\",\n    \"aspect_ratio\": \"16:9\",\n    \"duration\": 12,\n    \"image\": \"https://...\",\n  }'\n```\n立即返回：\n```json\n{\n  \"id\": \"v_8c7e4b...\",\n  \"task_id\": \"v_8c7e4b...\",\n  \"object\": \"video\",\n  \"created_at\": 1714200000,\n  \"status\": \"queued\",\n  \"progress\": 0,\n  \"video_url\": null,\n  \"prompt\": \"...\",\n  \"aspect_ratio\": \"16:9\",\n  \"duration\": 12,\n  \"model\": \"sora-2\"\n}\n```\n\n### Step 2 · 轮询\n```bash\ncurl https://xxx.xxx.xxx/v1/videos/v_8c7e4b... \\\n  -H \"Authorization: api-key\"\n```\n完成响应：\n\n```json\n{\n  \"id\": \"v_8c7e4b...\",\n  \"object\": \"video\",\n  \"status\": \"completed\",\n  \"progress\": 100,\n  \"video_url\": \"https://xxx.xxx.xxx/generated/v_8c7e4b....mp4\",\n  \"completed_at\": 1714200180,\n  \"aspect_ratio\": \"16:9\",\n  \"duration\": 12\n}\n| `status` | 含义 | 该做什么 |\n|---|---|---|\n| `queued` | 排队中 | 继续轮询 |\n| `in_progress` | 生成中（progress 0–99） | 继续轮询 |\n| `completed` | 完成 | 取 `video_url`（.mp4 直链） |\n| `failed` | 失败 | 看 `error.message` |\n```\n\n## 3. 案例集\n\n### 案例 1 · 文生短视频\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"sora-2\",\n    \"prompt\": \"a golden retriever puppy running through a field of sunflowers, slow motion, sunny afternoon\",\n    \"duration\": 12,\n    \"aspect_ratio\": \"16:9\"\n  }'\n```\n\n### 案例 2 · 图生视频 \n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"sora-2\",\n    \"prompt\": \"the character in the photo turns slowly toward the camera and smiles, soft cinematic lighting\",\n    \"duration\": 12,\n    \"aspect_ratio\": \"9:16\",\n    \"image\": \"https://your-cdn.com/portrait.jpg\"\n  }'\n```\n\n\n## 4. 完整字段表\n\n### 4.1 提交字段\n\n| 字段 | 类型 | 必填 | 说明 |\n|---|---|---|---|\n| `model` | string | ✅ | `sora-2`|\n| `prompt` | string | ✅\\* | `prompt` 或 `image` 至少一项 |\n| `aspect_ratio` | string | ❌ | `16:9` / `9:16`；默认 `16:9` |\n| `duration` | int | ❌ | `12`\n| `image` | string\\|array | ❌ | 单图 URL（首帧）或多图数组 |\n| `messages` | array | ❌ | OpenAI Chat 风格 |\n\n### 4.2 响应字段\n\n| 字段 | 类型 | 说明 |\n|---|---|---|\n| `id` / `task_id` | string | 任务 ID（双字段兼容） |\n| `object` | string | 固定 `\"video\"` |\n| `created_at` | int | 提交时间戳 |\n| `status` | string | `queued` / `in_progress` / `completed` / `failed` |\n| `progress` | int | 0–100 |\n| `video_url` | string\\|null | 完成时是 mp4 直链 |\n| `metadata.result_urls` | string[] | `[video_url]`（NEW API 兼容字段） |\n| `prompt` / `aspect_ratio` / `duration` / `model` | – | 回显 |\n| `completed_at` | int | 完成时间戳 |\n| `error` | object | 失败时 `{message, code}` |"
+  },
+  {
+    "id": "sora-pro",
+    "type": "video",
+    "title": "Sora Pro",
+    "displayTitle": "🎬 Sora-Pro · 视频异步 API 接入文档（`/v1/videos`）",
+    "file": "视频生成接口-sora-pro.md",
+    "endpoint": "POST /v1/videos · GET /v1/videos/{id}",
+    "models": [
+      "sora-pro"
+    ],
+    "content": "# 🎬 Sora-Pro · 视频异步 API 接入文档（`/v1/videos`）\n\n> **提交任务**：`POST /v1/videos`  \n> **查询进度**：`GET /v1/videos/{task_id}`  \n> 支持：文生视频、首尾帧图片生成视频、多参考图生成视频（`omni_reference`）\n\n图片地址请使用可公网访问的 `https://` URL。\n\n## 1. 完整调用流程\n\n### Step 1 · 提交任务\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"sora-pro\",\n    \"prompt\": \"a golden retriever puppy running through sunflowers, cinematic, slow motion\",\n    \"duration\": 15,\n    \"aspect_ratio\": \"16:9\",\n    \"resolution\": \"720p\"\n  }'\n```\n\n立即返回：\n\n```json\n{\n  \"id\": \"v_8c7e4b...\",\n  \"task_id\": \"v_8c7e4b...\",\n  \"object\": \"video\",\n  \"created_at\": 1714200000000,\n  \"status\": \"queued\",\n  \"progress\": 0,\n  \"model\": \"sora-pro\",\n  \"video_url\": null,\n  \"metadata\": { \"result_urls\": [] },\n  \"seconds\": \"15\",\n  \"duration\": 15,\n  \"aspect_ratio\": \"16:9\",\n  \"prompt\": \"a golden retriever puppy running through sunflowers, cinematic, slow motion\"\n}\n```\n\n### Step 2 · 轮询任务\n\n```bash\ncurl https://xxx.xxx.xxx/v1/videos/v_8c7e4b... \\\n  -H \"Authorization: Bearer api-key\"\n```\n\n完成响应：\n\n```json\n{\n  \"id\": \"v_8c7e4b...\",\n  \"task_id\": \"v_8c7e4b...\",\n  \"object\": \"video\",\n  \"created_at\": 1714200000000,\n  \"status\": \"completed\",\n  \"progress\": 100,\n  \"model\": \"sora-pro\",\n  \"video_url\": \"https://xxx.xxx.xxx/generated/video.mp4\",\n  \"url\": \"https://xxx.xxx.xxx/generated/video.mp4\",\n  \"metadata\": {\n    \"result_urls\": [\"https://xxx.xxx.xxx/generated/video.mp4\"]\n  },\n  \"completed_at\": 1714200180000\n}\n```\n\n| `status` | 含义 | 该做什么 |\n|---|---|---|\n| `queued` | 排队中 | 继续轮询 |\n| `processing` | 生成中 | 继续轮询 |\n| `completed` | 已完成 | 取 `video_url` 或 `url` |\n| `failed` | 失败 | 查看 `error.message` |\n\n建议每 3–5 秒轮询一次。\n\n## 2. 调用示例\n\n### 2.1 文生视频\n\n不传图片即可。\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"sora-pro\",\n    \"prompt\": \"a cinematic drone shot over a misty mountain village at sunrise\",\n    \"duration\": 15,\n    \"aspect_ratio\": \"16:9\",\n    \"resolution\": \"720p\"\n  }'\n```\n\n### 2.2 首尾帧图片生成视频\n\n`images` 顺序为：`[首帧图, 尾帧图]`。只传 1 张时表示首帧图。\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"sora-pro\",\n    \"prompt\": \"animate naturally from the first frame to the final frame, smooth camera movement\",\n    \"duration\": 15,\n    \"aspect_ratio\": \"9:16\",\n    \"resolution\": \"720p\",\n    \"function_mode\": \"first_last_frames\",\n    \"images\": [\n      \"https://your-cdn.com/first.jpg\",\n      \"https://your-cdn.com/last.jpg\"\n    ]\n  }'\n```\n\n也可以写成：\n\n```json\n{\n  \"function_mode\": \"first_last_frames\",\n  \"first_image_url\": \"https://your-cdn.com/first.jpg\",\n  \"last_image_url\": \"https://your-cdn.com/last.jpg\"\n}\n```\n\n### 2.3 多参考图生成视频（`omni_reference`）\n\n最多 9 张参考图。\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"sora-pro\",\n    \"prompt\": \"use the character, outfit and product references to make a fashion commercial video\",\n    \"duration\": 15,\n    \"aspect_ratio\": \"16:9\",\n    \"resolution\": \"720p\",\n    \"function_mode\": \"omni_reference\",\n    \"images\": [\n      \"https://your-cdn.com/character.jpg\",\n      \"https://your-cdn.com/outfit.jpg\",\n      \"https://your-cdn.com/product.jpg\"\n    ]\n  }'\n```\n\n## 3. 请求字段\n\n| 字段 | 类型 | 必填 | 说明 |\n|---|---|---|---|\n| `model` | string | ✅ | 固定传 `sora-pro` |\n| `prompt` | string | ✅ | 生成提示词 |\n| `duration` | int | ✅ | 固定传 `15` |\n| `aspect_ratio` | string | ❌ | 默认 `16:9`；支持 `16:9` / `9:16` / `1:1` / `4:3` / `3:4` / `21:9` |\n| `resolution` | string | ❌ | 默认 `720p`；支持 `480p` / `720p` / `1080p` |\n| `function_mode` | string | ❌ | 首尾帧传 `first_last_frames`；多参考图传 `omni_reference`；文生视频可不传 |\n| `images` | string[] | ❌ | 图片 URL 数组。首尾帧最多 2 张；`omni_reference` 最多 9 张 |\n| `first_image_url` | string | ❌ | 首帧图 URL |\n| `last_image_url` | string | ❌ | 尾帧图 URL |\n\n## 4. 响应字段\n\n| 字段 | 类型 | 说明 |\n|---|---|---|\n| `id` / `task_id` | string | 任务 ID |\n| `object` | string | 固定为 `video` |\n| `created_at` | int | 创建时间戳，毫秒 |\n| `status` | string | `queued` / `processing` / `completed` / `failed` |\n| `progress` | int | 0–100 |\n| `model` | string | 请求模型 |\n| `video_url` | string\\|null | 完成后的视频地址 |\n| `url` | string\\|null | 最终结果地址，通常等于 `video_url` |\n| `metadata.result_urls` | string[] | 最终结果地址数组 |\n| `completed_at` | int | 完成时间戳，毫秒 |\n| `error.message` | string | 失败原因 |\n"
+  },
+  {
+    "id": "sora-pro-2",
+    "type": "video",
+    "title": "Sora Pro 2",
+    "displayTitle": "🎬 Sora Pro 2 · 视频任务接口说明（`/v1/videos`）",
+    "file": "视频生成接口-sora-pro-2.md",
+    "endpoint": "POST /v1/videos ? GET /v1/videos/{task_id} ? GET /v1/videos/{task_id}/content",
+    "models": [
+      "sora-vip3-pro-720p",
+      "sora-vip3-pro-1080p"
+    ],
+    "content": "# 🎬 Sora Pro 2 · 视频任务接口说明（`/v1/videos`）\n\n视频任务接口，支持文生视频、图生视频、任务查询和鉴权下载。示例均使用主站对外地址，不包含第三方域名或账号信息。\n\n> **基础地址**：`https://your-newapi.com` 为参考，真实接入请按照当前网站地址。  \n> **创建任务**：`POST /v1/videos`  \n> **查询状态**：`GET /v1/videos/{task_id}`  \n> **下载内容**：`GET /v1/videos/{task_id}/content`  \n> **鉴权方式**：`Authorization: Bearer YOUR_API_KEY`  \n> **请求格式**：`Content-Type: application/json`  \n> **推荐轮询间隔**：5 秒\n\n请使用当前账号分配的 API Key。不要在公开页面、截图或群聊中泄露完整密钥。\n\n## 1. 适用模型\n\n| 模型 | 输出 | 说明 |\n|---|---|---|\n| `sora-vip3-pro-720p` | 480p、720p | 适合常规短视频与预览生成 |\n| `sora-vip3-pro-1080p` | 480p、720p、1080p | 适合正式交付和高清素材 |\n\n## 2. 创建视频任务\n\n| 方法 | 路径 | 说明 |\n|---|---|---|\n| `POST` | `/v1/videos` | 提交文生视频或图生视频任务，成功后返回任务 ID |\n\n### 文生视频请求体\n\n```json\n{\n  \"model\": \"sora-vip3-pro-720p\",\n  \"prompt\": \"雨夜霓虹街道，镜头缓慢推进，电影感光影\",\n  \"aspect_ratio\": \"16:9\",\n  \"resolution\": \"720p\",\n  \"seconds\": \"5\"\n}\n```\n\n### 图生视频请求体\n\n```json\n{\n  \"model\": \"sora-vip3-pro-1080p\",\n  \"prompt\": \"保持人物外貌和服装一致，自然缓慢走动\",\n  \"image_url\": \"https://example.com/input-image.jpg\",\n  \"aspect_ratio\": \"16:9\",\n  \"resolution\": \"1080p\",\n  \"seconds\": \"5\"\n}\n```\n\n### 成功返回示例\n\n```json\n{\n  \"id\": \"task_xxx\",\n  \"object\": \"video\",\n  \"model\": \"sora-vip3-pro-720p\",\n  \"status\": \"queued\",\n  \"progress\": 0,\n  \"created_at\": 1779560000\n}\n```\n\n## 3. 查询任务状态\n\n| 方法 | 路径 | 说明 |\n|---|---|---|\n| `GET` | `/v1/videos/{task_id}` | 查询任务状态、进度和完成后的结果地址 |\n\n### 完成态返回示例\n\n```json\n{\n  \"id\": \"task_xxx\",\n  \"task_id\": \"task_xxx\",\n  \"object\": \"video\",\n  \"model\": \"sora-vip3-pro-1080p\",\n  \"status\": \"completed\",\n  \"progress\": 100,\n  \"created_at\": 1779560000,\n  \"completed_at\": 1779560150,\n  \"seconds\": \"5\",\n  \"size\": \"1920x1080\",\n  \"video_url\": \"https://your-newapi.com/v1/videos/task_xxx/content\",\n  \"url\": \"https://your-newapi.com/v1/videos/task_xxx/content\"\n}\n```\n\n| 状态 | 说明 |\n|---|---|\n| `queued` | 任务已提交，等待执行 |\n| `in_progress` | 任务执行中 |\n| `completed` | 任务完成，可读取 `video_url` 或 `url` |\n| `failed` | 任务失败，请查看错误信息或重新提交 |\n\n## 4. 下载视频内容\n\n| 方法 | 路径 | 说明 |\n|---|---|---|\n| `GET` | `/v1/videos/{task_id}/content` | 返回视频二进制内容，通常为 `video/mp4` |\n\n下载内容时同样需要携带 `Authorization: Bearer YOUR_API_KEY`。建议任务完成后尽快下载或转存到自己的存储。\n\n## 5. 支持参数\n\n| 参数 | 类型 | 必填 | 说明 |\n|---|---|---|---|\n| `model` | string | 是 | 视频模型名 |\n| `prompt` | string | 是 | 视频生成提示词 |\n| `aspect_ratio` | string | 是 | 输出比例 |\n| `resolution` | string | 是 | 输出分辨率 |\n| `seconds` | string / number | 是 | 视频时长 |\n| `image_url` | string | 否 | 主参考图，用于图生视频 |\n| `reference_image_urls` | array | 否 | 多张参考图 |\n| `reference_video` | string | 否 | 参考视频 |\n| `audio_url` | string | 否 | 参考音频 |\n\n## 6. 参数范围\n\n| 类别 | 支持值 |\n|---|---|\n| 比例 | `16:9`、`9:16`、`4:3`、`3:4`、`1:1`、`21:9` |\n| 时长 | `5`、`10`、`15` 秒 |\n| `sora-vip3-pro-720p` 分辨率 | `480p`、`720p` |\n| `sora-vip3-pro-1080p` 分辨率 | `480p`、`720p`、`1080p` |\n\n## 7. 推荐接入流程\n\n1. 调用 `POST /v1/videos` 创建视频任务。\n2. 保存返回的 `id` 或 `task_id`。\n3. 每隔约 5 秒轮询 `GET /v1/videos/{task_id}`。\n4. 状态为 `completed` 后，读取 `video_url` 或 `url`。\n5. 携带鉴权请求 `/v1/videos/{task_id}/content` 下载视频内容。\n\n## 8. 快速接入示例\n\n### 创建文生视频任务\n\n```bash\ncurl -X POST 'https://your-newapi.com/v1/videos' \\\n  -H 'Authorization: Bearer YOUR_API_KEY' \\\n  -H 'Content-Type: application/json' \\\n  -d '{\n    \"model\": \"sora-vip3-pro-720p\",\n    \"prompt\": \"雨夜霓虹街道，镜头缓慢推进，电影感光影\",\n    \"aspect_ratio\": \"16:9\",\n    \"resolution\": \"720p\",\n    \"seconds\": \"5\"\n  }'\n```\n\n### 创建图生视频任务\n\n```bash\ncurl -X POST 'https://your-newapi.com/v1/videos' \\\n  -H 'Authorization: Bearer YOUR_API_KEY' \\\n  -H 'Content-Type: application/json' \\\n  -d '{\n    \"model\": \"sora-vip3-pro-1080p\",\n    \"prompt\": \"保持人物外貌和服装一致，自然缓慢走动\",\n    \"image_url\": \"https://example.com/input-image.jpg\",\n    \"aspect_ratio\": \"16:9\",\n    \"resolution\": \"1080p\",\n    \"seconds\": \"5\"\n  }'\n```\n\n### 查询任务\n\n```bash\ncurl 'https://your-newapi.com/v1/videos/{task_id}' \\\n  -H 'Authorization: Bearer YOUR_API_KEY'\n```\n\n### 下载结果\n\n```bash\ncurl 'https://your-newapi.com/v1/videos/{task_id}/content' \\\n  -H 'Authorization: Bearer YOUR_API_KEY' \\\n  --output result.mp4\n```\n\n## 9. 接入注意事项\n\n### 任务异步执行\n\n视频生成耗时会随模型、分辨率、时长、参考素材和提示词复杂度波动。正式业务建议以前端或服务端轮询任务状态为主。\n\n### 参考素材\n\n图生视频请提供可访问、清晰、完整的参考图地址。参考图质量会直接影响生成稳定性。\n\n### 结果下载\n\n结果地址不是公开免鉴权链接，请继续携带 API Key 下载，并在结果可用后及时转存。\n"
+  },
+  {
+    "id": "veo-3-1",
+    "type": "video",
+    "title": "VEO 3.1",
+    "displayTitle": "🎥 VEO 3.1 · 视频异步 API 接入文档（`/v1/videos`）",
+    "file": "视频生成接口-veo-3-1.md",
+    "endpoint": "POST /v1/videos ? GET /v1/videos/{id}",
+    "models": [
+      "veo-3-1"
+    ],
+    "content": "# 🎥 VEO 3.1 · 视频异步 API 接入文档（`/v1/videos`）\n\n> **提交任务**：`POST /v1/videos`  \n> **查询进度**：`GET /v1/videos/{task_id}`  \n> 支持：首帧 / 首尾帧图片生成视频、多参考图生成视频\n\n## 1. 模型与时长\n\n| 模型 | `duration` | 说明 |\n|---|---:|---|\n| `veo-3-1` | `8` | VEO 3.1 视频 |\n\n> `duration` 固定传 `8`。\n\n## 2. 完整调用流程\n\n### Step 1 · 提交任务\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"veo-3-1\",\n    \"prompt\": \"animate smoothly from the first frame to the last frame, cinematic motion\",\n    \"duration\": 8,\n    \"aspect_ratio\": \"16:9\",\n    \"images\": [\n      \"https://your-cdn.com/first.jpg\",\n      \"https://your-cdn.com/last.jpg\"\n    ]\n  }'\n```\n\n立即返回：\n\n```json\n{\n  \"id\": \"v_8c7e4b...\",\n  \"task_id\": \"v_8c7e4b...\",\n  \"object\": \"video\",\n  \"created_at\": 1714200000000,\n  \"status\": \"queued\",\n  \"progress\": 0,\n  \"model\": \"veo-3-1\",\n  \"video_url\": null,\n  \"metadata\": { \"result_urls\": [] },\n  \"seconds\": \"8\",\n  \"duration\": 8,\n  \"aspect_ratio\": \"16:9\",\n  \"prompt\": \"animate smoothly from the first frame to the last frame, cinematic motion\"\n}\n```\n\n### Step 2 · 轮询任务\n\n```bash\ncurl https://xxx.xxx.xxx/v1/videos/v_8c7e4b... \\\n  -H \"Authorization: Bearer api-key\"\n```\n\n完成响应：\n\n```json\n{\n  \"id\": \"v_8c7e4b...\",\n  \"task_id\": \"v_8c7e4b...\",\n  \"object\": \"video\",\n  \"created_at\": 1714200000000,\n  \"status\": \"completed\",\n  \"progress\": 100,\n  \"model\": \"veo-3-1\",\n  \"video_url\": \"https://xxx.xxx.xxx/generated/video.mp4\",\n  \"url\": \"https://xxx.xxx.xxx/generated/video.mp4\",\n  \"metadata\": {\n    \"result_urls\": [\"https://xxx.xxx.xxx/generated/video.mp4\"]\n  },\n  \"completed_at\": 1714200180000\n}\n```\n\n| `status` | 含义 | 该做什么 |\n|---|---|---|\n| `queued` | 排队中 | 继续轮询 |\n| `processing` | 生成中 | 继续轮询 |\n| `completed` | 已完成 | 取 `video_url` 或 `url` |\n| `failed` | 失败 | 查看 `error.message` |\n\n建议每 3–5 秒轮询一次。\n\n## 3. 调用示例\n\n### 3.1 首帧 / 首尾帧生成视频\n\n`images` 顺序为：`[首帧图, 尾帧图]`。只传 1 张时表示首帧图。\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"veo-3-1\",\n    \"prompt\": \"the subject walks forward and the camera slowly pushes in\",\n    \"duration\": 8,\n    \"aspect_ratio\": \"9:16\",\n    \"images\": [\n      \"https://your-cdn.com/first.jpg\",\n      \"https://your-cdn.com/last.jpg\"\n    ]\n  }'\n```\n\n也可以写成：\n\n```json\n{\n  \"first_image_url\": \"https://your-cdn.com/first.jpg\",\n  \"last_image_url\": \"https://your-cdn.com/last.jpg\"\n}\n```\n\n### 3.2 多参考图生成视频\n\n多参考图字段使用 `Ingredients_images`，最多 6 张。\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"veo-3-1\",\n    \"prompt\": \"combine these references into a cinematic product launch video\",\n    \"duration\": 8,\n    \"aspect_ratio\": \"16:9\",\n    \"Ingredients_images\": [\n      \"https://your-cdn.com/ref-1.jpg\",\n      \"https://your-cdn.com/ref-2.jpg\",\n      \"https://your-cdn.com/ref-3.jpg\"\n    ]\n  }'\n```\n\n## 4. 请求字段\n\n| 字段 | 类型 | 必填 | 说明 |\n|---|---|---|---|\n| `model` | string | ✅ | 固定传 `veo-3-1` |\n| `prompt` | string | ✅ | 生成提示词 |\n| `duration` | int | ✅ | 固定 `8` |\n| `aspect_ratio` | string | ❌ | 默认 `16:9`；支持 `16:9` / `9:16` |\n| `images` | string[] | ❌ | 首帧 / 首尾帧图片数组，最多 2 张，顺序为 `[首帧, 尾帧]` |\n| `first_image_url` / `image_url` | string | ❌ | 首帧图 URL |\n| `last_image_url` / `end_image_url` | string | ❌ | 尾帧图 URL；不能只传尾帧 |\n| `Ingredients_images` | string[] | ❌ | 多参考图生成视频，最多 6 张；也可写 `ingredients_images` |\n\n## 5. 响应字段\n\n| 字段 | 类型 | 说明 |\n|---|---|---|\n| `id` / `task_id` | string | 任务 ID |\n| `object` | string | 固定为 `video` |\n| `created_at` | int | 创建时间戳，毫秒 |\n| `status` | string | `queued` / `processing` / `completed` / `failed` |\n| `progress` | int | 0–100 |\n| `model` | string | 请求模型 |\n| `video_url` | string\\|null | 完成后的视频地址 |\n| `url` | string\\|null | 最终结果地址，通常等于 `video_url` |\n| `metadata.result_urls` | string[] | 最终结果地址数组 |\n| `completed_at` | int | 完成时间戳，毫秒 |\n| `error.message` | string | 失败原因 |\n"
+  },
+  {
+    "id": "veo-omni-flash",
+    "type": "video",
+    "title": "VEO Omni Flash",
+    "displayTitle": "🎥 VEO Omni Flash · 视频异步 API 接入文档（`/v1/videos`）",
+    "file": "视频生成接口-veo-omni-flash.md",
+    "endpoint": "POST /v1/videos ? GET /v1/videos/{id}",
+    "models": [
+      "veo-omni-flash"
+    ],
+    "content": "# 🎥 VEO Omni Flash · 视频异步 API 接入文档（`/v1/videos`）\n\n> **提交任务**：`POST /v1/videos`  \n> **查询进度**：`GET /v1/videos/{task_id}`  \n> 支持：首帧 / 首尾帧图片生成视频、多参考图生成视频\n\n## 1. 模型与时长\n\n| 模型 | `duration` | 说明 |\n|---|---:|---|\n| `veo-omni-flash` | `10` | VEO Omni Flash 视频 |\n\n> `duration` 固定传 `10`。\n\n## 2. 完整调用流程\n\n### Step 1 · 提交任务\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"veo-omni-flash\",\n    \"prompt\": \"animate smoothly from the first frame to the last frame, cinematic motion\",\n    \"duration\": 10,\n    \"aspect_ratio\": \"16:9\",\n    \"images\": [\n      \"https://your-cdn.com/first.jpg\",\n      \"https://your-cdn.com/last.jpg\"\n    ]\n  }'\n```\n\n立即返回：\n\n```json\n{\n  \"id\": \"v_8c7e4b...\",\n  \"task_id\": \"v_8c7e4b...\",\n  \"object\": \"video\",\n  \"created_at\": 1714200000000,\n  \"status\": \"queued\",\n  \"progress\": 0,\n  \"model\": \"veo-omni-flash\",\n  \"video_url\": null,\n  \"metadata\": { \"result_urls\": [] },\n  \"seconds\": \"10\",\n  \"duration\": 10,\n  \"aspect_ratio\": \"16:9\",\n  \"prompt\": \"animate smoothly from the first frame to the last frame, cinematic motion\"\n}\n```\n\n### Step 2 · 轮询任务\n\n```bash\ncurl https://xxx.xxx.xxx/v1/videos/v_8c7e4b... \\\n  -H \"Authorization: Bearer api-key\"\n```\n\n完成响应：\n\n```json\n{\n  \"id\": \"v_8c7e4b...\",\n  \"task_id\": \"v_8c7e4b...\",\n  \"object\": \"video\",\n  \"created_at\": 1714200000000,\n  \"status\": \"completed\",\n  \"progress\": 100,\n  \"model\": \"veo-omni-flash\",\n  \"video_url\": \"https://xxx.xxx.xxx/generated/video.mp4\",\n  \"url\": \"https://xxx.xxx.xxx/generated/video.mp4\",\n  \"metadata\": {\n    \"result_urls\": [\"https://xxx.xxx.xxx/generated/video.mp4\"]\n  },\n  \"completed_at\": 1714200180000\n}\n```\n\n| `status` | 含义 | 该做什么 |\n|---|---|---|\n| `queued` | 排队中 | 继续轮询 |\n| `processing` | 生成中 | 继续轮询 |\n| `completed` | 已完成 | 取 `video_url` 或 `url` |\n| `failed` | 失败 | 查看 `error.message` |\n\n建议每 3–5 秒轮询一次。\n\n## 3. 调用示例\n\n### 3.1 首帧 / 首尾帧生成视频\n\n`images` 顺序为：`[首帧图, 尾帧图]`。只传 1 张时表示首帧图。\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"veo-omni-flash\",\n    \"prompt\": \"the subject walks forward and the camera slowly pushes in\",\n    \"duration\": 10,\n    \"aspect_ratio\": \"9:16\",\n    \"images\": [\n      \"https://your-cdn.com/first.jpg\",\n      \"https://your-cdn.com/last.jpg\"\n    ]\n  }'\n```\n\n也可以写成：\n\n```json\n{\n  \"first_image_url\": \"https://your-cdn.com/first.jpg\",\n  \"last_image_url\": \"https://your-cdn.com/last.jpg\"\n}\n```\n\n### 3.2 多参考图生成视频\n\n多参考图字段使用 `Ingredients_images`，最多 6 张。\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"veo-omni-flash\",\n    \"prompt\": \"combine these references into a cinematic product launch video\",\n    \"duration\": 10,\n    \"aspect_ratio\": \"16:9\",\n    \"Ingredients_images\": [\n      \"https://your-cdn.com/ref-1.jpg\",\n      \"https://your-cdn.com/ref-2.jpg\",\n      \"https://your-cdn.com/ref-3.jpg\"\n    ]\n  }'\n```\n\n## 4. 请求字段\n\n| 字段 | 类型 | 必填 | 说明 |\n|---|---|---|---|\n| `model` | string | ✅ | 固定传 `veo-omni-flash` |\n| `prompt` | string | ✅ | 生成提示词 |\n| `duration` | int | ✅ | 固定 `10` |\n| `aspect_ratio` | string | ❌ | 默认 `16:9`；支持 `16:9` / `9:16` |\n| `images` | string[] | ❌ | 首帧 / 首尾帧图片数组，最多 2 张，顺序为 `[首帧, 尾帧]` |\n| `first_image_url` / `image_url` | string | ❌ | 首帧图 URL |\n| `last_image_url` / `end_image_url` | string | ❌ | 尾帧图 URL；不能只传尾帧 |\n| `Ingredients_images` | string[] | ❌ | 多参考图生成视频，最多 6 张；也可写 `ingredients_images` |\n\n## 5. 响应字段\n\n| 字段 | 类型 | 说明 |\n|---|---|---|\n| `id` / `task_id` | string | 任务 ID |\n| `object` | string | 固定为 `video` |\n| `created_at` | int | 创建时间戳，毫秒 |\n| `status` | string | `queued` / `processing` / `completed` / `failed` |\n| `progress` | int | 0–100 |\n| `model` | string | 请求模型 |\n| `video_url` | string\\|null | 完成后的视频地址 |\n| `url` | string\\|null | 最终结果地址，通常等于 `video_url` |\n| `metadata.result_urls` | string[] | 最终结果地址数组 |\n| `completed_at` | int | 完成时间戳，毫秒 |\n| `error.message` | string | 失败原因 |\n"
+  },
+  {
+    "id": "veo-omni-flash-video-edit",
+    "type": "video",
+    "title": "VEO Omni Flash 视频编辑",
+    "displayTitle": "VEO Omni Flash Video Edit · 视频编辑异步 API 接入文档（`/v1/videos`）",
+    "file": "视频生成接口-veo-omni-flash-video-edit.md",
+    "endpoint": "POST /v1/videos · GET /v1/videos/{id}",
+    "models": [
+      "veo-omni-flash-video-edit"
+    ],
+    "content": "# VEO Omni Flash Video Edit · 视频编辑异步 API 接入文档（`/v1/videos`）\n\n> **提交任务**：`POST /v1/videos`  \n> **查询进度**：`GET /v1/videos/{task_id}`  \n> 支持：基于 1 个参考视频地址进行视频编辑，并可传 0 个或多个参考图片地址。\n\n## 1. 模型与输入限制\n\n| 模型 | `duration` | 说明 |\n|---|---:|---|\n| `veo-omni-flash-video-edit` | `10` | VEO Omni Flash 视频编辑 |\n\n> `duration` 固定传 `10`。  \n> 该模型只支持 **1 个参考视频地址**，通过 `video_url` 传入。  \n> 参考图片通过 `images` 传入，可不传，也可传 1 张或多张。\n\n## 2. 完整调用流程\n\n### Step 1 · 提交任务\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"veo-omni-flash-video-edit\",\n    \"prompt\": \"基于参考视频进行电影感广告风格编辑，增强自然光照和镜头运动\",\n    \"duration\": 10,\n    \"aspect_ratio\": \"16:9\",\n    \"video_url\": \"https://your-cdn.com/reference-video.mp4\",\n    \"images\": [\n      \"https://your-cdn.com/character.jpg\",\n      \"https://your-cdn.com/product.jpg\"\n    ]\n  }'\n```\n\n立即返回：\n\n```json\n{\n  \"id\": \"v_8c7e4b...\",\n  \"task_id\": \"v_8c7e4b...\",\n  \"object\": \"video\",\n  \"created_at\": 1714200000000,\n  \"status\": \"queued\",\n  \"progress\": 0,\n  \"model\": \"veo-omni-flash-video-edit\",\n  \"video_url\": null,\n  \"metadata\": { \"result_urls\": [] },\n  \"seconds\": \"10\",\n  \"duration\": 10,\n  \"aspect_ratio\": \"16:9\",\n  \"prompt\": \"基于参考视频进行电影感广告风格编辑，增强自然光照和镜头运动\"\n}\n```\n\n### Step 2 · 轮询任务\n\n```bash\ncurl https://xxx.xxx.xxx/v1/videos/v_8c7e4b... \\\n  -H \"Authorization: Bearer api-key\"\n```\n\n完成响应：\n\n```json\n{\n  \"id\": \"v_8c7e4b...\",\n  \"task_id\": \"v_8c7e4b...\",\n  \"object\": \"video\",\n  \"created_at\": 1714200000000,\n  \"status\": \"completed\",\n  \"progress\": 100,\n  \"model\": \"veo-omni-flash-video-edit\",\n  \"video_url\": \"https://xxx.xxx.xxx/generated/video.mp4\",\n  \"url\": \"https://xxx.xxx.xxx/generated/video.mp4\",\n  \"metadata\": {\n    \"result_urls\": [\"https://xxx.xxx.xxx/generated/video.mp4\"]\n  },\n  \"completed_at\": 1714200180000\n}\n```\n\n| `status` | 含义 | 该做什么 |\n|---|---|---|\n| `queued` | 排队中 | 继续轮询 |\n| `processing` | 生成中 | 继续轮询 |\n| `completed` | 已完成 | 取 `video_url` 或 `url` |\n| `failed` | 失败 | 查看 `error.message` |\n\n建议每 3 到 5 秒轮询一次。\n\n## 3. 调用示例\n\n### 3.1 仅使用参考视频进行编辑\n\n只传 1 个 `video_url`，不传参考图片。\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"veo-omni-flash-video-edit\",\n    \"prompt\": \"让参考视频画面更明亮，增加电影感和流畅镜头运动\",\n    \"duration\": 10,\n    \"aspect_ratio\": \"16:9\",\n    \"video_url\": \"https://your-cdn.com/reference-video.mp4\"\n  }'\n```\n\n### 3.2 参考视频 + 多张参考图片进行编辑\n\n`video_url` 只能传 1 个视频地址；`images` 可传 0 个或多个参考图片地址。\n\n```bash\ncurl -X POST https://xxx.xxx.xxx/v1/videos \\\n  -H \"Authorization: Bearer api-key\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"model\": \"veo-omni-flash-video-edit\",\n    \"prompt\": \"结合产品图和风格参考图，把参考视频编辑成广告短片\",\n    \"duration\": 10,\n    \"aspect_ratio\": \"9:16\",\n    \"video_url\": \"https://your-cdn.com/source-video.mp4\",\n    \"images\": [\n      \"https://your-cdn.com/product.jpg\",\n      \"https://your-cdn.com/style.jpg\",\n      \"https://your-cdn.com/logo.jpg\"\n    ]\n  }'\n```\n\n## 4. 请求字段\n\n| 字段 | 类型 | 必填 | 说明 |\n|---|---|---|---|\n| `model` | string | 是 | 固定传 `veo-omni-flash-video-edit` |\n| `prompt` | string | 是 | 视频编辑提示词 |\n| `duration` | int | 是 | 固定传 `10` |\n| `aspect_ratio` | string | 否 | 默认 `16:9`；支持 `16:9` / `9:16` |\n| `video_url` | string | 是 | 参考视频地址；只支持 1 个视频地址 |\n| `images` | string[] | 否 | 参考图片 URL 数组，可不传，也可传 1 张或多张 |\n\n## 5. 响应字段\n\n| 字段 | 类型 | 说明 |\n|---|---|---|\n| `id` / `task_id` | string | 任务 ID |\n| `object` | string | 固定为 `video` |\n| `created_at` | int | 创建时间戳，毫秒 |\n| `status` | string | `queued` / `processing` / `completed` / `failed` |\n| `progress` | int | 0 到 100 |\n| `model` | string | 请求模型 |\n| `video_url` | string\\|null | 完成后的视频地址 |\n| `url` | string\\|null | 最终结果地址，通常等于 `video_url` |\n| `metadata.result_urls` | string[] | 最终结果地址数组 |\n| `completed_at` | int | 完成时间戳，毫秒 |\n| `error.message` | string | 失败原因 |\n"
+  }
+];
+    function setDocContent(id, lines){const d=DOCS.find(x=>x.id===id);if(d)d.content=lines.join('\n')}
+    setDocContent('veo-omni-flash', [
+      '# 🎥 VEO Omni Flash · 视频异步 API 接入文档（`/v1/videos`）',
+      '',
+      '> **提交任务**：`POST /v1/videos`  ',
+      '> **查询进度**：`GET /v1/videos/{task_id}`  ',
+      '> 支持：多参考图生成视频。参考图只支持通过 `Ingredients_images` 传递，不支持 `images`，也不支持首尾帧模式。',
+      '',
+      '## 1. 模型与时长',
+      '',
+      '| 模型 | `duration` | 说明 |',
+      '|---|---:|---|',
+      '| `veo-omni-flash` | `10` | VEO Omni Flash 视频 |',
+      '',
+      '> `duration` 固定传 `10`。',
+      '',
+      '## 2. 完整调用流程',
+      '',
+      '### Step 1 · 提交任务',
+      '',
+      '```bash',
+      'curl -X POST https://xxx.xxx.xxx/v1/videos \\',
+      '  -H "Authorization: Bearer api-key" \\',
+      '  -H "Content-Type: application/json" \\',
+      "  -d '{",
+      '    "model": "veo-omni-flash",',
+      '    "prompt": "combine these references into a cinematic product launch video",',
+      '    "duration": 10,',
+      '    "aspect_ratio": "16:9",',
+      '    "Ingredients_images": [',
+      '      "https://your-cdn.com/ref-1.jpg",',
+      '      "https://your-cdn.com/ref-2.jpg",',
+      '      "https://your-cdn.com/ref-3.jpg"',
+      '    ]',
+      "  }'",
+      '```',
+      '',
+      '立即返回：',
+      '',
+      '```json',
+      '{',
+      '  "id": "v_8c7e4b...",',
+      '  "task_id": "v_8c7e4b...",',
+      '  "object": "video",',
+      '  "created_at": 1714200000000,',
+      '  "status": "queued",',
+      '  "progress": 0,',
+      '  "model": "veo-omni-flash",',
+      '  "video_url": null,',
+      '  "metadata": { "result_urls": [] },',
+      '  "seconds": "10",',
+      '  "duration": 10,',
+      '  "aspect_ratio": "16:9"',
+      '}',
+      '```',
+      '',
+      '### Step 2 · 轮询任务',
+      '',
+      '```bash',
+      'curl https://xxx.xxx.xxx/v1/videos/v_8c7e4b... \\',
+      '  -H "Authorization: Bearer api-key"',
+      '```',
+      '',
+      '完成响应取 `video_url` 或 `url`。',
+      '',
+      '## 3. 调用示例',
+      '',
+      '### 3.1 多参考图生成视频',
+      '',
+      '多参考图字段必须使用 `Ingredients_images`，最多 6 张。不要传 `images`、`first_image_url`、`last_image_url` 或首尾帧相关字段。',
+      '',
+      '```bash',
+      'curl -X POST https://xxx.xxx.xxx/v1/videos \\',
+      '  -H "Authorization: Bearer api-key" \\',
+      '  -H "Content-Type: application/json" \\',
+      "  -d '{",
+      '    "model": "veo-omni-flash",',
+      '    "prompt": "use the visual references to create a short cinematic video",',
+      '    "duration": 10,',
+      '    "aspect_ratio": "9:16",',
+      '    "Ingredients_images": [',
+      '      "https://your-cdn.com/character.jpg",',
+      '      "https://your-cdn.com/product.jpg"',
+      '    ]',
+      "  }'",
+      '```',
+      '',
+      '## 4. 请求字段',
+      '',
+      '| 字段 | 类型 | 必填 | 说明 |',
+      '|---|---|---|---|',
+      '| `model` | string | ✅ | 固定传 `veo-omni-flash` |',
+      '| `prompt` | string | ✅ | 生成提示词 |',
+      '| `duration` | int | ✅ | 固定 `10` |',
+      '| `aspect_ratio` | string | ❌ | 默认 `16:9`；支持 `16:9` / `9:16` |',
+      '| `Ingredients_images` | string[] | ❌ | 多参考图生成视频，最多 6；也可写 `ingredients_images` |',
+      '| `images` | string[] | 不支持 | 不要用于该模型的参考图 |',
+      '| `first_image_url` / `last_image_url` | string | 不支持 | 该模型不支持首尾帧模式 |',
+      '',
+      '## 5. 响应字段',
+      '',
+      '| 字段 | 类型 | 说明 |',
+      '|---|---|---|',
+      '| `id` / `task_id` | string | 任务 ID |',
+      '| `object` | string | 固定为 `video` |',
+      '| `status` | string | `queued` / `processing` / `completed` / `failed` |',
+      '| `progress` | int | 0–100 |',
+      '| `video_url` / `url` | string\\|null | 完成后的视频地址 |',
+      '| `error.message` | string | 失败原因 |'
+    ]);
+    setDocContent('veo-omni-flash-video-edit', [
+      '# VEO Omni Flash Video Edit · 视频编辑异步 API 接入文档（`/v1/videos`）',
+      '',
+      '> **提交任务**：`POST /v1/videos`  ',
+      '> **查询进度**：`GET /v1/videos/{task_id}`  ',
+      '> 支持：基于 1 个参考视频地址进行视频编辑，并可传 0 个或多个参考图片地址。参考图只支持通过 `Ingredients_images` 传递，不支持 `images`，也不支持首尾帧模式。',
+      '',
+      '## 1. 模型与输入限制',
+      '',
+      '| 模型 | `duration` | 说明 |',
+      '|---|---:|---|',
+      '| `veo-omni-flash-video-edit` | `10` | VEO Omni Flash 视频编辑 |',
+      '',
+      '> `duration` 固定传 `10`。  ',
+      '> 该模型只支持 **1 个参考视频地址**，通过 `video_url` 传入。  ',
+      '> 参考图片通过 `Ingredients_images` 传入，可不传，也可传 1 张或多张。',
+      '',
+      '## 2. 完整调用流程',
+      '',
+      '### Step 1 · 提交任务',
+      '',
+      '```bash',
+      'curl -X POST https://xxx.xxx.xxx/v1/videos \\',
+      '  -H "Authorization: Bearer api-key" \\',
+      '  -H "Content-Type: application/json" \\',
+      "  -d '{",
+      '    "model": "veo-omni-flash-video-edit",',
+      '    "prompt": "基于参考视频进行电影感广告风格编辑，增强自然光照和镜头运动",',
+      '    "duration": 10,',
+      '    "aspect_ratio": "16:9",',
+      '    "video_url": "https://your-cdn.com/reference-video.mp4",',
+      '    "Ingredients_images": [',
+      '      "https://your-cdn.com/character.jpg",',
+      '      "https://your-cdn.com/product.jpg"',
+      '    ]',
+      "  }'",
+      '```',
+      '',
+      '### Step 2 · 轮询任务',
+      '',
+      '```bash',
+      'curl https://xxx.xxx.xxx/v1/videos/v_8c7e4b... \\',
+      '  -H "Authorization: Bearer api-key"',
+      '```',
+      '',
+      '完成响应取 `video_url` 或 `url`。',
+      '',
+      '## 3. 调用示例',
+      '',
+      '### 3.1 仅使用参考视频进行编辑',
+      '',
+      '只传 1 个 `video_url`，不传参考图片。',
+      '',
+      '```bash',
+      'curl -X POST https://xxx.xxx.xxx/v1/videos \\',
+      '  -H "Authorization: Bearer api-key" \\',
+      '  -H "Content-Type: application/json" \\',
+      "  -d '{",
+      '    "model": "veo-omni-flash-video-edit",',
+      '    "prompt": "让参考视频画面更明亮，增加电影感和流畅镜头运动",',
+      '    "duration": 10,',
+      '    "aspect_ratio": "16:9",',
+      '    "video_url": "https://your-cdn.com/reference-video.mp4"',
+      "  }'",
+      '```',
+      '',
+      '### 3.2 参考视频 + 多张参考图片进行编辑',
+      '',
+      '`video_url` 只能传 1 个视频地址；参考图必须通过 `Ingredients_images` 传入，不支持 `images`。',
+      '',
+      '```bash',
+      'curl -X POST https://xxx.xxx.xxx/v1/videos \\',
+      '  -H "Authorization: Bearer api-key" \\',
+      '  -H "Content-Type: application/json" \\',
+      "  -d '{",
+      '    "model": "veo-omni-flash-video-edit",',
+      '    "prompt": "结合产品图和风格参考图，把参考视频编辑成广告短片",',
+      '    "duration": 10,',
+      '    "aspect_ratio": "9:16",',
+      '    "video_url": "https://your-cdn.com/source-video.mp4",',
+      '    "Ingredients_images": [',
+      '      "https://your-cdn.com/product.jpg",',
+      '      "https://your-cdn.com/style.jpg",',
+      '      "https://your-cdn.com/logo.jpg"',
+      '    ]',
+      "  }'",
+      '```',
+      '',
+      '## 4. 请求字段',
+      '',
+      '| 字段 | 类型 | 必填 | 说明 |',
+      '|---|---|---|---|',
+      '| `model` | string | 是 | 固定传 `veo-omni-flash-video-edit` |',
+      '| `prompt` | string | 是 | 视频编辑提示词 |',
+      '| `duration` | int | 是 | 固定传 `10` |',
+      '| `aspect_ratio` | string | 否 | 默认 `16:9`；支持 `16:9` / `9:16` |',
+      '| `video_url` | string | 是 | 参考视频地址；只支持 1 个视频地址 |',
+      '| `Ingredients_images` | string[] | 否 | 参考图片 URL 数组，可不传，也可传 1 张或多张 |',
+      '| `images` | string[] | 不支持 | 不要用于该模型的参考图 |',
+      '| `first_image_url` / `last_image_url` | string | 不支持 | 该模型不支持首尾帧模式 |',
+      '',
+      '## 5. 响应字段',
+      '',
+      '| 字段 | 类型 | 说明 |',
+      '|---|---|---|',
+      '| `id` / `task_id` | string | 任务 ID |',
+      '| `object` | string | 固定为 `video` |',
+      '| `status` | string | `queued` / `processing` / `completed` / `failed` |',
+      '| `progress` | int | 0 到 100 |',
+      '| `video_url` / `url` | string\\|null | 完成后的视频地址 |',
+      '| `error.message` | string | 失败原因 |'
+    ]);
+    const L={image:'图片生成',video:'视频生成',other:'其他接口'},I={image:'🖼️',video:'🎬',other:'🔌'};
+    const params=new URLSearchParams(location.search);
+    let active=params.get('doc')||'';
+    const esc=s=>String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    const slug=s=>String(s).toLowerCase().replace(/[`*#]/g,'').replace(/[^\w\u4e00-\u9fa5]+/g,'-').replace(/^-|-$/g,'');
+    function inline(s){return esc(s).replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')}
+    function md(x){const a=x.replace(/\r\n/g,'\n').split('\n');let h='',i=0,code=false,lang='',buf=[];const fc=()=>{h+=`<pre><button class="copy">复制</button><code class="language-${esc(lang)}">${esc(buf.join('\n'))}</code></pre>`;buf=[];lang=''};const ist=i=>a[i]?.trim().startsWith('|')&&a[i+1]?.trim().match(/^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/);while(i<a.length){let l=a[i];if(l.trim().startsWith('```')){if(code){fc();code=false}else{code=true;lang=l.trim().slice(3).trim()}i++;continue}if(code){buf.push(l);i++;continue}if(!l.trim()){i++;continue}if(ist(i)){let th=a[i].trim().replace(/^\||\|$/g,'').split('|').map(s=>s.trim());i+=2;let rows=[];while(i<a.length&&a[i].trim().startsWith('|')){rows.push(a[i].trim().replace(/^\||\|$/g,'').split('|').map(s=>s.trim()));i++}h+='<table><thead><tr>'+th.map(c=>`<th>${inline(c)}</th>`).join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(c=>`<td>${inline(c)}</td>`).join('')+'</tr>').join('')+'</tbody></table>';continue}let m=l.match(/^(#{1,4})\s*(.+)$/);if(m){let lv=m[1].length,t=m[2].trim(),id=slug(t);h+=`<h${lv} id="${id}">${inline(t)}</h${lv}>`;i++;continue}if(/^>\s?/.test(l)){let p=[];while(i<a.length&&/^>\s?/.test(a[i])){p.push(a[i].replace(/^>\s?/,''));i++}h+=`<blockquote>${inline(p.join('<br>'))}</blockquote>`;continue}if(/^---+$/.test(l.trim())){h+='<hr>';i++;continue}let p=[l];i++;while(i<a.length&&a[i].trim()&&!/^(#{1,4})\s/.test(a[i])&&!a[i].trim().startsWith('```')&&!ist(i)&&!/^>\s?/.test(a[i])){p.push(a[i]);i++}h+=`<p>${inline(p.join(' '))}</p>`}if(code)fc();return h}
+    function docUrl(id){return `${location.href.split(/[?#]/)[0]}?doc=${encodeURIComponent(id)}`}
+    function filteredDocs(){let query=document.getElementById('q').value.trim().toLowerCase();return DOCS.filter(d=>!query||JSON.stringify(d).toLowerCase().includes(query))}
+    function nav(){let n=document.getElementById('nav'),cnt=0;n.innerHTML='';['video','image','other'].forEach(t=>{let arr=filteredDocs().filter(d=>d.type===t);if(!arr.length)return;cnt+=arr.length;n.insertAdjacentHTML('beforeend',`<div class="group">${L[t]||t}</div>`);arr.forEach(d=>n.insertAdjacentHTML('beforeend',`<a class="nav ${d.id===active?'active':''}" href="${docUrl(d.id)}"><i>${I[d.type]||'🔌'}</i><span><b>${esc(d.title)}</b><small>${esc(d.file)}</small></span></a>`))});document.getElementById('empty').style.display=cnt?'none':'block'}
+    function setBackButton(url,text){backHome.href=url;backHome.textContent=text;backHome.style.display='inline-flex'}
+    function renderIndex(){active='';setBackButton('https://www.newtoken.club','← 返回 newtoken.club');nav();crumb.textContent='接口目录';title.textContent='生成接口独立文档';desc.textContent='每个接口都有独立页面链接，可直接复制给 AI 或开发者使用。';meta.innerHTML=`<span class="pill"><strong>接口数</strong>${DOCS.length}</span><span class="pill"><strong>入口</strong>点击卡片打开独立页面</span>`;let groups=['video','image','other'].map(t=>filteredDocs().filter(d=>d.type===t)).flat();content.innerHTML=`<div class="cards">${groups.map(d=>`<a class="api-card" href="${docUrl(d.id)}"><span class="tag">${I[d.type]||''} ${L[d.type]||d.type}</span><h3>${esc(d.title)}</h3><p>${esc(d.endpoint)}</p><p>${esc(d.file)}</p><span class="go">打开独立接口页 →</span></a>`).join('')}</div>`}
+    function renderDoc(){let d=DOCS.find(x=>x.id===active);if(!d){renderIndex();return}setBackButton('https://doc.newtoken.club','← 返回文档首页');nav();crumb.textContent=L[d.type]||d.type;title.textContent=d.displayTitle||d.title;desc.textContent=d.file+' · 面向开发者的异步任务接入说明';meta.innerHTML=`<span class="pill"><strong>类型</strong>${I[d.type]||''} ${L[d.type]||d.type}</span><span class="pill"><strong>Endpoint</strong>${esc(d.endpoint)}</span>`+(d.models||[]).map(m=>`<span class="pill"><strong>Model</strong>${esc(m)}</span>`).join('');content.innerHTML='<div class="layout"><article class="doc" id="doc"></article><aside class="toc"><h3>当前文档目录</h3><div id="toc"></div></aside></div>';doc.innerHTML=md(d.content);doc.querySelectorAll('.copy').forEach(b=>b.onclick=async()=>{await navigator.clipboard.writeText(b.nextElementSibling.textContent);b.textContent='已复制';setTimeout(()=>b.textContent='复制',1200)});toc.innerHTML='';doc.querySelectorAll('h2,h3').forEach(x=>toc.insertAdjacentHTML('beforeend',`<a href="#${x.id}" style="padding-left:${x.tagName==='H3'?18:8}px">${esc(x.textContent)}</a>`))}
+    function render(){active?renderDoc():renderIndex();scrollTo({top:0,behavior:'smooth'})}
+    q.addEventListener('input',()=>active?nav():renderIndex());render();
+  </script>
+</body>
+</html>

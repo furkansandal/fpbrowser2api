@@ -2410,6 +2410,7 @@ async def update_space_account_remark(
     space = await db.get_space(space_pk)
     if not space:
         raise HTTPException(status_code=404, detail="space not found")
+    browser = await db.get_browser(space.browser_id)
 
     row = await db.get_platform_account(space_pk=space_pk, account_id=int(account_id))
     if not row:
@@ -2433,7 +2434,7 @@ async def update_space_account_password(
     req: UpdateAccountPasswordRequest,
     token: str = Depends(verify_admin_token),
 ):
-    """????????????????????"""
+    """修改平台账号密码：先同步到指纹浏览器，成功后更新本地 DB。"""
     if not db:
         raise HTTPException(status_code=500, detail="db not initialized")
     if int(account_id) <= 0:
@@ -2442,20 +2443,61 @@ async def update_space_account_password(
     space = await db.get_space(space_pk)
     if not space:
         raise HTTPException(status_code=404, detail="space not found")
+    browser = await db.get_browser(space.browser_id)
 
     row = await db.get_platform_account(space_pk=space_pk, account_id=int(account_id))
     if not row:
         raise HTTPException(status_code=404, detail="account not found")
 
+    account_space_pk = int(getattr(row, "space_pk", 0) or space_pk)
+    if account_space_pk != int(space_pk):
+        target_space = await db.get_space(account_space_pk)
+        if target_space:
+            target_browser = await db.get_browser(target_space.browser_id)
+            if target_browser:
+                space = target_space
+                browser = target_browser
+
+    if not browser:
+        browser = await db.get_browser(space.browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
     password = str(req.platform_password or "").strip()
+    remote_payload = {
+        "id": int(account_id),
+        "platformUrl": str(getattr(row, "platform_url", "") or "").strip(),
+        "platformUserName": str(getattr(row, "platform_username", "") or "").strip(),
+        "platformPassword": password,
+        "platformEfa": str(getattr(row, "platform_efa", "") or "").strip(),
+        "platformRemarks": str(getattr(row, "platform_remarks", "") or "").strip(),
+    }
+
+    client = FPBrowserClient()
+    try:
+        rsp = await client.update_account(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+            space_id=space.space_id,
+            account=remote_payload,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=f"远端账号密码更新失败，本地未更新：{str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"远端账号密码更新失败，本地未更新：{str(e)}")
+    if _remote_response_code(rsp) != 0:
+        msg = _remote_response_msg(rsp) or "账号密码更新失败"
+        raise HTTPException(status_code=400, detail=f"远端账号密码更新失败，本地未更新：{msg}")
+
     affected = await db.update_platform_account_password(
-        space_pk=space_pk,
+        space_pk=account_space_pk,
         account_id=int(account_id),
         password=password,
     )
     if affected <= 0:
         raise HTTPException(status_code=404, detail="account not found")
-    return {"success": True, "message": "???????", "affected": int(affected)}
+    return {"success": True, "message": "密码已更新，并已同步到指纹浏览器", "affected": int(affected), "remote_updated": True}
 
 
 def _build_mdf_proxy_info(proxy_id: int) -> Dict[str, Any]:
@@ -5916,6 +5958,113 @@ async def admin_create_veo_flow_project(
         "project_id": flow_project_id,
         "project_name": project_title,
         "veo_flow_project_count": n_existing + 1,
+    }
+
+
+@router.post("/api/admin/task-type-windows/{mapping_id}/veo-flow-projects/reset")
+async def admin_reset_veo_flow_project(
+    mapping_id: int,
+    headless: bool = False,
+    base_name: Optional[str] = Query(None, max_length=240),
+    token: str = Depends(verify_admin_token),
+):
+    """一键重建 Flow 项目：删除该绑定已有项目，再创建一个新项目。"""
+    await _ensure_page_access(token, "task_types")
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    ctx = await db.get_task_type_window_context(mapping_id)
+    if not ctx:
+        raise HTTPException(status_code=404, detail="绑定不存在或已删除")
+
+    user = await _get_user_by_token(token)
+    allowed_task_type_ids = await _get_allowed_task_type_ids(user)
+    ttid = int(ctx.get("task_type_id") or 0)
+    if allowed_task_type_ids is not None and ttid not in {int(x) for x in allowed_task_type_ids}:
+        raise HTTPException(status_code=403, detail="无权操作该绑定")
+
+    if str(ctx.get("create_task_handler") or "").strip().lower() != "veo_workflow":
+        raise HTTPException(status_code=400, detail="仅 veo_workflow 任务类型可通过此处重建 Flow 项目")
+
+    vendor = str(ctx.get("vendor") or "roxy")
+    base_url = str(ctx.get("lan_addr") or "")
+    access_key = ctx.get("access_key")
+    space_id = str(ctx.get("space_id") or "")
+    window_key = str(ctx.get("window_key") or "")
+    if not base_url or not space_id or not window_key:
+        raise HTTPException(status_code=400, detail="绑定缺少浏览器/空间/窗口信息")
+
+    default_target_url = str(ctx.get("default_target_url") or "").strip()
+    target_url = default_target_url or "https://labs.google/fx"
+
+    from ..services.veo_workflow_executor import (  # type: ignore
+        get_or_create_veo_session,
+        veo_create_flow_project_in_window,
+        veo_delete_flow_project_in_window,
+    )
+
+    sess = get_or_create_veo_session(
+        vendor=vendor,
+        base_url=base_url,
+        access_key=access_key,
+        space_id=space_id,
+        window_key=window_key,
+    )
+    sess.browser_headless = bool(headless)
+
+    existing = await db.list_veo_flow_projects(mapping_id)
+    deleted_count = 0
+    deleted_ids: List[str] = []
+    try:
+        for row in existing:
+            project_id = str(row.get("project_id") or "").strip()
+            if not project_id:
+                continue
+            try:
+                await veo_delete_flow_project_in_window(
+                    sess=sess,
+                    target_url=target_url,
+                    project_id=project_id,
+                )
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"删除旧 Flow 项目失败（{project_id}）：{e}")
+            affected = await db.mark_veo_flow_project_deleted(mapping_id, project_id)
+            if affected > 0:
+                deleted_count += 1
+                deleted_ids.append(project_id)
+
+        project_title = _admin_veo_pooled_project_title(1, base_name)
+        flow_project_id = await veo_create_flow_project_in_window(
+            sess=sess,
+            target_url=target_url,
+            title=project_title,
+            tool_name="PINHOLE",
+        )
+        row_id = await db.add_veo_flow_project(
+            task_type_window_id=mapping_id,
+            project_id=flow_project_id,
+            project_name=project_title,
+            tool_name="PINHOLE",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"创建新 Flow 项目失败：{e}")
+    finally:
+        try:
+            await sess.disconnect_playwright_under_bring_lock()
+        except Exception:
+            pass
+
+    remaining = await db.count_veo_flow_projects(mapping_id)
+    return {
+        "success": True,
+        "id": row_id,
+        "project_id": flow_project_id,
+        "project_name": project_title,
+        "deleted_count": deleted_count,
+        "deleted_project_ids": deleted_ids,
+        "veo_flow_project_count": remaining,
     }
 
 
