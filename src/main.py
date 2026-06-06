@@ -19,7 +19,7 @@ from .core.config import config
 from .core.database import Database
 from .core.logger import logger, setup_logging
 from .core.paths import STATIC_DIR, ensure_runtime_dirs
-from .services import browser_extension_bridge
+from .services import browser_extension_bridge, browser_extension_interaction
 
 
 db = Database()
@@ -120,6 +120,7 @@ async def lifespan(app: FastAPI):
     admin.set_dependencies(db)
     routes.set_dependencies(db)
     analyze.set_dependencies(db)
+    browser_extension_interaction.set_extension_interaction_db(db)
     _install_window_pool_stop_on_signals()
 
     # 窗口池预热会连续 await 指纹/Playwright，若在 set_dependencies 里立刻启动会饿死事件循环，

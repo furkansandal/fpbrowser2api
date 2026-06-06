@@ -4597,6 +4597,9 @@ async def convert_sora_session_token_to_access_token(
         try:
             from ..services.gpt_task_executor import gpt_fetch_access_token_in_window  # type: ignore
             from ..services.browser_extension_bridge import annotate_url_with_extension_config  # type: ignore
+            from ..services.browser_extension_interaction import window_has_proxy  # type: ignore
+            # 代理窗口：lan_addr 推导的 launcher/bridge host 走代理不可达，置空回退 127.0.0.1。
+            _proxy_bound = await window_has_proxy(space_id, window_key)
             info = await gpt_fetch_access_token_in_window(
                 browser_vendor=vendor,
                 browser_base_url=base_url,
@@ -4607,7 +4610,7 @@ async def convert_sora_session_token_to_access_token(
                     target_url,
                     space_id=space_id,
                     window_key=window_key,
-                    browser_base_url=base_url,
+                    browser_base_url=("" if _proxy_bound else base_url),
                     google_account=google_account,
                     google_password=google_password,
                     google_efa=google_efa,

@@ -4400,6 +4400,26 @@ class Database:
             row = await cur.fetchone()
             return dict(row) if row else None
 
+    async def get_window_proxy_brief(self, space_id: str, window_key: str) -> Optional[Dict[str, Any]]:
+        """按 space_id + window_key 取窗口的代理简要信息（proxy_id + raw_json）。
+
+        供 ``browser_extension_interaction.window_has_proxy`` 判断窗口是否绑定代理；
+        无匹配记录时返回 None。
+        """
+        async with self._read_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """
+                SELECT w.proxy_id, w.raw_json
+                FROM windows w JOIN spaces s ON w.space_pk = s.id
+                WHERE s.space_id = ? AND w.window_key = ? AND w.deleted = 0
+                ORDER BY w.updated_at DESC LIMIT 1
+                """,
+                (str(space_id or "").strip(), str(window_key or "").strip()),
+            )
+            row = await cur.fetchone()
+            return {"proxy_id": row["proxy_id"], "raw_json": row["raw_json"]} if row else None
+
     # ---------- auto refresh error logs ----------
     async def add_auto_refresh_error_log(self, log: AutoRefreshErrorLog) -> int:
         async with self._write_conn() as db:

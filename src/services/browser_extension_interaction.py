@@ -12,6 +12,7 @@ WebSocket 路由、client 注册表仍由 ``browser_extension_bridge.py`` 负责
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -27,6 +28,61 @@ from .browser_extension_bridge import (
 )
 from .playwright_broswer_context import append_log
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
+
+# 由 main.py 启动时注入的 Database 实例（api 模块 set_dependencies 模式的同款）。
+_db: Optional[Any] = None
+
+
+def set_extension_interaction_db(db: Any) -> None:
+    """注入 Database 实例，供 ``window_has_proxy`` 做只读查询。"""
+    global _db
+    _db = db
+
+
+async def window_has_proxy(space_id: Optional[str], window_key: Optional[str]) -> bool:
+    """判断窗口是否绑定代理（best-effort：任何异常一律返回 False，绝不打断主流程）。
+
+    判定规则（见 docs/superpowers/specs/2026-06-06-proxy-window-skip-lan-addr-design.md）：
+
+    - raw_json 的 ``proxyCategory``（不区分大小写）为 ``"noproxy"`` → 无代理（优先级最高）；
+    - ``windows.proxy_id``（Roxy ``proxyInfo.moduleId``）为正整数 → 有代理；
+    - raw_json 的 ``proxyHost`` 与 ``proxyPort`` 均非空 → 有代理；
+    - 无记录 / 未注入 db / 解析失败 → 一律视作无代理（保持现有 lan_addr 行为）。
+    """
+    try:
+        sid = str(space_id or "").strip()
+        wkey = str(window_key or "").strip()
+        if _db is None or not sid or not wkey:
+            return False
+        getter = getattr(_db, "get_window_proxy_brief", None)
+        if not callable(getter):
+            return False
+        row = await getter(sid, wkey)
+        if not row:
+            return False
+        try:
+            raw = json.loads(str(row.get("raw_json") or "") or "{}")
+        except Exception:
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        # 同步落库结构为 {"raw": {proxyCategory/proxyHost/...}, ...}；兼容顶层平铺。
+        inner = raw.get("raw")
+        if isinstance(inner, dict):
+            raw = {**raw, **inner}
+        category = str(raw.get("proxyCategory") or "").strip().lower()
+        if category == "noproxy":
+            return False
+        try:
+            if int(row.get("proxy_id") or 0) > 0:
+                return True
+        except Exception:
+            pass
+        host = str(raw.get("proxyHost") or "").strip()
+        port = str(raw.get("proxyPort") or "").strip()
+        return bool(host and port)
+    except Exception:
+        return False
 
 
 def _launcher_url_from_browser_base(browser_base_url: Optional[str]) -> str:
@@ -332,7 +388,13 @@ async def trigger_veo_extension_ws_connection_via_window(
     sid, wkey = _extension_ids_from_session(sess, space_id=space_id, window_key=window_key)
     log_file = log_file or (Path(getattr(sess, "monitor_log_path", "")) if getattr(sess, "monitor_log_path", None) else MONITOR_LOG_FILE)
     redirect = _normalize_http_url(target_url, "https://labs.google/fx")
-    browser_base_url = str(getattr(getattr(sess, "pw_ctx", None), "base_url", "") or "")
+    raw_browser_base_url = str(getattr(getattr(sess, "pw_ctx", None), "base_url", "") or "")
+    browser_base_url = raw_browser_base_url
+    # 代理窗口：浏览器会把 lan_addr 推导出的 launcher/bridge host 也走代理（不可达），
+    # 而 127.0.0.1 默认绕过代理。这里清空 base_url，让优先级链回退到 loopback。
+    proxy_bound = await window_has_proxy(sid, wkey)
+    if proxy_bound:
+        browser_base_url = ""
     annotated_launcher = build_extension_launcher_url(
         redirect_url=redirect,
         space_id=sid,
@@ -345,7 +407,7 @@ async def trigger_veo_extension_ws_connection_via_window(
     )
     # 调试：打印实际使用的 launcher / bridge URL（host 取自 lan_addr）。token 已脱敏。
     print(
-        f"[extension] lan_addr={browser_base_url!r} -> launcher={_redact_launcher_url(annotated_launcher)!r} "
+        f"[extension] lan_addr={raw_browser_base_url!r} proxy_bound={proxy_bound} -> launcher={_redact_launcher_url(annotated_launcher)!r} "
         f"bridge={get_default_extension_bridge_url(browser_base_url)!r}",
         flush=True,
     )
