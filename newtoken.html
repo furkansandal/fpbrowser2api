@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>API供应 | 源头直供</title>
+    <style>
+        /* 全局CSS变量 */
+        :root {
+            --primary-color: #2c7da0;
+            --primary-light: #5fa7c2;
+            --text-secondary: #547c93;
+            --text-muted: #8aaec2;
+            --card-bg: rgba(255, 255, 255, 0.5);
+            --border-light: #e2ecf5;
+            --tag-bg: #eef3fc;
+            --price-color: #bc6f3c;
+        }
+        
+        /* 深色模式变量覆盖 */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --primary-color: #5fa7c2;
+                --primary-light: #8fc1d6;
+                --text-secondary: #A8C4D8;
+                --text-muted: #7E9EB5;
+                --card-bg: rgba(30, 40, 50, 0.6);
+                --border-light: rgba(80, 120, 140, 0.3);
+                --tag-bg: rgba(47, 85, 105, 0.5);
+                --price-color: #E8935C;
+            }
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: transparent;
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+        }
+
+        .hero-card {
+            max-width: 860px;
+            width: 100%;
+            margin: 0 auto;
+            background: transparent;
+        }
+
+        /* ========== 标题样式：浅色模式用渐变 ========== */
+        .gradient-title {
+            background: linear-gradient(135deg, #1E2F3F 0%, #215D77 100%);
+            background-clip: text;
+            -webkit-background-clip: text;
+            color: transparent;
+        }
+        
+        /* ========== 深色模式：标题用纯白色 + 阴影，100%清晰可见 ========== */
+        @media (prefers-color-scheme: dark) {
+            .gradient-title {
+                background: none !important;
+                -webkit-background-clip: unset !important;
+                background-clip: unset !important;
+                color: #FFFFFF !important;
+                text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+                font-weight: 700;
+            }
+        }
+
+        @media (max-width: 640px) {
+            body {
+                padding: 1rem;
+            }
+            .hero-card > div:last-child {
+                padding: 1.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+<div class="hero-card">
+    <!-- 顶部装饰线 -->
+    <div style="height: 4px; background: linear-gradient(90deg, var(--primary-color), var(--primary-light), var(--primary-color)); width: 100%; border-radius: 4px 4px 0 0;"></div>
+    
+    <div style="padding: 2rem 2rem 2.2rem 2rem; background: transparent;">
+        
+        <!-- 顶部徽章 -->
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 2rem;">
+            <div style="background: var(--tag-bg); color: var(--primary-color); padding: 0.3rem 1rem; border-radius: 60px; font-size: 0.75rem; font-weight: 600; border: 0.5px solid var(--border-light);">
+                ⚙️ 官方API · 源头直供
+            </div>
+            <div style="font-size: 0.7rem; background: var(--tag-bg); padding: 0.2rem 0.8rem; border-radius: 40px; color: var(--primary-color); font-weight: 500;">
+                ✅ SLA 99.99%
+            </div>
+        </div>
+
+        <!-- 主标题 -->
+        <div style="margin-bottom: 1.5rem;">
+            <h1 style="font-size: 2.5rem; font-weight: 700; line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 0.5rem 0;">
+                <span class="gradient-title">官方API，<br>源头供应</span>
+            </h1>
+            <div style="font-size: 0.9rem; color: var(--text-secondary); border-left: 2px solid var(--primary-color); padding-left: 1rem; margin-top: 0.25rem;">
+                🛡️ 不追逐最低价格，只交付最可靠的API架构
+            </div>
+        </div>
+
+        <!-- 价值卡片 -->
+        <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; margin: 2rem 0 2.2rem 0;">
+            <div style="flex: 1; background: var(--card-bg); border-radius: 1.5rem; padding: 1.2rem 1.3rem; border: 1px solid var(--border-light); backdrop-filter: blur(2px);">
+                <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem;">定价策略</div>
+                <div style="font-size: 1.6rem; font-weight: 700; color: var(--price-color);">不是最便宜的</div>
+                <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.3rem;">价值优先 · 拒绝牺牲稳定性换取低价</div>
+            </div>
+            <div style="flex: 1; background: var(--card-bg); border-radius: 1.5rem; padding: 1.2rem 1.3rem; border: 1px solid var(--border-light); backdrop-filter: blur(2px);">
+                <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem;">核心承诺</div>
+                <div style="font-size: 1.6rem; font-weight: 700; color: var(--primary-color);">一定最稳定的API</div>
+                <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.3rem;">企业级自建池 · 7x24h 高可用链路</div>
+            </div>
+        </div>
+
+        <!-- 联系信息 -->
+        <div style="background: var(--card-bg); border-radius: 1.5rem; padding: 1.5rem 1.8rem; margin: 0 0 1.5rem 0; border: 1px solid var(--border-light); backdrop-filter: blur(2px);">
+            <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
+                <div style="width: 40px; height: 40px; background: var(--tag-bg); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; border: 0.5px solid var(--border-light);">📡</div>
+                <div style="flex: 1;">
+                    <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.2rem;">专属客服通道</div>
+                    <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 0.8rem;">
+                        <a href="https://t.me/newtoken_club" target="_blank" rel="noopener noreferrer" style="background: var(--tag-bg); padding: 0.3rem 1rem; border-radius: 60px; text-decoration: none; font-size: 0.85rem; font-weight: 500; color: var(--primary-color); display: inline-flex; align-items: center; gap: 6px; border: 0.5px solid var(--border-light);">
+                            ✈️ Telegram: @newtoken_club
+                        </a>
+                        <button onclick="copyToClipboard('newtoken_club', 'tg')" style="background: transparent; border: 0.5px solid var(--border-light); font-size: 0.7rem; cursor: pointer; color: var(--primary-color); padding: 0.2rem 0.8rem; border-radius: 30px; font-weight: 500;">复制账号</button>
+                    </div>
+                </div>
+            </div>
+            <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 1rem;">
+                <div style="width: 40px; height: 40px; background: var(--tag-bg); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; border: 0.5px solid var(--border-light);">🔗</div>
+                <div style="flex: 1;">
+                    <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.2rem;">API 接入端点</div>
+                    <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 0.8rem;">
+                        <a href="https://api.newtoken.club" target="_blank" rel="noopener noreferrer" style="background: var(--tag-bg); padding: 0.3rem 1rem; border-radius: 60px; text-decoration: none; font-family: monospace; font-size: 0.8rem; color: var(--primary-color); font-weight: 500; border: 0.5px solid var(--border-light);">
+                            🌐 https://api.newtoken.club
+                        </a>
+                        <button onclick="copyToClipboard('https://api.newtoken.club', 'api')" style="background: transparent; border: 0.5px solid var(--border-light); font-size: 0.7rem; cursor: pointer; color: var(--primary-color); padding: 0.2rem 0.8rem; border-radius: 30px; font-weight: 500;">复制链接</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 底部 -->
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; font-size: 0.7rem; color: var(--text-muted); padding-top: 0.5rem; border-top: 1px solid var(--border-light);">
+            <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
+                <span>⚡ 企业级支持</span>
+                <span>🛡️ 长期稳定承诺</span>
+                <span>📞 有事联系客服</span>
+            </div>
+            <div>API 直连 · 企业级架构</div>
+        </div>
+    </div>
+</div>
+
+<script>
+window.copyToClipboard = function(content, type) {
+    let finalCopy = content;
+    if (type === 'tg') finalCopy = content.replace(/^@/, '');
+    
+    const showMessage = (msg) => {
+        let toast = document.querySelector('.dynamic-toast');
+        if(toast) toast.remove();
+        toast = document.createElement('div');
+        toast.className = 'dynamic-toast';
+        toast.innerText = msg;
+        toast.style.position = 'fixed';
+        toast.style.bottom = '24px';
+        toast.style.left = '50%';
+        toast.style.transform = 'translateX(-50%)';
+        toast.style.backgroundColor = '#1e2f3c';
+        toast.style.color = 'white';
+        toast.style.padding = '0.5rem 1.2rem';
+        toast.style.borderRadius = '40px';
+        toast.style.fontSize = '0.8rem';
+        toast.style.zIndex = '9999';
+        toast.style.fontFamily = 'system-ui, sans-serif';
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 2000);
+    };
+    
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(finalCopy).then(() => {
+            showMessage(`✓ 已复制 ${type === 'tg' ? 'Telegram ID' : 'API地址'}`);
+        }).catch(() => {
+            alert('手动复制: ' + finalCopy);
+        });
+    } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = finalCopy;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        showMessage(`✓ 已复制`);
+    }
+};
+</script>
+</body>
+</html>

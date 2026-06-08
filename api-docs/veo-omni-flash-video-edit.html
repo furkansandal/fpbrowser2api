@@ -1,0 +1,13 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VEO Omni Flash Video Edit · 视频编辑接口</title><link rel="stylesheet" href="doc.css"></head><body><header><a href="../index.html">返回接口目录</a><h1>VEO Omni Flash Video Edit · 视频编辑接口</h1><p>基于 1 个参考视频地址进行编辑，可附加参考图片。</p></header><main><article><h2>提交任务</h2><pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "veo-omni-flash-video-edit",
+    "prompt": "make the reference video brighter and more cinematic",
+    "duration": 10,
+    "aspect_ratio": "16:9",
+    "video_url": "https://your-cdn.com/reference-video.mp4",
+    "Ingredients_images": [
+      "https://your-cdn.com/product.jpg"
+    ]
+  }'</code></pre><h2>参数</h2><table><tr><th>字段</th><th>说明</th></tr><tr><td><code>video_url</code></td><td>必填，只支持 1 个参考视频地址</td></tr><tr><td><code>Ingredients_images</code></td><td>可选，参考图片 URL 数组</td></tr><tr><td><code>duration</code></td><td>固定 10</td></tr></table></article></main></body></html>

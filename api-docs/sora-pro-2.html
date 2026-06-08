@@ -1,0 +1,15 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sora Pro 2 · 视频任务接口说明</title><link rel="stylesheet" href="doc.css"></head><body><header><a href="../index.html">返回接口目录</a><h1>Sora Pro 2 · 视频任务接口说明</h1><p>支持文生视频、图生视频、任务查询和鉴权下载。</p></header><main><article><h2>适用模型</h2><table><tr><th>模型</th><th>说明</th></tr><tr><td><code>sora-vip3-pro-720p</code></td><td>适合常规短视频与预览生成</td></tr><tr><td><code>sora-vip3-pro-1080p</code></td><td>适合正式交付和高清素材</td></tr></table><h2>创建任务</h2><pre><code>curl -X POST https://your-newapi.com/v1/videos \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sora-vip3-pro-720p",
+    "prompt": "rainy neon street, slow cinematic push in",
+    "aspect_ratio": "16:9",
+    "resolution": "720p",
+    "seconds": "5"
+  }'</code></pre><h2>查询与下载</h2><pre><code>curl https://your-newapi.com/v1/videos/{task_id} \
+  -H "Authorization: Bearer YOUR_API_KEY"
+
+curl https://your-newapi.com/v1/videos/{task_id}/content \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  --output result.mp4</code></pre></article></main></body></html>

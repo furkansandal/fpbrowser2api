@@ -1154,6 +1154,7 @@ async def refresh_veo_balance_via_extension(
                 access_expires=access_expires,
                 short_access_token=access_token,
                 short_expires=access_expires,
+                force_fetch=True,
             )
             
             access_token = str((token_info or {}).get("short_access_token") or "").strip()
@@ -1302,19 +1303,27 @@ async def _veo_extension_upload_upsample_data_url_to_oss(
         return out
 
 
+def _veo_4k_use_2k_realesrgan(payload: Dict[str, Any]) -> bool:
+    p = payload or {}
+    for key in ("veo_4k_use_2k_realesrgan", "use_2k_realesrgan_4k", "veo_4k_external_upscale"):
+        if key in p:
+            return _veo_truthy_payload_flag(p.get(key))
+    return _veo_env_enabled("VEO_4K_USE_2K_REALESRGAN", False)
+
+
 def _veo_4k_external_upscaler_url() -> str:
-    return os.getenv("VEO_4K_UPSCALER_URL", "").strip() or "http://192.168.1.12:18080/v1/upscale"
+    return os.getenv("VEO_4K_UPSCALER_URL", "").strip() or "http://192.168.1.12:18080/v1/upscale/2x/realesrgan"
 
 
-def _veo_pick_generated_1k_image_url(result: Dict[str, Any]) -> str:
-    for key in ("origin_image_url", "image_url", "share_url", "url"):
+def _veo_pick_external_upscale_source_image_url(result: Dict[str, Any]) -> str:
+    for key in ("upsample_url", "share_url", "image_url", "url", "origin_image_url"):
         u = str((result or {}).get(key) or "").strip()
         if u and not u.startswith("data:"):
             return u
     return ""
 
 
-async def _veo_external_upscale_1k_to_4k(
+async def _veo_external_upscale_2k_to_4k(
     result: Dict[str, Any],
     *,
     progress_cb: ProgressCB,
@@ -1323,13 +1332,13 @@ async def _veo_external_upscale_1k_to_4k(
     if not isinstance(result, dict) or str(result.get("type") or "") != "veo_workflow_image":
         return result
 
-    source_url = _veo_pick_generated_1k_image_url(result)
+    source_url = _veo_pick_external_upscale_source_image_url(result)
     if not source_url:
-        raise NonPenalizedTaskError("VEO 4K 放大失败：未获取到 1K 图片地址", status_code=502)
+        raise NonPenalizedTaskError("VEO 4K 放大失败：未获取到 2K 图片地址", status_code=502)
 
     endpoint = _veo_4k_external_upscaler_url()
     await progress_cb(99, {"stage": "external_4k_upscale", "image_url": source_url, "upscaler_url": endpoint})
-    append_log(log_file, f"[veo][extension][image] external 4K upscale start source={safe_trim(source_url, 260)!r}")
+    append_log(log_file, f"[veo][extension][image] external 2K->4K upscale start source={safe_trim(source_url, 260)!r}")
 
     data: Dict[str, Any] = {}
     upsample_ok = False
@@ -1353,15 +1362,15 @@ async def _veo_external_upscale_1k_to_4k(
         upsample_ok = True
     except Exception as e:
         upscaled_url = source_url
-        upsample_error = f"VEO 4K 放大失败，已返回 1K 图片：{safe_trim(str(e), 500)}"
-        append_log(log_file, f"[veo][extension][image] external 4K upscale failed, fallback to 1K: {e}")
+        upsample_error = f"VEO 4K 放大失败，已返回 2K 图片：{safe_trim(str(e), 500)}"
+        append_log(log_file, f"[veo][extension][image] external 2K->4K upscale failed, fallback to 2K: {e}")
 
     out = dict(result)
     out["origin_image_url"] = source_url
     out["share_url"] = upscaled_url
     out["image_url"] = upscaled_url
     out["url"] = upscaled_url
-    out["resolution"] = "4K" if upsample_ok else "1K"
+    out["resolution"] = "4K" if upsample_ok else "2K"
     out["upsample_ok"] = upsample_ok
     out["upsample_url"] = upscaled_url
     out["upsample_provider"] = "external_image_upscaler"
@@ -1377,18 +1386,18 @@ async def _veo_external_upscale_1k_to_4k(
     append_log(
         log_file,
         (
-            "[veo][extension][image] external 4K upscale done "
+            "[veo][extension][image] external 2K->4K upscale done "
             if upsample_ok
-            else "[veo][extension][image] external 4K upscale fallback "
+            else "[veo][extension][image] external 2K->4K upscale fallback "
         )
         + f"source={safe_trim(source_url, 180)!r} url={safe_trim(upscaled_url, 260)!r}",
     )
     await progress_cb(
         100,
         {
-            "stage": "external_4k_upscale_done" if upsample_ok else "external_4k_upscale_failed_fallback_1k",
+            "stage": "external_4k_upscale_done" if upsample_ok else "external_4k_upscale_failed_fallback_2k",
             "image_url": upscaled_url,
-            "origin_image_url": source_url,
+            "origin_2k_image_url": source_url,
             "width": data.get("width"),
             "height": data.get("height"),
             "upsample_error": upsample_error,
@@ -1420,6 +1429,22 @@ _VEO_CONTENT_VIOLATION_REASON_MESSAGES = {
     "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED": "上传参考图失败，参考图中包含公众人物/知名人物[PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED]",
     "VEO_REFERENCE_VIDEO_DURATION_VIOLATION": "参考视频时长不能超过30秒",
 }
+
+
+_VEO_RUNTIME_GENERATION_FAILURE_MARKERS = (
+    "Generation job finished with state: FAILED",
+    "PUBLIC_ERROR_HIGH_TRAFFIC",
+)
+
+
+def _veo_generation_failure_should_be_runtime(err: Any) -> bool:
+    try:
+        text = str(err or "")
+    except Exception:
+        text = ""
+    failure_reasons = _veo_extract_failure_reasons(err)
+    haystack = f"{text}\n{failure_reasons}".upper()
+    return any(marker.upper() in haystack for marker in _VEO_RUNTIME_GENERATION_FAILURE_MARKERS)
 
 
 def _veo_content_violation_reason(err: Any) -> Optional[str]:
@@ -3685,6 +3710,7 @@ class VeoAccessKeepaliveRefresher:
                     token_timeout_seconds=min(45.0, max(10.0, self.keepalive_timeout)),
                     log_file=sess._log_file,
                     auto_triger_connection=True,
+                    force_fetch=True,
                 )
                 access_token = str(
                     (token_info or {}).get("session_token")
@@ -4702,6 +4728,7 @@ async def veo_fetch_access_tokens_via_extension(
     google_account: Optional[str] = None,
     google_password: Optional[str] = None,
     google_efa: Optional[str] = None,
+    force_fetch: Optional[bool] = False,
 ) -> Dict[str, Any]:
     """通过浏览器插件读取 VEO long session-token 与 short access_token。"""
     sid, wkey = _veo_extension_ids_from_session(sess, space_id=space_id, window_key=window_key)
@@ -4738,7 +4765,7 @@ async def veo_fetch_access_tokens_via_extension(
             timeout_seconds=max(3.0, min(10.0, float(connect_wait_seconds or 8.0))),
         )
         current_url = str((page_info or {}).get("url") or "").strip()
-        if not is_google_flow(current_url):
+        if not force_fetch and not is_google_flow(current_url):
             append_log(
                 log_file,
                 "[veo][token] current page is not flow page, skip extension token fetch "
@@ -4815,6 +4842,7 @@ async def force_fetch_access_token_in_window(
         google_account=google_account,
         google_password=google_password,
         google_efa=google_efa,
+        force_fetch=True,
     )
     return {
         "access_token": str((info or {}).get("short_access_token") or (info or {}).get("access_token") or "").strip() or None,
@@ -5556,9 +5584,9 @@ async def veo_workflow(
             _ext_image_aspect = _veo_resolve_image_aspect_ratio(payload)
             _ext_image_model = _veo_resolve_image_model_name(payload)
             _ext_resolution_label, _ext_want_upsample, _ext_upsample_target_resolution = _veo_resolve_image_output_resolution(payload)
-            _ext_want_external_4k = _ext_resolution_label == "4K"
+            _ext_want_external_4k = _ext_resolution_label == "4K" and _veo_4k_use_2k_realesrgan(payload)
             if _ext_want_external_4k:
-                _ext_resolution_label, _ext_want_upsample, _ext_upsample_target_resolution = ("1K", False, None)
+                _ext_resolution_label, _ext_want_upsample, _ext_upsample_target_resolution = ("2K", True, UPSAMPLE_IMAGE_RESOLUTION_2K)
             _ext_i2i_urls = _veo_collect_image_generation_reference_urls(payload) if _veo_payload_has_image_generation_references(payload) else []
             _ext_model_key = None
             _ext_video_aspect = None
@@ -5670,9 +5698,9 @@ async def veo_workflow(
 
         if image_mode:
             if _ext_want_external_4k:
-                ext_payload["resolution"] = "1k"
-                ext_payload["image_resolution"] = "1k"
-                ext_payload["veo_image_resolution"] = "1k"
+                ext_payload["resolution"] = "2k"
+                ext_payload["image_resolution"] = "2k"
+                ext_payload["veo_image_resolution"] = "2k"
             ext_prompt = str(ext_payload.get("prompt") or "").strip()
             image_text_locale_hint = (
                 "文字要求：输出图片中所有可读文字、文案、标题、标签、包装辅助文案如果前面提示词没有特别指定，优先使用简体中文。"
@@ -5794,6 +5822,8 @@ async def veo_workflow(
                     setattr(e, "failure_reasons", list(_ext_failure_reasons_from_progress))
                 except Exception:
                     pass
+            if _veo_generation_failure_should_be_runtime(e):
+                raise RuntimeError(str(e)) from e
             _violation_reason = _veo_content_violation_reason(e)
             if _violation_reason:
                 try:
@@ -5839,7 +5869,7 @@ async def veo_workflow(
                 _ext_result = dict(_ext_result)
                 _ext_result["thumb_url"] = _public_thumb
         if isinstance(_ext_result, dict) and image_mode and _ext_want_external_4k:
-            _ext_result = await _veo_external_upscale_1k_to_4k(
+            _ext_result = await _veo_external_upscale_2k_to_4k(
                 _ext_result,
                 progress_cb=progress_cb,
                 log_file=log_file,

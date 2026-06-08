@@ -1,0 +1,9 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Nana Banana · 图片异步 API 接入文档</title><link rel="stylesheet" href="doc.css"></head><body><header><a href="../index.html">返回接口目录</a><h1>Nana Banana 2 / Nana Banana Pro · 图片异步 API 接入文档</h1><p>入口路径使用 <code>/v1/videos</code>，最终结果为图片。</p></header><main><article><h2>提交任务</h2><pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nana-banana-2",
+    "prompt": "a cute banana mascot wearing sunglasses, studio lighting",
+    "aspect_ratio": "1:1",
+    "resolution": "1k"
+  }'</code></pre><h2>请求字段</h2><table><tr><th>字段</th><th>说明</th></tr><tr><td><code>model</code></td><td><code>nana-banana-2</code> 或 <code>nana-banana-pro</code></td></tr><tr><td><code>prompt</code></td><td>生成提示词</td></tr><tr><td><code>images</code></td><td>多参考图 URL 数组，最多 10 张</td></tr><tr><td><code>resolution</code></td><td><code>1k</code> / <code>2k</code></td></tr></table></article></main></body></html>

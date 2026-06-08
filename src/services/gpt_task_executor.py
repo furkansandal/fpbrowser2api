@@ -1172,6 +1172,19 @@ async def gpt_fetch_balance_via_extension(
             out["image_quota_reset_at"] = reset_at
     return out
 
+def _gpt_payload_image_model_2k_4k(payload: Dict[str, Any]) -> bool:
+    resolution = (payload or {}).get("resolution")
+    duration = (payload or {}).get("duration")
+    if resolution is None:
+        return False
+    if duration is None:
+        return False
+    try:
+        iv = int(float(duration))
+    except Exception:
+        iv = 0
+    lower_resolution = str(resolution).strip().lower()
+    return iv == 1 and (lower_resolution == "2k" or lower_resolution == "4k")
 
 async def gpt_fetch_membership_via_extension(
     *,
@@ -1240,14 +1253,15 @@ async def gpt_fetch_membership_via_extension(
         timeout_seconds=max(5.0, float(membership_timeout_seconds or 45.0)),
     )
     out = dict(result or {})
+    print(f"result:{result}")
     membership = _one_str(out.get("membership") or out.get("plan_title") or out.get("plan_type") or _gpt_plan_from_jwt(at))
     if not membership:
         membership = _gpt_membership_from_raw(out.get("raw"), "")
     if membership:
         membership = veo_format_paygate_tier_label(membership)
         out["membership"] = membership
-        out["plan_title"] = _one_str(out.get("plan_title") or membership)
-        out["plan_type"] = _one_str(out.get("plan_type") or membership)
+        out["plan_title"] = membership
+        out["plan_type"] = membership
     subscription_end = _gpt_subscription_end_from_payload(out)
     if subscription_end:
         out["subscription_end"] = subscription_end
@@ -1355,8 +1369,8 @@ async def refresh_gpt_balance_via_extension(
             kwargs["sora_subscription_end"] = subscription_end
         await db.update_task_type_window(**kwargs)
         try:
-            if remaining < 30 and signal_window_pool_replenish is not None:
-                hi = await db.task_type_has_mapping_remaining_quota_above(getattr(picked, "task_code", ""), 30)
+            if remaining < 1 and signal_window_pool_replenish is not None:
+                hi = await db.task_type_has_mapping_remaining_quota_above(getattr(picked, "task_code", ""), 1)
                 if hi:
                     signal_window_pool_replenish()
         except Exception:

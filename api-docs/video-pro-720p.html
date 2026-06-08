@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>video-pro-720p · 视频异步 API 接入文档</title>
+  <style>
+    :root{--text:#162033;--muted:#64748b;--line:#e6edf5;--brand:#635bff;--code:#0f172a}*{box-sizing:border-box}body{margin:0;font:14px/1.7 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;background:#f6f8fc;color:var(--text)}header{padding:28px 24px;background:#fff;border-bottom:1px solid var(--line)}main{max-width:1080px;margin:0 auto;padding:28px 24px 56px}.back{color:var(--brand);text-decoration:none;font-weight:700}h1{font-size:30px;margin:14px 0 8px}h2{font-size:22px;margin:30px 0 12px}.muted{color:var(--muted)}.pill{display:inline-flex;margin:8px 8px 0 0;padding:6px 10px;border-radius:999px;background:#eef2ff;color:#3730a3;font-weight:700;font-size:12px}article{background:#fff;border:1px solid var(--line);border-radius:18px;padding:30px;box-shadow:0 16px 44px rgba(15,23,42,.08)}pre{background:var(--code);color:#e2e8f0;border-radius:14px;overflow:auto;padding:18px}code:not(pre code){background:#eef2ff;color:#3730a3;padding:2px 6px;border-radius:7px}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--line);border-radius:14px;overflow:hidden}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f8fafc}tr:last-child td{border-bottom:0}
+  </style>
+</head>
+<body>
+  <header><a class="back" href="../index.html">返回接口目录</a><h1>video-pro-720p · 视频异步 API 接入文档</h1><p class="muted">高质量版 720p，最高画质档，适合正式成片。提示：云存储文件仅保留 6 小时。超期后物理文件自动清除，但本任务记录永久保留，请及时下载。</p><span class="pill">POST /v1/videos</span><span class="pill">GET /v1/videos/{task_id}</span><span class="pill">Model: video-pro-720p</span></header>
+  <main><article>
+    <h2>1. 创建视频任务</h2>
+<pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer sk-xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "video-pro-720p",
+    "prompt": "cinematic product commercial, smooth camera movement, high quality 720p",
+    "duration": 6,
+    "aspect_ratio": "16:9",
+    "image_url": "https://your-cdn.com/main-reference.jpg",
+    "extra_images": [
+      "https://your-cdn.com/ref-1.jpg",
+      "https://your-cdn.com/ref-2.jpg"
+    ],
+    "extra_videos": [
+      "https://your-cdn.com/ref-video.mp4"
+    ],
+    "extra_audios": [
+      "https://your-cdn.com/ref-audio.mp3"
+    ]
+  }'</code></pre>
+    <h2>2. 轮询进度</h2>
+<pre><code>curl /v1/videos/task_385412 \
+  -H "Authorization: Bearer sk-xxxxxxxx"</code></pre>
+    <h2>3. 接口参数（PAYLOAD）</h2>
+    <table><thead><tr><th>参数名</th><th>类型</th><th>必填</th><th>说明</th></tr></thead><tbody>
+      <tr><td><code>model</code></td><td>string</td><td>必填</td><td>固定值 <code>video-pro-720p</code></td></tr>
+      <tr><td><code>prompt</code></td><td>string</td><td>必填</td><td>视频内容描述，建议英文。引用素材时在文本中插入 <code>@Image1</code>、<code>@Video1</code>、<code>@Audio1</code></td></tr>
+      <tr><td><code>duration</code></td><td>integer</td><td>可选</td><td>视频时长（秒），4-15，默认 6。按秒计费，此即计费单位</td></tr>
+      <tr><td><code>aspect_ratio</code></td><td>string</td><td>可选</td><td><code>16:9</code>（默认）、<code>9:16</code>、<code>1:1</code>、<code>21:9</code>、<code>3:4</code>、<code>4:3</code></td></tr>
+      <tr><td><code>image_url</code></td><td>string</td><td>可选</td><td>全能参考图 URL（公网 HTTPS）</td></tr>
+      <tr><td><code>extra_images</code></td><td>array</td><td>可选</td><td>参考图 URL 数组，最多 9 张，用 <code>@Image1</code> 到 <code>@Image9</code> 引用</td></tr>
+      <tr><td><code>extra_videos</code></td><td>array</td><td>可选</td><td>参考视频 URL 数组，最多 3 个，用 <code>@Video1</code> 到 <code>@Video3</code> 引用</td></tr>
+      <tr><td><code>extra_audios</code></td><td>array</td><td>可选</td><td>参考音频 URL 数组，最多 3 个，用 <code>@Audio1</code> 到 <code>@Audio3</code> 引用</td></tr>
+    </tbody></table>
+    <h2>4. 状态说明</h2>
+    <table><thead><tr><th>status</th><th>含义</th><th>处理方式</th></tr></thead><tbody>
+      <tr><td><code>queued</code></td><td>排队中</td><td>继续轮询</td></tr>
+      <tr><td><code>processing</code> / <code>in_progress</code></td><td>生成中</td><td>继续轮询</td></tr>
+      <tr><td><code>completed</code></td><td>已完成</td><td>读取 <code>video_url</code> 或 <code>url</code></td></tr>
+      <tr><td><code>failed</code></td><td>失败</td><td>查看 <code>error.message</code></td></tr>
+    </tbody></table>
+  </article></main>
+</body>
+</html>

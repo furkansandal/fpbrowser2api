@@ -1,0 +1,13 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VEO Omni Flash · 视频异步 API 接入文档</title><link rel="stylesheet" href="doc.css"></head><body><header><a href="../index.html">返回接口目录</a><h1>VEO Omni Flash · 视频异步 API 接入文档</h1><p>多参考图生成视频，参考图字段使用 <code>Ingredients_images</code>。</p></header><main><article><h2>提交任务</h2><pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "veo-omni-flash",
+    "prompt": "combine these references into a cinematic product launch video",
+    "duration": 10,
+    "aspect_ratio": "16:9",
+    "Ingredients_images": [
+      "https://your-cdn.com/ref-1.jpg",
+      "https://your-cdn.com/ref-2.jpg"
+    ]
+  }'</code></pre><h2>参数</h2><table><tr><th>字段</th><th>说明</th></tr><tr><td><code>model</code></td><td>固定 <code>veo-omni-flash</code></td></tr><tr><td><code>duration</code></td><td>固定 10</td></tr><tr><td><code>Ingredients_images</code></td><td>多参考图 URL 数组，最多 6 张</td></tr></table></article></main></body></html>

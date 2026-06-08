@@ -89,7 +89,12 @@ from .jimeng_task_executor import (
     _DREAMINA_MIN_CREDIT,
     _DREAMINA_GIFT_CREDIT,
 )
-from .gpt_task_executor import gpt_workflow, refresh_gpt_balance_via_extension, DEFAULT_GPT_TARGET
+from .gpt_task_executor import (
+    gpt_workflow, 
+    refresh_gpt_balance_via_extension, 
+    DEFAULT_GPT_TARGET,
+    _gpt_payload_image_model_2k_4k,
+)
 
 
 @dataclass
@@ -140,7 +145,7 @@ def _remaining_quota_exclusive_floor_for_pick(
         if payload is None:
             return 0,credit_threthold,plan_type
         elif _veo_payload_image_model_4k(payload or {}): #4k图片，0积分 至少pro账号
-            plan_type = 0
+            plan_type = 2
             return 0,credit_threthold,plan_type
         #elif _veo_payload_video_model_is_omni(payload or {}): #参考视频，20积分 任意账号
         #    return 20,credit_threthold,plan_type
@@ -158,6 +163,10 @@ def _remaining_quota_exclusive_floor_for_pick(
     if code == "dreamina_workflow":
         credit_threthold = _DREAMINA_MIN_CREDIT - _DREAMINA_GIFT_CREDIT;
         return _DREAMINA_MIN_CREDIT,credit_threthold, plan_type
+    if code == "gpt_workflow":
+        if _gpt_payload_image_model_2k_4k(payload or {}):
+            return 1, 0, 1
+        return 1, 0, 0
     return 3,credit_threthold, plan_type
 
 
@@ -390,6 +399,38 @@ class TaskService:
         async with self._window_pool_reconcile_serial:
             await self._window_pool_reconcile_once_impl()
 
+    async def _window_pool_task_type_still_enabled(self, task_type_code: str) -> bool:
+        code = (task_type_code or "").strip()
+        if not code:
+            return False
+        if self._window_pool_stop.is_set():
+            return False
+        try:
+            t = await self.db.get_task_type_by_code(code)
+        except Exception as e:
+            logger.warning("window_pool check task_type=%s enabled failed: %s", code, e)
+            return True
+        if t is None:
+            return False
+        return bool(t.enabled) and bool(getattr(t, "window_pool_enabled", False))
+
+    async def _window_pool_sleep_between_opens(self, task_type_code: str, timeout: float) -> bool:
+        """Return True when opening should stop for this task type."""
+        deadline = time.monotonic() + max(0.0, float(timeout or 0.0))
+        while True:
+            if self._window_pool_stop.is_set():
+                return True
+            if not await self._window_pool_task_type_still_enabled(task_type_code):
+                return True
+            rem = deadline - time.monotonic()
+            if rem <= 0:
+                return False
+            try:
+                await asyncio.wait_for(self._window_pool_stop.wait(), timeout=min(1.0, rem))
+                return True
+            except asyncio.TimeoutError:
+                pass
+
     async def _window_pool_reconcile_once_impl(self) -> None:
         try:
             all_types = await self.db.list_task_types()
@@ -484,9 +525,21 @@ class TaskService:
             len(to_open),
             [mid for _, mid in to_open],
         )
+        disabled_open_codes: set[str] = set()
         for code, mid in to_open:
             if self._window_pool_stop.is_set():
                 return
+            if code in disabled_open_codes:
+                continue
+            if not await self._window_pool_task_type_still_enabled(code):
+                disabled_open_codes.add(code)
+                async with self._window_pool_lock:
+                    self._window_pool_targets.pop(code, None)
+                logger.info(
+                    "window_pool open stopped because task_type=%s disabled window_pool",
+                    code,
+                )
+                continue
             ok = await self._window_pool_open_mapping(mid)
             if not ok:
                 async with self._window_pool_lock:
@@ -496,7 +549,14 @@ class TaskService:
                 logger.warning(
                     "window_pool open mapping=%s failed; keep mapping enabled", mid
                 )
-            await asyncio.sleep(30)
+            if await self._window_pool_sleep_between_opens(code, 1):
+                disabled_open_codes.add(code)
+                async with self._window_pool_lock:
+                    self._window_pool_targets.pop(code, None)
+                logger.info(
+                    "window_pool open sleep interrupted because task_type=%s disabled/stopped",
+                    code,
+                )
 
     async def _window_pool_open_mapping(self, mapping_id: int) -> bool:
         if self._window_pool_stop.is_set():
@@ -1853,6 +1913,14 @@ class TaskService:
                         auto_triger_connection=False,
                     )
                     self._veo_keepalive_refresher.wake_up()
+                elif picked.create_task_handler == "gpt_workflow":
+                    await refresh_gpt_balance_via_extension(
+                        db=self.db,
+                        picked=picked,
+                        refresh_timeout_seconds=refresh_timeout_seconds,
+                        signal_window_pool_replenish=self._signal_window_pool_replenish,
+                        auto_triger_connection=False,
+                    )
                 elif picked.create_task_handler == "dreamina_workflow":
                     await refresh_dreamina_balance_best_effort(
                         db=self.db,

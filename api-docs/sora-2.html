@@ -1,0 +1,11 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sora 2 · 视频异步 API 接入文档</title><link rel="stylesheet" href="doc.css"></head><body><header><a href="../index.html">返回接口目录</a><h1>Sora 2 · 视频异步 API 接入文档</h1><p>支持文生视频和单张参考图生成视频。</p></header><main><article><h2>提交任务</h2><pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sora-2",
+    "prompt": "the character turns toward the camera, cinematic lighting",
+    "duration": 12,
+    "aspect_ratio": "16:9",
+    "image": "https://your-cdn.com/portrait.jpg"
+  }'</code></pre><h2>轮询任务</h2><pre><code>curl https://xxx.xxx.xxx/v1/videos/v_8c7e4b... \
+  -H "Authorization: Bearer api-key"</code></pre><h2>字段</h2><table><tr><th>字段</th><th>类型</th><th>说明</th></tr><tr><td><code>model</code></td><td>string</td><td>固定 <code>sora-2</code></td></tr><tr><td><code>prompt</code></td><td>string</td><td>提示词</td></tr><tr><td><code>duration</code></td><td>int</td><td>通常为 12 秒</td></tr><tr><td><code>aspect_ratio</code></td><td>string</td><td><code>16:9</code> / <code>9:16</code></td></tr><tr><td><code>image</code></td><td>string</td><td>单张参考图 URL</td></tr></table></article></main></body></html>

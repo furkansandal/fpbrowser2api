@@ -1,0 +1,15 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GPT Image 2 · 图片异步 API 接入文档</title><link rel="stylesheet" href="doc.css"></head><body><header><a href="../index.html">返回接口目录</a><h1>GPT Image 2 · 图片异步 API 接入文档</h1><p>入口路径使用 <code>/v1/videos</code>，最终结果为图片。</p></header><main><article><h2>文生图</h2><pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-image-2-2K",
+    "prompt": "retro neon poster, cyberpunk girl",
+    "aspect_ratio": "9:16"
+  }'</code></pre><h2>多图生图</h2><pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-image-2-2K",
+    "prompt": "the character from the reference photo, in a futuristic city",
+    "image_urls": ["https://your-cdn.com/ref.jpg"]
+  }'</code></pre><p>完成后读取 <code>image_url</code>、<code>url</code> 或 <code>metadata.result_urls</code>。</p></article></main></body></html>
