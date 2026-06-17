@@ -12,7 +12,7 @@ const HEARTBEAT_INTERVAL_MS = 15000;
 const NEWAPI_CHARGE_BASE_URL = "https://www.newtoken.club";
 const NEWAPI_CHARGE_MODEL = "fpbrowser-use";
 // 临时关闭 NewAPI 扣费。需要恢复时改为 true 即可。
-const NEWAPI_CHARGE_ENABLED = true;
+const NEWAPI_CHARGE_ENABLED = false;
 const VEO_HUMAN_ACTIVITY_ACTIONS = new Set(["human_activity", "simulate_human_activity"]);
 let status = {
   bridgeUrl: "",
