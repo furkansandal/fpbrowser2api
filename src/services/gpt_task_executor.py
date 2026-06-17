@@ -139,6 +139,20 @@ def _gpt_is_token_invalidated_error(exc: BaseException) -> bool:
     return "token_invalidated" in text or "authentication token has been invalidated" in text
 
 
+def _gpt_is_token_expired_error(exc: BaseException) -> bool:
+    try:
+        text = str(exc or "")
+    except Exception:
+        text = ""
+    text = text.lower()
+    return (
+        "token_expired" in text
+        or "token is expired" in text
+        or "authentication token is expired" in text
+        or "provided authentication token is expired" in text
+    )
+
+
 def _gpt_target_url(raw: Any = None) -> str:
     s = _one_str(raw) or DEFAULT_GPT_TARGET
     try:
@@ -833,7 +847,7 @@ def veo_format_paygate_tier_label(tier: Optional[str]) -> str:
     if not t or t == "free":
         # free账号
         return "0" 
-    if t == "plus":
+    if t == "plus" or t == "team":
         # pro账号
         return "1"
     return "-1" #其它类型
@@ -1063,6 +1077,43 @@ async def gpt_fetch_access_token_via_extension(
     out["source"] = _one_str(out.get("source")) or "extension.auth_session"
     append_log(log_file, f"[gpt][token] extension returned access_token len={len(at)}")
     return out
+
+
+async def _gpt_refresh_access_token_after_expired_error(
+    *,
+    sess: Any,
+    target_url: str,
+    space_id: str,
+    window_key: str,
+    db: Any = None,
+    task_type_window_id: Optional[int] = None,
+    connect_wait_seconds: float = 0.5,
+    token_timeout_seconds: float = 45.0,
+    log_file: Optional[Path] = None,
+) -> None:
+    try:
+        append_log(log_file or MONITOR_LOG_FILE, "[gpt][token] token_expired detected; refresh access_token in background")
+        tok = await gpt_fetch_access_token_via_extension(
+            sess=sess,
+            target_url=target_url,
+            space_id=space_id,
+            window_key=window_key,
+            connect_wait_seconds=connect_wait_seconds,
+            token_timeout_seconds=token_timeout_seconds,
+            log_file=log_file,
+            auto_triger_connection=True,
+        )
+        at = _one_str(tok.get("access_token"))
+        exp = _one_str(tok.get("expires")) or None
+        if at and db is not None and task_type_window_id:
+            await db.update_task_type_window(
+                mapping_id=int(task_type_window_id),
+                sora_access_token=at,
+                sora_access_expires=exp,
+            )
+            append_log(log_file or MONITOR_LOG_FILE, f"[gpt][token] refreshed expired access_token persisted to task_type_window id={int(task_type_window_id)}")
+    except Exception as e:
+        append_log(log_file or MONITOR_LOG_FILE, f"[gpt][token] background refresh after token_expired failed: {e}")
 
 
 async def gpt_fetch_access_token_in_window(
@@ -1694,6 +1745,20 @@ async def gpt_workflow(
             timeout_seconds=timeout_seconds,
         )
     except Exception as e:
+        if _gpt_is_token_expired_error(e):
+            asyncio.create_task(
+                _gpt_refresh_access_token_after_expired_error(
+                    sess=sess,
+                    target_url=target_url,
+                    space_id=space_id,
+                    window_key=window_key,
+                    db=db,
+                    task_type_window_id=task_type_window_id,
+                    connect_wait_seconds=float(payload.get("extension_connect_wait_seconds") or 10.0),
+                    token_timeout_seconds=float(payload.get("extension_token_timeout_seconds") or 45.0),
+                    log_file=log_file,
+                )
+            )
         if _gpt_is_token_invalidated_error(e):
             raise RuntimeError(str(e)) from e
         raise

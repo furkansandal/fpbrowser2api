@@ -4796,24 +4796,11 @@ async def manual_open_mapping_window(
         veo_ctx.browser_pure_mode = effective_pure
         veo_ctx.idle_close_disabled = True
         
-        #TODO clear buffer laky
         veo_ctx.idle_close_disabled = True
         try:
             veo_ctx._cancel_idle_close()
         except Exception:
             pass
-
-        try:
-            client = FPBrowserClient()
-            keys = [window_key]
-            local_rsp = await client.browser_clear_local_cache(
-                vendor=vendor,
-                base_url=base_url,
-                access_key=access_key,
-                window_keys=keys,
-            )
-        except RuntimeError as e:
-            raise HTTPException(status_code=400, detail=f"清空本地缓存失败：{e}")
 
         try:
             await veo_ctx.pw_ctx.open_fingerprint_window_only(

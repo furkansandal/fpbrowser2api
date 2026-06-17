@@ -2,9 +2,9 @@
 
 基于 RoxyBrowser 指纹浏览器的 AI 视频/图片自动化任务框架。项目通过指纹浏览器保活账号、隔离环境，并在真实页面上下文中执行插件自动化逻辑，把 Sora、Google Flow/Veo、Seedance、Grok、ChatGPT 图片等站点能力封装成可管理、可调度、可对外调用的 API。
 
-> QQ 交流群：1035463132
-> 操作视频：<https://www.bilibili.com/video/BV1vL5r65EzE/?vd_source=7fa3ff8dba916183629a05529aa18af2>
-
+- QQ 交流群：1035463132
+- 操作视频：<[https://www.bilibili.com/video/BV1vL5r65EzE/?vd_source=7fa3ff8dba916183629a05529aa18af2](https://www.bilibili.com/video/BV1AjEH62EBV/)>
+- 通过邀请码下载有15%优惠： RoxyBrowser：<https://roxybrowser.com?code=0416Z62A>
 ## 重要声明
 
 - 本项目只供技术研究、学习验证、私有测试环境使用。
@@ -52,7 +52,7 @@
 4. 执行器在页面上下文中调用接口、上传文件、轮询状态、读取结果。
 5. 遇到 Cloudflare/Turnstile 等挑战页时，执行器会尝试等待放行、点击验证控件，必要时重启窗口自愈。
 
-推荐使用 RoxyBrowser：<https://roxybrowser.com?code=0416Z62A>
+通过邀请码下载有15%优惠： RoxyBrowser：<https://roxybrowser.com?code=0416Z62A>
 
 <img width="1919" height="914" alt="RoxyBrowser screenshot" src="https://github.com/user-attachments/assets/34238cc6-66c0-41eb-97b0-405014ea467c" />
 

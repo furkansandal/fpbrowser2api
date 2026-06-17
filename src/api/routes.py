@@ -205,8 +205,8 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
     elif model in {"veo-omni-flash-video-edit"}:
         task_type_code = "veo_workflow"
         duration = payload.get("duration")
-        if duration != 8:
-            raise HTTPException(status_code=400, detail="veo-omni-flash only supports duration=8")
+        if duration != 8 and duration != 10:
+            raise HTTPException(status_code=400, detail="veo-omni-flash only supports duration=10")
         payload["n_frames"] = 240
         payload["video_model"] = "abra_t2v_10s"
         payload["model"] = "veo-omni-flash"

@@ -1069,7 +1069,7 @@ class FPBrowserClient:
             base_url,
             token,
             "/browser/clear_local_cache",
-            {"dirIds": [str(x).strip() for x in (dir_ids or []) if str(x or "").strip()]},
+            {"dirIds": [str(x).strip() for x in (dir_ids or []) if str(x or "").strip()], "type": "partial"},
         )
 
     async def _roxy_clear_server_cache(

@@ -4636,7 +4636,7 @@
           if (closeBtn) closeBtn.disabled = true;
           if (veoConnectBringBtn) veoConnectBringBtn.disabled = true;
 
-          //await clearMappingBrowserLocalCache(mappingId);
+          await clearMappingBrowserLocalCache(mappingId);
           setBtnBusy(openBtn, true, { loadingText: "打开中" });
           const hl = getMappingHeadless(mappingId);
           const pm = getMappingPureMode(mappingId);
