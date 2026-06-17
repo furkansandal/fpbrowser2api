@@ -1,6 +1,6 @@
-import { runVeoTask } from "./providers/veo_provider.js";
+import { dismissVeoChangelogModalIfPresent, runVeoTask } from "./providers/veo_provider.js";
 import { runDreaminaTask } from "./providers/dreamina_provider.js";
-import { runGptTask } from "./providers/gpt_provider.js";
+import { maybeHandleGptCloudflare, runGptTask } from "./providers/gpt_provider.js";
 import { runNetworkTask, handleNetworkRuntimeMessage } from "./providers/network_provider.js";
 
 let ws = null;
@@ -146,7 +146,7 @@ async function chargeNewapiUsage(reason, meta = {}) {
     max_tokens: 1,
     temperature: 0
   };
-  await pushLog("info", "NewAPI 扣费开始", { reason, model: NEWAPI_CHARGE_MODEL });
+  await pushLog("info", "NewAPI charge start", { reason, model: NEWAPI_CHARGE_MODEL });
   let resp;
   let text = "";
   try {
@@ -363,6 +363,16 @@ async function runTask(msg) {
     progress: async (progress, data = {}) => {
       await pushLog("debug", "task.progress", { task_id: taskId, progress, data });
       await send({ type: "task.progress", task_id: taskId, progress, data });
+    },
+    setGptBusyTab: async (tabId) => {
+      if (!tabId) return;
+      gptBusyTabs.add(tabId);
+      await pushLog("debug", "GPT tab marked busy", { task_id: taskId, tab_id: tabId });
+    },
+    clearGptBusyTab: async (tabId) => {
+      if (!tabId) return;
+      gptBusyTabs.delete(tabId);
+      await pushLog("debug", "GPT tab released", { task_id: taskId, tab_id: tabId });
     }
   };
   let result;
@@ -391,6 +401,14 @@ async function runTask(msg) {
       await chargeNewapiUsage("veo_workflow", { task_id: taskId, provider: "veo", workflow_kind: payload.workflow_kind || payload.action || "" });
     }
     result = await runVeoTask(msg, runtime);
+    if (["current_page", "get_current_page", "current_url", "get_current_url"].includes(action)) {
+      const url = String(result && result.url || "");
+      const tabId = Number(result && result.tab_id || 0);
+      if (tabId && isGoogleLoginUrl(url)) {
+        const trigger = await maybeRunGoogleAutoLoginForTab(tabId, url, "veo_current_page");
+        result = { ...(result || {}), google_auto_login_trigger: trigger };
+      }
+    }
   } else if (msg.provider === "dreamina") {
     const action = String(payload.action || payload.workflow_kind || "").trim().toLowerCase();
     if (!["fetch_sessionid", "fetch_access_token", "get_sessionid"].includes(action)) {
@@ -538,6 +556,16 @@ function isGoogleAutoLoginWatchUrl(raw) {
   }
 }
 
+function isChatGptWatchUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    const h = u.hostname.toLowerCase();
+    return u.protocol === "https:" && (h === "chatgpt.com" || h === "chat.openai.com");
+  } catch (_) {
+    return false;
+  }
+}
+
 function hasGoogleSignedOutText(text) {
   return /you(?:'|’| are)?re not signed in|you are not signed in|not signed in|ログインしていません|ログインしていない|ログインが必要|ログインしてください|nicht angemeldet|sie sind nicht angemeldet|du bist nicht angemeldet/i.test(String(text || ""));
 }
@@ -598,7 +626,7 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
     let totpCode = "";
     // 2FA/TOTP 码有时间窗口，且用户希望验证码页出现后稍等再计算并填写。
     // 因此不要在每轮一开始就提前计算；只有上一轮已提交密码或已确认在验证码页时才生成。
-    if (creds.googleEfa && last && ["password", "need_2fa", "totp"].includes(last.action)) {
+    if (creds.googleEfa && last && ["password", "need_2fa", "totp", "clicked_authenticator_option"].includes(last.action)) {
       try { totpCode = await generateTotpCode(creds.googleEfa); } catch (_) { totpCode = ""; }
     }
     const frames = await chrome.scripting.executeScript({
@@ -732,6 +760,24 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
           await clickHuman(clickable);
           return true;
         };
+        const clickGoogleAuthenticatorOption = async () => {
+          const pageText = String(document.body && document.body.innerText || "").toLowerCase();
+          if (!/choose how you want to sign in|2-step verification|google authenticator|verification code/i.test(pageText)) return false;
+          const candidates = Array.from(document.querySelectorAll(
+            '[role="link"], [role="button"], button, a, li, [data-challengetype], [jsname], div'
+          )).filter(visible);
+          const hit = candidates.find(el => {
+            const txt = String(el.innerText || el.textContent || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().toLowerCase();
+            if (!txt || txt.length > 220) return false;
+            return txt.includes("authenticator")
+              && txt.includes("verification code")
+              && !txt.includes("one-time security code");
+          });
+          if (!hit) return false;
+          const clickable = hit.closest('[role="link"], [role="button"], button, a, li, [data-challengetype]') || hit;
+          await clickHuman(clickable);
+          return true;
+        };
 
         const url = String(location.href || "");
         if (!/accounts\.google\.com/i.test(url)) return { done: true, action: "left_google", url };
@@ -757,6 +803,7 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
           await clickNextAndWait(5000);
           return { done: false, action: "totp", selector: otp.selector, url };
         }
+        if (await clickGoogleAuthenticatorOption()) return { done: false, action: "clicked_authenticator_option", url };
         if (await clickGmailPicker()) return { done: false, action: "clicked_account_picker", url };
         return { done: false, action: "idle", url };
       }
@@ -775,6 +822,7 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
       email: 3500,
       password: 2000,
       need_2fa: 2000,
+      clicked_authenticator_option: 2500,
       clicked_account_picker: 2500,
       idle: 900
     };
@@ -820,6 +868,13 @@ const GOOGLE_AUTO_LOGIN_COOLDOWN_MS = 60 * 1000;
 const googleAutoLoginRunningTabs = new Set();
 const googleAutoLoginLastByTab = new Map();
 let googleAutoLoginLastConfigWarnAt = 0;
+const GPT_CLOUDFLARE_WATCH_COOLDOWN_MS = 8000;
+const gptCloudflareRunningTabs = new Set();
+const gptCloudflareLastByTab = new Map();
+const gptBusyTabs = new Set();
+const VEO_CHANGELOG_WATCH_COOLDOWN_MS = 5000;
+const veoChangelogRunningTabs = new Set();
+const veoChangelogLastByTab = new Map();
 
 async function maybeRunGoogleAutoLoginForTab(tabId, url, reason = "tab_event") {
   if (!tabId || !isGoogleAutoLoginWatchUrl(url)) return { skipped: true, reason: "not_google_watch_page" };
@@ -879,6 +934,101 @@ async function maybeRunGoogleAutoLoginForActiveTab(reason = "manual_enable") {
   const tab = await getActiveTab();
   if (!tab || !tab.id) return { skipped: true, reason: "no_active_tab" };
   return maybeRunGoogleAutoLoginForTab(tab.id, String(tab.url || ""), reason);
+}
+
+async function maybeRunGptCloudflareWatchForTab(tabId, url, reason = "tab_event") {
+  if (!tabId || !isChatGptWatchUrl(url)) return { skipped: true, reason: "not_chatgpt_page" };
+  if (gptBusyTabs.has(tabId)) return { skipped: true, reason: "gpt_task_running" };
+  if (gptCloudflareRunningTabs.has(tabId)) return { skipped: true, reason: "already_running" };
+
+  const now = Date.now();
+  const lastAt = Number(gptCloudflareLastByTab.get(tabId) || 0);
+  if (now - lastAt < GPT_CLOUDFLARE_WATCH_COOLDOWN_MS) {
+    return { skipped: true, reason: "cooldown", cooldown_ms: GPT_CLOUDFLARE_WATCH_COOLDOWN_MS - (now - lastAt) };
+  }
+
+  gptCloudflareLastByTab.set(tabId, now);
+  gptCloudflareRunningTabs.add(tabId);
+  const runtime = {
+    progress: async (progress, data = {}) => {
+      await pushLog("debug", "GPT Cloudflare watch progress", { tab_id: tabId, progress, data });
+    }
+  };
+  await pushLog("debug", "GPT Cloudflare watch checking", { tab_id: tabId, url, reason });
+  maybeHandleGptCloudflare(tabId, runtime, {
+    maxWaitMs: 22000,
+    maxClicks: 3,
+    initialDelayMs: 1500
+  }).then(async (result) => {
+    if (result && (result.passed || result.clicked_count || result.is_cloudflare)) {
+      await pushLog(result.passed ? "info" : "warn", "GPT Cloudflare watch finished", { tab_id: tabId, result });
+    }
+  }).catch(async (e) => {
+    await pushLog("warn", "GPT Cloudflare watch failed", { tab_id: tabId, error: String(e && e.message || e) });
+  }).finally(() => {
+    gptCloudflareRunningTabs.delete(tabId);
+    gptCloudflareLastByTab.set(tabId, Date.now());
+  });
+  return { skipped: false, started: true };
+}
+
+async function scanChatGptCloudflareWatch(reason = "scan") {
+  const tabs = await chrome.tabs.query({ url: ["https://chatgpt.com/*", "https://chat.openai.com/*"] });
+  for (const tab of tabs || []) {
+    if (!tab || !tab.id) continue;
+    await maybeRunGptCloudflareWatchForTab(tab.id, String(tab.url || ""), reason).catch(() => {});
+  }
+}
+
+function isLabsGoogleWatchUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    return u.protocol === "https:" && u.hostname === "labs.google";
+  } catch (_) {
+    return false;
+  }
+}
+
+async function maybeRunVeoChangelogWatchForTab(tabId, url, reason = "tab_event") {
+  if (!tabId || !isLabsGoogleWatchUrl(url)) return { skipped: true, reason: "not_labs_google_page" };
+  if (veoChangelogRunningTabs.has(tabId)) return { skipped: true, reason: "already_running" };
+
+  const now = Date.now();
+  const lastAt = Number(veoChangelogLastByTab.get(tabId) || 0);
+  if (now - lastAt < VEO_CHANGELOG_WATCH_COOLDOWN_MS) {
+    return { skipped: true, reason: "cooldown", cooldown_ms: VEO_CHANGELOG_WATCH_COOLDOWN_MS - (now - lastAt) };
+  }
+
+  veoChangelogLastByTab.set(tabId, now);
+  veoChangelogRunningTabs.add(tabId);
+  (async () => {
+    let result = null;
+    let detectedLogged = false;
+    for (let i = 0; i < 10; i += 1) {
+      if (i > 0) await sleep(1000);
+      result = await dismissVeoChangelogModalIfPresent(tabId).catch((e) => ({ clicked: false, reason: "watch_failed", error: String(e && e.message || e) }));
+      if (result && result.found && !detectedLogged) {
+        detectedLogged = true;
+        await pushLog("info", "VEO changelog modal detected", { tab_id: tabId, reason, x: result.x, y: result.y });
+      }
+      if (result && result.clicked) {
+        await pushLog("info", "VEO changelog modal dismissed by safe-area click", { tab_id: tabId, reason, x: result.x, y: result.y, via: result.via });
+        break;
+      }
+    }
+  })().finally(() => {
+    veoChangelogRunningTabs.delete(tabId);
+    veoChangelogLastByTab.set(tabId, Date.now());
+  });
+  return { skipped: false, started: true };
+}
+
+async function scanVeoChangelogWatch(reason = "scan") {
+  const tabs = await chrome.tabs.query({ url: ["https://labs.google/*"] });
+  for (const tab of tabs || []) {
+    if (!tab || !tab.id) continue;
+    await maybeRunVeoChangelogWatchForTab(tab.id, String(tab.url || ""), reason).catch(() => {});
+  }
 }
 
 function parseVeoProjectPage(raw) {
@@ -1130,17 +1280,38 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const url = String(changeInfo.url || tab?.url || "");
-  if (!url || !isGoogleAutoLoginWatchUrl(url)) return;
+  if (!url) return;
   const statusValue = String(changeInfo.status || tab?.status || "");
   // 仅在 URL 变化或页面 complete 时触发，不轮询页面，适合大量浏览器实例低资源运行。
   if (changeInfo.url || statusValue === "complete") {
-    maybeRunGoogleAutoLoginForTab(tabId, url, changeInfo.url ? "url_change" : "page_complete").catch(() => {});
+    if (isGoogleAutoLoginWatchUrl(url)) {
+      maybeRunGoogleAutoLoginForTab(tabId, url, changeInfo.url ? "url_change" : "page_complete").catch(() => {});
+    }
+    if (isLabsGoogleWatchUrl(url)) {
+      maybeRunVeoChangelogWatchForTab(tabId, url, changeInfo.url ? "url_change" : "page_complete").catch(() => {});
+    }
   }
+});
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  const tabId = activeInfo && activeInfo.tabId;
+  if (!tabId) return;
+  chrome.tabs.get(tabId).then((tab) => {
+    const url = String(tab && tab.url || "");
+    if (isLabsGoogleWatchUrl(url)) {
+      maybeRunVeoChangelogWatchForTab(tabId, url, "tab_activated").catch(() => {});
+    }
+  }).catch(() => {});
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   googleAutoLoginRunningTabs.delete(tabId);
   googleAutoLoginLastByTab.delete(tabId);
+  gptCloudflareRunningTabs.delete(tabId);
+  gptCloudflareLastByTab.delete(tabId);
+  gptBusyTabs.delete(tabId);
+  veoChangelogRunningTabs.delete(tabId);
+  veoChangelogLastByTab.delete(tabId);
 });
 
 try {
@@ -1153,16 +1324,20 @@ try {
 
 chrome.runtime.onInstalled.addListener(() => {
   ensurePersistentConnection("runtime.onInstalled").catch(console.error);
+  scanVeoChangelogWatch("runtime.onInstalled").catch(() => {});
 });
 chrome.runtime.onStartup.addListener(() => {
   ensurePersistentConnection("runtime.onStartup").catch(console.error);
+  scanVeoChangelogWatch("runtime.onStartup").catch(() => {});
 });
 try {
   chrome.alarms.create("fpb_keep_ws", { periodInMinutes: 0.5 });
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm && alarm.name === "fpb_keep_ws") {
       ensurePersistentConnection("alarm.keep_ws").catch(console.error);
+      scanVeoChangelogWatch("alarm.keep_ws").catch(() => {});
     }
   });
 } catch (_) {}
 ensurePersistentConnection("startup").catch(console.error);
+scanVeoChangelogWatch("startup").catch(() => {});

@@ -297,7 +297,107 @@ async function waitTabComplete(tabId, timeoutMs = 45000) {
   return false;
 }
 
-async function ensureVeoProjectTab(projectPage, { active = true, navigate = true } = {}) {
+export async function dismissVeoChangelogModalIfPresent(tabId) {
+  if (!tabId) return { clicked: false, reason: "no_tab_id" };
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const url = String((tab && tab.url) || "");
+    if (!url.startsWith("https://labs.google/")) return { clicked: false, reason: "not_labs_google", url };
+    if (tab && tab.status !== "complete") await waitTabComplete(tabId, 15000);
+  } catch (_) {}
+  try {
+    const frames = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: async () => {
+        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+        if (location.protocol !== "https:" || location.hostname !== "labs.google") {
+          return { found: false, clicked: false, reason: "not_labs_google", url: String(location.href || "") };
+        }
+        const getText = () => String(document.body && document.body.innerText || "");
+        const text = getText();
+        const idx = text.toLowerCase().indexOf("view all changelogs");
+        if (idx < 0) {
+          return { found: false, clicked: false, reason: "changelog_modal_not_found", url: String(location.href || "") };
+        }
+        const x = Math.max(8, Math.min(24, window.innerWidth - 8));
+        const y = Math.max(8, Math.min(Math.round(window.innerHeight / 2), window.innerHeight - 8));
+        const target = document.elementFromPoint(x, y) || document.body || document.documentElement;
+        const dispatch = (type, extra = {}) => {
+          const init = {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window,
+            clientX: x,
+            clientY: y,
+            screenX: Math.round((window.screenX || 0) + x),
+            screenY: Math.round((window.screenY || 0) + y),
+            button: 0,
+            buttons: /down/i.test(type) ? 1 : 0,
+            ...extra
+          };
+          try {
+            if (type.startsWith("pointer") && window.PointerEvent) {
+              target.dispatchEvent(new PointerEvent(type, { ...init, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+            } else {
+              target.dispatchEvent(new MouseEvent(type, init));
+            }
+          } catch (_) {}
+        };
+        dispatch("pointermove");
+        dispatch("mousemove");
+        await sleep(30);
+        dispatch("pointerdown");
+        dispatch("mousedown");
+        await sleep(60);
+        dispatch("pointerup");
+        dispatch("mouseup");
+        dispatch("click");
+        await sleep(350);
+        const dismissed = getText().toLowerCase().indexOf("view all changelogs") < 0;
+        return {
+          found: true,
+          clicked: dismissed,
+          dismissed,
+          reason: dismissed ? undefined : "safe_area_click_did_not_dismiss",
+          via: "dom_safe_area",
+          x,
+          y,
+          url: String(location.href || ""),
+          matched_text: text.slice(Math.max(0, idx - 40), idx + 80)
+        };
+      }
+    });
+    return Array.isArray(frames) && frames[0] && frames[0].result ? frames[0].result : { clicked: false, reason: "empty_execute_result" };
+  } catch (e) {
+    return { clicked: false, reason: "dismiss_failed", error: String((e && e.message) || e || "") };
+  }
+}
+
+async function closeOtherTabsInSameWindow(keepTabId) {
+  let keepTab = null;
+  try { keepTab = await chrome.tabs.get(keepTabId); } catch (_) {}
+  const query = keepTab && keepTab.windowId ? { windowId: keepTab.windowId } : {};
+  const tabs = await chrome.tabs.query(query);
+  const removeIds = [];
+  for (const tab of tabs || []) {
+    if (!tab || !tab.id || tab.id === keepTabId) continue;
+    removeIds.push(tab.id);
+  }
+  if (removeIds.length) {
+    try { await chrome.tabs.remove(removeIds); } catch (_) {}
+  }
+  return removeIds.length;
+}
+
+function closeOtherTabsInSameWindowLater(keepTabId, delayMs = 5000) {
+  setTimeout(() => {
+    closeOtherTabsInSameWindow(keepTabId).catch(() => {});
+  }, Math.max(0, Number(delayMs || 0) || 0));
+}
+
+async function ensureVeoProjectTab(projectPage, { active = true, navigate = true, create = true } = {}) {
   const targetUrl = projectPage || "https://labs.google/fx";
   const tabs = await chrome.tabs.query({});
   const exact = tabs.find(t => (t.url || "") === targetUrl);
@@ -312,12 +412,15 @@ async function ensureVeoProjectTab(projectPage, { active = true, navigate = true
     } else {
       await chrome.tabs.update(found.id, { active });
     }
+    await dismissVeoChangelogModalIfPresent(found.id);
     return found.id;
   }
+  if (!create) return null;
   const tab = await chrome.tabs.create({ url: targetUrl, active });
   if (tab && tab.id) {
     await waitTabComplete(tab.id, 45000);
     await sleep(1200);
+    await dismissVeoChangelogModalIfPresent(tab.id);
   }
   return tab.id;
 }
@@ -366,12 +469,14 @@ async function reloadProjectPage(progress, tabId, projectPage, runtime, options 
       await chrome.tabs.reload(tabId, { bypassCache: false });
       await waitTabComplete(tabId, 45000);
       await sleep(1200);
+      await dismissVeoChangelogModalIfPresent(tabId);
       return true;
     } catch (e) {
       // reload 失败时兜底导航到项目页，仍保证插件任务从 projectPage 开始。
       await chrome.tabs.update(tabId, { url: projectPage, active: true });
       await waitTabComplete(tabId, 45000);
       await sleep(1200);
+      await dismissVeoChangelogModalIfPresent(tabId);
       return true;
     }
   });
@@ -700,6 +805,7 @@ async function fetchVeoShortAccessTokenTask(msg, runtime) {
 async function fetchVeoAccessTokensTask(msg, runtime) {
   const p = msg.payload || {};
   const projectPage = p.project_page || p.target_url || "https://labs.google/fx";
+  const existingTabId = Number(p.tab_id || p.labs_tab_id || 0) || null;
   const extSessionToken = cleanTokenValue(p.ext_session_token || p.expected_session_token || p.current_session_token);
   const extShortAccessToken = cleanTokenValue(p.ext_short_access_token || p.short_access_token);
   const extShortExpires = cleanTokenValue(p.ext_short_expires || p.short_expires) || null;
@@ -720,7 +826,7 @@ async function fetchVeoAccessTokensTask(msg, runtime) {
   } catch (e) {
     shortSource = "page.auth_session";
     await runtime.progress(20, { stage: "short_access_token_page_fallback", error: String((e && e.message) || e || "").slice(0, 200) });
-    const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
+    const tabId = existingTabId || await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
     shortInfo = await getAccessTokenFromPage(tabId);
   }
   if (!shortInfo || !shortInfo.access_token) throw new Error("VEO short access_token not found");
@@ -916,18 +1022,36 @@ async function fetchNextUpdateCooldown() {
 export async function refreshVeoBalanceTask(msg, runtime) {
   const p = msg.payload || {};
   const projectPage = p.project_page || "https://labs.google/fx";
+  const otherActiveTasks = countOtherActiveVeoTaskRuns(runtime);
+  const avoidPageMutation = otherActiveTasks > 0;
   await runtime.progress(2, { stage: "ensure_tab", url: projectPage });
-  const tabId = await ensureVeoProjectTab(projectPage);
-  const tokenInfo = p.access_token ? { access_token: p.access_token, expires: p.access_expires } : await getAccessTokenFromPage(tabId);
+  const tabId = await ensureVeoProjectTab(projectPage, {
+    navigate: !avoidPageMutation,
+    active: !avoidPageMutation,
+    create: !avoidPageMutation
+  });
+  if (avoidPageMutation) {
+    try {
+      await runtime.progress(3, {
+        stage: "balance_refresh_non_intrusive",
+        reason: "other_tasks_running",
+        active_veo_tasks: activeVeoTaskRuns.size,
+        other_active_veo_tasks: otherActiveTasks,
+        tab_found: !!tabId
+      });
+    } catch (_) {}
+  }
+  const tokenInfo = p.access_token ? { access_token: p.access_token, expires: p.access_expires } : (tabId ? await getAccessTokenFromPage(tabId) : {});
   const at = tokenInfo.access_token;
   if (!at) throw new Error("缺少 access_token，无法读取 VEO 余额");
   await runtime.progress(20, { stage: "credits" });
   // 余额接口只依赖 Bearer access_token；优先用扩展自身 fetch，避免在页面 MAIN world
   // executeScript 偶发返回空 result 导致余额刷新失败。仍属于浏览器插件侧读取，不走 CDP。
   let tx = await fetchJson(URLS.credits, { method: "GET", headers: authHeaders(at) });
-  if (!tx || !tx.status) {
+  if ((!tx || !tx.status) && tabId) {
     tx = await pageFetchJson(tabId, URLS.credits, { method: "GET", headers: authHeaders(at) });
   }
+  if (!tx || !tx.status) throw new Error("VEO credits fetch returned empty result");
   if (tx.status >= 400) throw new Error(`查询 credits 失败: ${compactErrorResponse(tx)}`);
   const info = normalizeCreditsPayload(tx.json);
   if (p.fetch_cooldown) {
@@ -935,7 +1059,16 @@ export async function refreshVeoBalanceTask(msg, runtime) {
     const cu = await fetchNextUpdateCooldown();
     if (cu) info.cooldown_until = cu;
     try {
-      await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
+      if (avoidPageMutation) {
+        await runtime.progress(80, {
+          stage: "restore_project_page_skipped",
+          reason: "other_tasks_running",
+          active_veo_tasks: activeVeoTaskRuns.size,
+          other_active_veo_tasks: otherActiveTasks
+        });
+      } else {
+        await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
+      }
     } catch (_) {}
   }
   await runtime.progress(100, { stage: "done", credits: info.credits, cooldown_until: info.cooldown_until || null });
@@ -943,6 +1076,7 @@ export async function refreshVeoBalanceTask(msg, runtime) {
 }
 
 export async function getRecaptchaToken(tabId, action) {
+  const recaptchaTimeoutMs = 60000;
   const result = await withVeoTabOpLock(tabId, "get_recaptcha_token", async () => {
     try {
       const tab = await chrome.tabs.get(tabId);
@@ -951,13 +1085,26 @@ export async function getRecaptchaToken(tabId, action) {
     const frames = await chrome.scripting.executeScript({
       target: { tabId },
       world: "MAIN",
-      args: [action],
-      func: async (act) => {
+      args: [action, recaptchaTimeoutMs],
+      func: async (act, timeoutMs) => {
         const siteKey = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV";
+        const withTimeout = (promise, ms) => new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error("recaptcha timeout")), Math.max(1000, Number(ms || 0) || 60000));
+          Promise.resolve(promise).then(
+            (value) => {
+              clearTimeout(timer);
+              resolve(value);
+            },
+            (error) => {
+              clearTimeout(timer);
+              reject(error);
+            }
+          );
+        });
         try {
           if (!window.grecaptcha || !window.grecaptcha.enterprise) return "";
-          await new Promise(resolve => window.grecaptcha.enterprise.ready(resolve));
-          return await window.grecaptcha.enterprise.execute(siteKey, { action: act || "VIDEO_GENERATION" });
+          await withTimeout(new Promise(resolve => window.grecaptcha.enterprise.ready(resolve)), timeoutMs);
+          return await withTimeout(window.grecaptcha.enterprise.execute(siteKey, { action: act || "VIDEO_GENERATION" }), timeoutMs);
         } catch (e) {
           return "";
         }
@@ -1785,7 +1932,14 @@ async function runImageWorkflow(tabId, p, at, runtime) {
       const ossCfg = p.oss_upload || p.extension_oss_upload || null;
       if (ossCfg) {
         try {
-          await runtime.progress(92, { stage: "oss_upload", target_resolution: resLabel, media_id: parsed.mediaName });
+          const ossStartedAt = Date.now();
+          await runtime.progress(92, {
+            stage: "oss_upload",
+            target_resolution: resLabel,
+            media_id: parsed.mediaName,
+            timeout_ms: Number((ossCfg && (ossCfg.timeout_ms || ossCfg.timeoutMs || ossCfg.upload_timeout_ms || ossCfg.uploadTimeoutMs)) || 60000) || 60000,
+            attempts: Number((ossCfg && (ossCfg.attempts || ossCfg.upload_attempts || ossCfg.uploadAttempts)) || 3) || 3
+          });
           const uploaded = await uploadDataUrlToAliyunOss(ossCfg, dataUrl, {
             objectKeyPrefix: (ossCfg && (ossCfg.object_key_prefix || ossCfg.objectKeyPrefix)) || `veo_workflow/image/upsample/${String(resLabel || "2K").toLowerCase()}`,
             taskId: p._bridge_task_id || p.task_id || "",
@@ -1794,6 +1948,14 @@ async function runImageWorkflow(tabId, p, at, runtime) {
           });
           ossUploads = [uploaded];
           shareUrl = uploaded.url;
+          await runtime.progress(93, {
+            stage: "oss_upload_done",
+            target_resolution: resLabel,
+            media_id: parsed.mediaName,
+            size: uploaded.size || 0,
+            duration_ms: uploaded.duration_ms || (Date.now() - ossStartedAt),
+            object_key: uploaded.object_key
+          });
         } catch (e) {
           upsampleError = `OSS?????${String((e && e.message) || e || "").slice(0, 300)}`;
           if (ossCfg && ossCfg.required !== false) throw new Error(upsampleError);
@@ -2228,7 +2390,8 @@ export async function runVeoTask(msg, runtime) {
     if (action === "fetch_tokens" || action === "fetch_access_tokens" || action === "get_access_tokens") {
       const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
       await reloadProjectPage(1, tabId, projectPage, runtime);
-      return await fetchVeoAccessTokensTask(msg, runtime);
+      closeOtherTabsInSameWindowLater(tabId, 5000);
+      return await fetchVeoAccessTokensTask({ ...msg, payload: { ...p, tab_id: tabId } }, runtime);
     }
     if (action === "create_flow_project" || action === "flow_project_create" || action === "create_project") {
       return await createVeoFlowProjectTask(msg, runtime);
@@ -2263,6 +2426,7 @@ export async function runVeoTask(msg, runtime) {
     
     await assertProjectPageAccessible(projectPage, runtime);
     const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
+    closeOtherTabsInSameWindowLater(tabId, 5000);
     //await resetLabsGoogleLocalStorageAndReload(3, tabId, projectPage, runtime);
     await runtime.progress(5, { stage: "access_token" });
     const tokenInfo = p.access_token ? { access_token: p.access_token, expires: p.access_expires } : await getAccessTokenFromPage(tabId);

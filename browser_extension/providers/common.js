@@ -96,6 +96,8 @@ function ossUrlObjectPath(objectKey) {
 
 function normalizeOssUploadConfig(raw) {
   const cfg = raw && typeof raw === "object" ? raw : {};
+  const timeoutMs = Number(cfg.timeout_ms || cfg.timeoutMs || cfg.upload_timeout_ms || cfg.uploadTimeoutMs || 60000);
+  const attempts = Number(cfg.attempts || cfg.upload_attempts || cfg.uploadAttempts || 3);
   return {
     enabled: cfg.enabled !== false && String(cfg.provider || "aliyun_oss").toLowerCase() === "aliyun_oss",
     endpoint: String(cfg.endpoint || "").trim(),
@@ -106,7 +108,9 @@ function normalizeOssUploadConfig(raw) {
     accessKeySecret: String(cfg.access_key_secret || cfg.accessKeySecret || "").trim(),
     securityToken: String(cfg.security_token || cfg.securityToken || "").trim(),
     objectKeyPrefix: String(cfg.object_key_prefix || cfg.objectKeyPrefix || "fpbrowser2api/uploads").trim(),
-    required: cfg.required !== false
+    required: cfg.required !== false,
+    timeoutMs: Number.isFinite(timeoutMs) ? Math.max(5000, timeoutMs) : 60000,
+    attempts: Number.isFinite(attempts) ? Math.max(1, Math.min(5, Math.floor(attempts))) : 3
   };
 }
 
@@ -256,11 +260,36 @@ export async function uploadBlobToAliyunOss(rawConfig, blob, options = {}) {
   };
   if (cfg.securityToken) fetchHeaders["x-oss-security-token"] = cfg.securityToken;
 
-  const resp = await fetch(uploadUrl, {
-    method: "PUT",
-    headers: fetchHeaders,
-    body: blob
-  });
+  const timeoutMs = Math.max(5000, Number(options.timeoutMs || options.timeout_ms || cfg.timeoutMs || 60000) || 60000);
+  const attempts = Math.max(1, Math.min(5, Math.floor(Number(options.attempts || cfg.attempts || 3) || 3)));
+  let resp = null;
+  let lastErr = null;
+  const startedAt = Date.now();
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      try { controller.abort(); } catch (_) {}
+    }, timeoutMs);
+    try {
+      resp = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: fetchHeaders,
+        body: blob,
+        signal: controller.signal
+      });
+      if (resp.ok || resp.status < 500 || attempt >= attempts) break;
+      const text = await resp.text().catch(() => "");
+      lastErr = new Error(`OSS upload HTTP ${resp.status}: ${String(text).slice(0, 500)}`);
+    } catch (e) {
+      const msg = String((e && e.message) || e || "");
+      lastErr = new Error((e && e.name) === "AbortError" ? `OSS upload timeout after ${timeoutMs}ms` : `OSS upload failed: ${msg}`);
+      if (attempt >= attempts) throw lastErr;
+    } finally {
+      clearTimeout(timer);
+    }
+    await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+  }
+  if (!resp) throw lastErr || new Error("OSS upload failed");
   if (!resp.ok) {
     const text = await resp.text().catch(() => "");
     throw new Error(`OSS upload HTTP ${resp.status}: ${String(text).slice(0, 500)}`);
@@ -272,7 +301,8 @@ export async function uploadBlobToAliyunOss(rawConfig, blob, options = {}) {
     content_type: contentType,
     size: blob.size || 0,
     bucket: cfg.bucket,
-    region: cfg.region
+    region: cfg.region,
+    duration_ms: Date.now() - startedAt
   };
 }
 
@@ -352,6 +382,18 @@ export async function uploadDataUrlListToAliyunOss(values, rawConfig, options = 
       index: uploadIndex,
       contentType: dataUrlMime(value)
     });
+    if (options.runtime && typeof options.runtime.progress === "function") {
+      try {
+        await options.runtime.progress(Math.min(99, (options.progress || 92) + 1), {
+          stage: `${options.stage || "oss_upload"}_done`,
+          index: uploadIndex,
+          total: input.filter(x => /^data:(image|video)\//i.test(String(x || ""))).length,
+          size: uploaded.size || 0,
+          duration_ms: uploaded.duration_ms || 0,
+          object_key: uploaded.object_key
+        });
+      } catch (_) {}
+    }
     seen.set(value, uploaded);
     uploads.push(uploaded);
     out.push(uploaded.url);

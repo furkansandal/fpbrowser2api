@@ -1,4 +1,4 @@
-import { createAliyunOssPutTarget, simulateHumanActivity, uploadDataUrlListToAliyunOss } from "./common.js";
+import { simulateHumanActivity, uploadDataUrlListToAliyunOss } from "./common.js";
 
 const CHATGPT = "https://chatgpt.com";
 const WEB_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0";
@@ -26,10 +26,35 @@ const GPT_IMAGE2_SIZE_TABLE = {
   }
 };
 const GPT_IMAGE2_DEFAULT_RATIO = "1:1";
+const GPT_CLOUDFLARE_VERIFY_NEEDLES = [
+  "verify you are human",
+  "verify that you are human",
+  "验证您是真人",
+  "验证你是真人",
+  "请验证您是真人",
+  "请验证你是真人",
+  "确认您是真人",
+  "确认你是真人",
+  "あなたが人間であることを確認してください",
+  "人間であることを確認してください",
+  "사람인지 확인",
+  "사람인지 확인해주세요",
+  "사람인지 확인하십시오",
+  "xác minh bạn là con người",
+  "xác nhận bạn là con người",
+  "bestätigen sie, dass sie ein mensch sind",
+  "bestätigen sie dass sie ein mensch sind",
+  "überprüfen sie, ob sie ein mensch sind",
+  "überprüfen sie ob sie ein mensch sind"
+];
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function uuid() { const c = globalThis.crypto; return c && c.randomUUID ? c.randomUUID() : `${Date.now()}-${Math.random()}`; }
 function uniq(arr) { return [...new Set((arr || []).filter(Boolean))]; }
+
+function isNoTabError(e) {
+  return /no tab with id/i.test(String(e && e.message || e || ""));
+}
 
 function originFromTarget(raw) {
   try {
@@ -67,25 +92,638 @@ async function reloadProjectPage(progress, tabId, projectPage, runtime) {
   }
 }
 
-async function ensureGptTab(targetUrl = CHATGPT) {
+async function inspectGptCloudflarePage(tabId, deep = false) {
+  let frameHints = [];
+  try {
+    const allFrames = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: "ISOLATED",
+      args: [GPT_CLOUDFLARE_VERIFY_NEEDLES],
+      func: (verifyNeedles) => {
+        const href = String(location.href || "");
+        const title = String(document.title || "");
+        const text = String(document.body && document.body.innerText || "").slice(0, 1200);
+        const normalize = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+        const titleNeedles = [
+          "just a moment",
+          "请稍候",
+          "请稍等",
+          "稍候",
+          "しばらくお待ちください",
+          "少々お待ちください",
+          "잠시만 기다려 주세요",
+          "잠시만 기다려주십시오",
+          "잠시만 기다려주세요",
+          "vui lòng chờ",
+          "vui lòng đợi",
+          "einen moment bitte",
+          "bitte warten"
+        ];
+        const titleHit = titleNeedles.some((needle) => normalize(title).includes(normalize(needle)));
+        const verifyHit = verifyNeedles.some((needle) => normalize(text).includes(normalize(needle)));
+        return { url: href, title, title_hit: titleHit, verify_hit: verifyHit, is_cloudflare_frame: titleHit || verifyHit, text: text.slice(0, 180) };
+      }
+    });
+    frameHints = (allFrames || []).map((x) => ({ frame_id: x.frameId, ...(x.result || {}) })).filter((x) => x.is_cloudflare_frame);
+  } catch (_) {}
+  const frames = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "ISOLATED",
+    args: [deep === true],
+    func: (deepScan) => {
+      const href = String(location.href || "");
+      const title = String(document.title || "");
+      const normalize = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+      const titleNeedles = [
+        "just a moment",
+        "请稍候",
+        "请稍等",
+        "稍候",
+        "しばらくお待ちください",
+        "少々お待ちください",
+        "잠시만 기다려 주세요",
+        "잠시만 기다려주십시오",
+        "잠시만 기다려주세요",
+        "vui lòng chờ",
+        "vui lòng đợi",
+        "einen moment bitte",
+        "bitte warten"
+      ];
+      const titleHit = titleNeedles.some((needle) => normalize(title).includes(normalize(needle)));
+      return { is_cloudflare: titleHit, url: href, title, title_hit: titleHit, cf_iframes: [], cf_widgets: [], deep_scan_ignored: deepScan === true };
+    }
+  });
+  const out = Array.isArray(frames) && frames[0] && frames[0].result ? frames[0].result : { is_cloudflare: false, cf_iframes: [] };
+  out.cf_frames = frameHints.slice(0, 10);
+  if (frameHints.length) out.is_cloudflare = true;
+  return out;
+}
+
+async function doubleClickGptCloudflareVerifyText(tabId) {
+  try {
+    const frameClicks = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: "ISOLATED",
+      args: [GPT_CLOUDFLARE_VERIFY_NEEDLES],
+      func: async (verifyNeedles) => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        const normalize = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+        const visible = (el) => {
+          if (!el) return false;
+          const st = getComputedStyle(el);
+          if (st.visibility === "hidden" || st.display === "none" || Number(st.opacity || "1") === 0) return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 8 && r.height > 8 && r.bottom > 0 && r.right > 0 && r.top < window.innerHeight && r.left < window.innerWidth;
+        };
+        const dispatchClick = async (targetEl, x, y) => {
+          for (const type of ["pointermove", "mousemove", "pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+            const init = { bubbles: true, cancelable: true, composed: true, view: window, clientX: Math.round(x), clientY: Math.round(y), button: 0, buttons: /down/i.test(type) ? 1 : 0 };
+            try {
+              if (type.startsWith("pointer") && window.PointerEvent) targetEl.dispatchEvent(new PointerEvent(type, { ...init, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+              else targetEl.dispatchEvent(new MouseEvent(type, init));
+            } catch (_) {}
+            if (type === "mousedown") await sleep(70);
+          }
+        };
+        const matchesVerifyText = (raw) => {
+          const text = normalize(raw);
+          return text && verifyNeedles.some((needle) => text.includes(normalize(needle)));
+        };
+        const candidates = Array.from(document.querySelectorAll("body *")).map((el) => {
+          if (!visible(el)) return null;
+          const text = String(el.innerText || el.textContent || el.getAttribute("aria-label") || "").trim();
+          if (!text || text.length > 320 || !matchesVerifyText(text)) return null;
+          const rect = el.getBoundingClientRect();
+          return { el, rect, text };
+        }).filter(Boolean).sort((a, b) => {
+          const textDiff = a.text.length - b.text.length;
+          if (textDiff) return textDiff;
+          return (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height);
+        });
+        const target = candidates[0];
+        if (!target) return { clicked: false, reason: "verify_text_not_found", frame_url: String(location.href || "") };
+        const x = target.rect.left + target.rect.width / 2;
+        const y = target.rect.top + target.rect.height / 2;
+        await dispatchClick(target.el, x, y);
+        await sleep(180);
+        await dispatchClick(target.el, x, y);
+        return { clicked: true, source: "verify_text", via: "frame_dom", frame_url: String(location.href || ""), x, y, text: target.text.slice(0, 160) };
+      }
+    });
+    const hit = (frameClicks || []).map((x) => ({ frame_id: x.frameId, ...(x.result || {}) })).find((x) => x.clicked);
+    if (hit) return hit;
+    const miss = (frameClicks || []).map((x) => ({ frame_id: x.frameId, ...(x.result || {}) })).find((x) => x.reason);
+    return miss || { clicked: false, reason: "verify_text_not_found" };
+  } catch (e) {
+    return { clicked: false, reason: "verify_text_click_failed", error: String(e && e.message || e) };
+  }
+}
+
+async function clickGptCloudflareCheckbox(tabId) {
+  try {
+    const frameClicks = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      world: "ISOLATED",
+      func: async () => {
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        const visible = (el) => {
+          if (!el) return false;
+          const st = getComputedStyle(el);
+          if (st.visibility === "hidden" || st.display === "none" || Number(st.opacity || "1") === 0) return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 8 && r.height > 8 && r.bottom > 0 && r.right > 0 && r.top < window.innerHeight && r.left < window.innerWidth;
+        };
+        const lower = `${location.href}\n${document.title}\n${String(document.body && document.body.innerText || "").slice(0, 1000)}`.toLowerCase();
+        const looksCf = lower.includes("challenges.cloudflare.com") || lower.includes("/cdn-cgi/") || lower.includes("turnstile") || lower.includes("verify you are human") || lower.includes("cloudflare");
+        const dispatchClick = async (targetEl, x, y) => {
+          for (const type of ["pointermove", "mousemove", "pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+            const init = { bubbles: true, cancelable: true, composed: true, view: window, clientX: Math.round(x), clientY: Math.round(y), button: 0, buttons: /down/i.test(type) ? 1 : 0 };
+            try {
+              if (type.startsWith("pointer") && window.PointerEvent) targetEl.dispatchEvent(new PointerEvent(type, { ...init, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+              else targetEl.dispatchEvent(new MouseEvent(type, init));
+            } catch (_) {}
+            if (type === "mousedown") await sleep(80);
+          }
+        };
+        if (!looksCf) return { clicked: false, reason: "frame_not_cf", frame_url: String(location.href || "") };
+        const cb = Array.from(document.querySelectorAll("input[type='checkbox'], [role='checkbox']")).find(visible);
+        if (cb) {
+          const r = cb.getBoundingClientRect();
+          const x = r.left + r.width / 2;
+          const y = r.top + r.height / 2;
+          await dispatchClick(cb, x, y);
+          try {
+            cb.click();
+          } catch (_) {}
+          return { clicked: true, source: "frame_checkbox_locator", via: "frame_dom", frame_url: String(location.href || ""), x, y, checkbox_width: r.width, checkbox_height: r.height };
+        }
+        const x = Math.max(8, Math.min(28, window.innerWidth - 8));
+        const y = Math.max(8, Math.min(Math.round(window.innerHeight / 2), window.innerHeight - 8));
+        const el = document.elementFromPoint(x, y) || document.body || document.documentElement;
+        if (!el) return { clicked: false, reason: "frame_checkbox_not_found", frame_url: String(location.href || "") };
+        await dispatchClick(el, x, y);
+        return { clicked: true, source: "frame_turnstile_coordinate", via: "frame_dom_coordinate", frame_url: String(location.href || ""), x, y, iframe_width: window.innerWidth, iframe_height: window.innerHeight };
+      }
+    });
+    const hit = (frameClicks || []).map((x) => ({ frame_id: x.frameId, ...(x.result || {}) }))
+      .find((x) => x.clicked && x.source !== "frame_turnstile_coordinate");
+    if (hit) return hit;
+  } catch (_) {}
+
+  const frames = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "ISOLATED",
+    func: () => {
+      const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+      const visible = (el) => {
+        if (!el) return false;
+        const st = getComputedStyle(el);
+        if (st.visibility === "hidden" || st.display === "none" || Number(st.opacity || "1") === 0) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 8 && r.height > 8 && r.bottom > 0 && r.right > 0 && r.top < window.innerHeight && r.left < window.innerWidth;
+      };
+      const candidates = Array.from(document.querySelectorAll("iframe")).map((el) => {
+        const rect = el.getBoundingClientRect();
+        const src = String(el.getAttribute("src") || el.src || "");
+        return { el, rect, srcLower: src.toLowerCase() };
+      }).filter(({ rect, srcLower }) => (
+        rect.width > 8 &&
+        rect.height > 8 &&
+        rect.bottom > 0 &&
+        rect.right > 0 &&
+        rect.top < window.innerHeight &&
+        rect.left < window.innerWidth &&
+        (srcLower.includes("challenges.cloudflare.com") || srcLower.includes("/cdn-cgi/") || srcLower.includes("turnstile"))
+      ));
+      const sizedCandidates = Array.from(document.querySelectorAll("iframe")).map((el) => {
+        const rect = el.getBoundingClientRect();
+        const src = String(el.getAttribute("src") || el.src || "");
+        return { el, rect, srcLower: src.toLowerCase() };
+      }).filter(({ rect }) => (
+        rect.width >= 180 &&
+        rect.width <= 420 &&
+        rect.height >= 40 &&
+        rect.height <= 140 &&
+        rect.bottom > 0 &&
+        rect.right > 0 &&
+        rect.top < window.innerHeight &&
+        rect.left < window.innerWidth
+      ));
+      const item = candidates[0] || sizedCandidates[0];
+      if (item) {
+        const rect = item.rect;
+        const targetX = clamp(rect.left + 26, 3, window.innerWidth - 3);
+        const targetY = clamp(rect.top + rect.height / 2, 3, window.innerHeight - 3);
+        return { clicked: false, ready: true, source: candidates[0] ? "cf_iframe" : "sized_iframe", x: targetX, y: targetY, iframe_src: item.srcLower.slice(0, 160), iframe_width: rect.width, iframe_height: rect.height };
+      }
+
+      const checkbox = Array.from(document.querySelectorAll("input[type='checkbox'], [role='checkbox']"))
+        .find((el) => visible(el));
+      if (checkbox) {
+        const rect = checkbox.getBoundingClientRect();
+        return {
+          clicked: false,
+          ready: true,
+          source: "visible_checkbox",
+          x: clamp(rect.left + rect.width / 2, 3, window.innerWidth - 3),
+          y: clamp(rect.top + rect.height / 2, 3, window.innerHeight - 3),
+          widget_width: rect.width,
+          widget_height: rect.height
+        };
+      }
+
+      const widgets = Array.from(document.querySelectorAll("body *")).map((el) => {
+        if (!visible(el)) return null;
+        const text = String(el.innerText || el.textContent || el.getAttribute("aria-label") || "").trim();
+        if (!text || text.length > 260) return null;
+        const tl = text.toLowerCase();
+        if (!tl.includes("verify you are human") && !tl.includes("cloudflare") && !tl.includes("checking your browser")) return null;
+        const rect = el.getBoundingClientRect();
+        return { el, rect, text };
+      }).filter(Boolean).sort((a, b) => {
+        const ar = a.rect.width * a.rect.height;
+        const br = b.rect.width * b.rect.height;
+        return ar - br;
+      });
+      const widget = widgets.find((w) => w.rect.width >= 120 && w.rect.height >= 40) || widgets[0];
+      if (!widget) return { clicked: false, reason: "cf_widget_not_found" };
+      const rect = widget.rect;
+      const targetX = clamp(rect.left + Math.min(30, Math.max(18, rect.width * 0.08)), 3, window.innerWidth - 3);
+      const targetY = clamp(rect.top + rect.height / 2, 3, window.innerHeight - 3);
+      return {
+        clicked: false,
+        ready: true,
+        source: "visible_cf_widget",
+        x: targetX,
+        y: targetY,
+        widget_text: widget.text.slice(0, 160),
+        widget_width: rect.width,
+        widget_height: rect.height
+      };
+    }
+  });
+  let target = Array.isArray(frames) && frames[0] && frames[0].result ? frames[0].result : { clicked: false, reason: "empty_execute_result" };
+
+  const rand = (min, max) => min + Math.random() * Math.max(0, max - min);
+  const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+  const domFallbackClick = async (reason, error = "") => {
+    try {
+      const fallbackFrames = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "ISOLATED",
+        args: [target.x, target.y],
+        func: async (targetX, targetY) => {
+          const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+          const rand = (min, max) => min + Math.random() * Math.max(0, max - min);
+          const eventTargetAt = (x, y) => {
+            try { return document.elementFromPoint(x, y) || document.body || document.documentElement; }
+            catch (_) { return document.body || document.documentElement; }
+          };
+          const dispatch = (type, x, y, extra = {}) => {
+            const targetEl = eventTargetAt(x, y);
+            const init = {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              view: window,
+              clientX: Math.round(x),
+              clientY: Math.round(y),
+              screenX: Math.round((window.screenX || 0) + x),
+              screenY: Math.round((window.screenY || 0) + y),
+              button: 0,
+              buttons: /down/i.test(type) ? 1 : 0,
+              ...extra
+            };
+            try {
+              if (type.startsWith("pointer") && window.PointerEvent) {
+                targetEl.dispatchEvent(new PointerEvent(type, { ...init, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+              } else {
+                targetEl.dispatchEvent(new MouseEvent(type, init));
+              }
+            } catch (_) {}
+          };
+          const startX = targetX + rand(-80, 120);
+          const startY = targetY + rand(-50, 50);
+          for (let i = 0; i < 8; i++) {
+            const t = (i + 1) / 8;
+            const x = startX + (targetX - startX) * t + rand(-1.5, 1.5);
+            const y = startY + (targetY - startY) * t + rand(-1.5, 1.5);
+            dispatch("pointermove", x, y);
+            dispatch("mousemove", x, y);
+            await sleep(rand(18, 40));
+          }
+          dispatch("pointerdown", targetX, targetY);
+          dispatch("mousedown", targetX, targetY);
+          await sleep(rand(60, 140));
+          dispatch("pointerup", targetX, targetY);
+          dispatch("mouseup", targetX, targetY);
+          dispatch("click", targetX, targetY);
+          return { clicked: true, via: "dom_fallback" };
+        }
+      });
+      const res = Array.isArray(fallbackFrames) && fallbackFrames[0] ? fallbackFrames[0].result : null;
+      if (res && res.clicked) return { ...target, ...res, fallback_reason: reason, fallback_error: error };
+    } catch (fallbackError) {
+      return { ...target, clicked: false, reason: "dom_fallback_failed", error: String(fallbackError && fallbackError.message || fallbackError) };
+    }
+    return { ...target, clicked: false, reason, error };
+  };
+  const send = async (method, params = {}) => chrome.debugger.sendCommand({ tabId }, method, params);
+  let attached = false;
+  try {
+    await chrome.debugger.attach({ tabId }, "1.3");
+    attached = true;
+    await send("Page.enable").catch(() => null);
+    await send("DOM.enable").catch(() => null);
+    const cdpFindCloudflareTarget = async () => {
+      const attrsOf = (node) => {
+        const out = {};
+        const attrs = Array.isArray(node && node.attributes) ? node.attributes : [];
+        for (let i = 0; i + 1 < attrs.length; i += 2) out[String(attrs[i] || "").toLowerCase()] = String(attrs[i + 1] || "");
+        return out;
+      };
+      const quadRect = (quad) => {
+        if (!Array.isArray(quad) || quad.length < 8) return null;
+        const xs = [quad[0], quad[2], quad[4], quad[6]].map(Number);
+        const ys = [quad[1], quad[3], quad[5], quad[7]].map(Number);
+        const left = Math.min(...xs);
+        const right = Math.max(...xs);
+        const top = Math.min(...ys);
+        const bottom = Math.max(...ys);
+        return { left, top, right, bottom, width: right - left, height: bottom - top };
+      };
+      const metrics = await send("Page.getLayoutMetrics").catch(() => null);
+      const viewport = metrics && metrics.visualViewport || {};
+      const maxX = Number(viewport.clientWidth || 1920);
+      const maxY = Number(viewport.clientHeight || 1080);
+      const pageX = Number(viewport.pageX || 0);
+      const pageY = Number(viewport.pageY || 0);
+      const doc = await send("DOM.getFlattenedDocument", { depth: -1, pierce: true }).catch(() => null);
+      const nodes = Array.isArray(doc && doc.nodes) ? doc.nodes : [];
+      const findBySnapshot = async () => {
+        const snap = await send("DOMSnapshot.captureSnapshot", { computedStyles: [], includeDOMRects: true }).catch(() => null);
+        const strings = Array.isArray(snap && snap.strings) ? snap.strings : [];
+        const documents = Array.isArray(snap && snap.documents) ? snap.documents : [];
+        const hits = [];
+        for (const document of documents) {
+          const nodeNames = document && document.nodes && document.nodes.nodeName || [];
+          const attrs = document && document.nodes && document.nodes.attributes || [];
+          const layout = document && document.layout || {};
+          const layoutNodeIndexes = Array.isArray(layout.nodeIndex) ? layout.nodeIndex : [];
+          const bounds = Array.isArray(layout.bounds) ? layout.bounds : [];
+          const layoutByNode = new Map();
+          for (let i = 0; i < layoutNodeIndexes.length; i += 1) {
+            const rect = bounds[i];
+            if (Array.isArray(rect) && rect.length >= 4) layoutByNode.set(Number(layoutNodeIndexes[i]), rect);
+          }
+          for (let i = 0; i < nodeNames.length; i += 1) {
+            const name = String(strings[Number(nodeNames[i])] || "").toLowerCase();
+            if (name !== "iframe") continue;
+            const pairs = Array.isArray(attrs[i]) ? attrs[i] : [];
+            const attrMap = {};
+            for (let j = 0; j + 1 < pairs.length; j += 2) {
+              attrMap[String(strings[Number(pairs[j])] || "").toLowerCase()] = String(strings[Number(pairs[j + 1])] || "");
+            }
+            const hay = `${attrMap.src || ""}\n${attrMap.title || ""}\n${attrMap.name || ""}\n${attrMap.id || ""}\n${attrMap.class || ""}`.toLowerCase();
+            const rect = layoutByNode.get(i);
+            if (!rect) continue;
+            const left = Number(rect[0]) - pageX;
+            const top = Number(rect[1]) - pageY;
+            const width = Number(rect[2]);
+            const height = Number(rect[3]);
+            const visible = left + width > 0 && top + height > 0 && top < maxY && left < maxX;
+            const isCf = hay.includes("challenges.cloudflare.com") || hay.includes("/cdn-cgi/") || hay.includes("turnstile") || hay.includes("cloudflare") || hay.includes("security challenge");
+            const sized = width >= 180 && width <= 420 && height >= 40 && height <= 140;
+            if (!visible || (!isCf && !sized)) continue;
+            hits.push({ attrMap, rect: { left, top, width, height }, isCf, sized });
+          }
+        }
+        hits.sort((a, b) => {
+          if (a.isCf !== b.isCf) return a.isCf ? -1 : 1;
+          if (a.sized !== b.sized) return a.sized ? -1 : 1;
+          return (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height);
+        });
+        const hit = hits[0];
+        if (!hit) return null;
+        return {
+          clicked: false,
+          ready: true,
+          source: hit.isCf ? "cdp_snapshot_cf_iframe" : "cdp_snapshot_sized_iframe",
+          x: clamp(hit.rect.left + 18, 3, maxX - 3),
+          y: clamp(hit.rect.top + hit.rect.height / 2, 3, maxY - 3),
+          iframe_src: String(hit.attrMap.src || "").slice(0, 160),
+          iframe_title: String(hit.attrMap.title || "").slice(0, 160),
+          iframe_width: hit.rect.width,
+          iframe_height: hit.rect.height
+        };
+      };
+      const iframeNodes = nodes.map((node) => {
+        const nodeName = String(node && node.nodeName || "").toLowerCase();
+        if (nodeName !== "iframe") return null;
+        const attrs = attrsOf(node);
+        const hay = `${attrs.src || ""}\n${attrs.title || ""}\n${attrs.name || ""}\n${attrs.id || ""}\n${attrs.class || ""}`.toLowerCase();
+        return {
+          nodeId: node.nodeId,
+          backendNodeId: node.backendNodeId,
+          src: attrs.src || "",
+          title: attrs.title || "",
+          hay,
+          isCf: hay.includes("challenges.cloudflare.com") || hay.includes("/cdn-cgi/") || hay.includes("turnstile") || hay.includes("cloudflare") || hay.includes("security challenge")
+        };
+      }).filter(Boolean);
+      const scored = [];
+      for (const node of iframeNodes) {
+        const params = node.nodeId ? { nodeId: node.nodeId } : { backendNodeId: node.backendNodeId };
+        const model = await send("DOM.getBoxModel", params).catch(() => null);
+        const rect = quadRect(model && model.model && (model.model.border || model.model.content));
+        if (!rect || rect.width <= 8 || rect.height <= 8) continue;
+        const viewLeft = rect.left - pageX;
+        const viewTop = rect.top - pageY;
+        const viewRight = rect.right - pageX;
+        const viewBottom = rect.bottom - pageY;
+        const visible = viewRight > 0 && viewBottom > 0 && viewTop < maxY && viewLeft < maxX;
+        const sized = rect.width >= 180 && rect.width <= 420 && rect.height >= 40 && rect.height <= 140;
+        if (!visible || (!node.isCf && !sized)) continue;
+        scored.push({ node, rect: { left: viewLeft, top: viewTop, right: viewRight, bottom: viewBottom, width: rect.width, height: rect.height }, sized });
+      }
+      scored.sort((a, b) => {
+        if (a.node.isCf !== b.node.isCf) return a.node.isCf ? -1 : 1;
+        if (a.sized !== b.sized) return a.sized ? -1 : 1;
+        return (a.rect.width * a.rect.height) - (b.rect.width * b.rect.height);
+      });
+      const hit = scored[0];
+      if (!hit) return await findBySnapshot();
+      const rect = hit.rect;
+      return {
+        clicked: false,
+        ready: true,
+        source: hit.node.isCf ? "cdp_shadow_cf_iframe" : "cdp_shadow_sized_iframe",
+        x: clamp(rect.left + 26, 3, maxX - 3),
+        y: clamp(rect.top + rect.height / 2, 3, maxY - 3),
+        iframe_src: hit.node.src.slice(0, 160),
+        iframe_title: hit.node.title.slice(0, 160),
+        iframe_width: rect.width,
+        iframe_height: rect.height
+      };
+    };
+    if (!target || !target.ready) {
+      const cdpTarget = await cdpFindCloudflareTarget();
+      if (cdpTarget && cdpTarget.ready) target = cdpTarget;
+    }
+    if (!target || !target.ready) {
+      return { ...(target || {}), clicked: false, reason: "cdp_shadow_iframe_not_found", previous_reason: target && target.reason || null };
+    }
+    const metrics = await send("Page.getLayoutMetrics").catch(() => null);
+    const viewport = metrics && metrics.visualViewport || {};
+    const maxX = Number(viewport.clientWidth || 1920);
+    const maxY = Number(viewport.clientHeight || 1080);
+    let startX = clamp(target.x + rand(-90, 130), 3, maxX - 3);
+    let startY = clamp(target.y + rand(-60, 60), 3, maxY - 3);
+    for (let i = 0; i < 10; i++) {
+      const t = (i + 1) / 10;
+      const x = clamp(startX + (target.x - startX) * t + rand(-1.5, 1.5), 3, maxX - 3);
+      const y = clamp(startY + (target.y - startY) * t + rand(-1.5, 1.5), 3, maxY - 3);
+      await send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none" });
+      await sleep(rand(18, 45));
+    }
+    await send("Input.dispatchMouseEvent", { type: "mousePressed", x: target.x, y: target.y, button: "left", buttons: 1, clickCount: 1 });
+    await sleep(rand(60, 145));
+    await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: target.x, y: target.y, button: "left", buttons: 0, clickCount: 1 });
+    return { ...target, clicked: true, via: "debugger_cdp" };
+  } catch (e) {
+    if (!target || !target.ready) return { ...(target || {}), clicked: false, reason: "debugger_target_lookup_failed", error: String(e && e.message || e) };
+    return await domFallbackClick("debugger_click_failed", String(e && e.message || e));
+  } finally {
+    if (attached) {
+      try { await chrome.debugger.detach({ tabId }); } catch (_) {}
+    }
+  }
+}
+
+async function waitGptCloudflareAutoPass(tabId, runtime = null, options = {}) {
+  const maxWaitMs = Math.max(0, Number(options.maxWaitMs ?? options.max_wait_ms ?? 18000) || 18000);
+  const maxClicks = Math.max(0, Number(options.maxClicks ?? options.max_clicks ?? 2) || 2);
+  const start = Date.now();
+  let clickedCount = 0;
+  let consecutiveClear = 0;
+  let last = null;
+  try {
+    await sleep(Math.max(0, Number(options.initialDelayMs ?? options.initial_delay_ms ?? 1200) || 1200));
+    while (Date.now() - start < maxWaitMs) {
+      last = await inspectGptCloudflarePage(tabId, true);
+      if (!last.is_cloudflare) {
+        consecutiveClear += 1;
+        if (consecutiveClear >= 2) {
+          try { await runtime?.progress?.(4, { stage: "gpt_cloudflare_passed" }); } catch (_) {}
+          return { is_cloudflare: false, passed: true, clicked_count: clickedCount, last };
+        }
+        await sleep(800);
+        continue;
+      }
+      consecutiveClear = 0;
+      if (clickedCount < maxClicks) {
+        const verifyTextClickRes = await doubleClickGptCloudflareVerifyText(tabId);
+        const clickRes = await clickGptCloudflareCheckbox(tabId);
+        if (clickRes && clickRes.clicked) clickedCount += 1;
+        try {
+          await runtime?.progress?.(4, {
+            stage: clickRes && clickRes.clicked ? "gpt_cloudflare_checkbox_clicked" : "gpt_cloudflare_checkbox_missing",
+            clicked_count: clickedCount,
+            verify_text_clicked: verifyTextClickRes && verifyTextClickRes.clicked || false,
+            verify_text_reason: verifyTextClickRes && verifyTextClickRes.reason || null,
+            verify_text_source: verifyTextClickRes && verifyTextClickRes.source || null,
+            verify_text_frame_url: verifyTextClickRes && verifyTextClickRes.frame_url || null,
+            reason: clickRes && clickRes.reason || null,
+            previous_reason: clickRes && clickRes.previous_reason || null,
+            source: clickRes && clickRes.source || null,
+            via: clickRes && clickRes.via || null,
+            error: clickRes && clickRes.error || null,
+            frame_url: clickRes && clickRes.frame_url || null,
+            iframe_src: clickRes && clickRes.iframe_src || null,
+            x: clickRes && clickRes.x || null,
+            y: clickRes && clickRes.y || null,
+            iframe_title: clickRes && clickRes.iframe_title || null,
+            iframe_width: clickRes && clickRes.iframe_width || null,
+            iframe_height: clickRes && clickRes.iframe_height || null
+          });
+        } catch (_) {}
+        await sleep(clickRes && clickRes.clicked ? 5000 : 3000);
+      } else {
+        await sleep(1000);
+      }
+    }
+  } catch (e) {
+    return { is_cloudflare: true, passed: false, clicked_count: clickedCount, error: String(e && e.message || e), last };
+  }
+  last = last || await inspectGptCloudflarePage(tabId, true).catch(() => null);
+  return { is_cloudflare: !!(last && last.is_cloudflare), passed: false, clicked_count: clickedCount, last };
+}
+
+export async function maybeHandleGptCloudflare(tabId, runtime = null, options = {}) {
+  if (!tabId || options.disabled) return { checked: false, skipped: true };
+  let info = null;
+  try { info = await inspectGptCloudflarePage(tabId, false); } catch (_) { return { checked: false, skipped: true, reason: "inspect_failed" }; }
+  if (!info || !info.is_cloudflare) return { checked: true, is_cloudflare: false };
+  try {
+    await chrome.tabs.update(tabId, { active: true });
+  } catch (_) {}
+  try { await runtime?.progress?.(3, { stage: "gpt_cloudflare_detected", title: info.title || "", url: info.url || "" }); } catch (_) {}
+  return await waitGptCloudflareAutoPass(tabId, runtime, options);
+}
+
+async function closeOtherTabsInSameWindow(keepTabId) {
+  let keepTab = null;
+  try { keepTab = await chrome.tabs.get(keepTabId); } catch (_) {}
+  if (!keepTab || !keepTab.id || !keepTab.windowId) return 0;
+  const query = keepTab && keepTab.windowId ? { windowId: keepTab.windowId } : {};
+  const tabs = await chrome.tabs.query(query);
+  const removeIds = [];
+  for (const tab of tabs || []) {
+    if (!tab || !tab.id || tab.id === keepTabId) continue;
+    removeIds.push(tab.id);
+  }
+  if (removeIds.length) {
+    try { await chrome.tabs.remove(removeIds); } catch (_) {}
+  }
+  return removeIds.length;
+}
+
+function closeOtherTabsInSameWindowLater(keepTabId, delayMs = 5000) {
+  setTimeout(() => {
+    closeOtherTabsInSameWindow(keepTabId).catch(() => {});
+  }, Math.max(0, Number(delayMs || 0) || 0));
+}
+
+async function ensureGptTab(targetUrl = CHATGPT, options = {}) {
+  const navigateToTarget = options.navigateToTarget === true;
   const origin = originFromTarget(targetUrl);
   const tabs = await chrome.tabs.query({});
   const exact = tabs.find(t => (t.url || "") === targetUrl);
   const found = exact || tabs.find(t => (t.url || "").startsWith(origin + "/")) || tabs.find(t => (t.url || "").startsWith("https://chatgpt.com/"));
   if (found && found.id) {
-    if (targetUrl && !(found.url || "").startsWith(origin + "/")) {
-      await chrome.tabs.update(found.id, { url: targetUrl, active: true });
-      await waitTabComplete(found.id, 45000);
-      await sleep(800);
-    } else {
-      await chrome.tabs.update(found.id, { active: true });
+    try {
+      await chrome.tabs.get(found.id);
+      if (targetUrl && (navigateToTarget ? (found.url || "") !== targetUrl : !(found.url || "").startsWith(origin + "/"))) {
+        await chrome.tabs.update(found.id, { url: targetUrl, active: true });
+        await waitTabComplete(found.id, 45000);
+        await sleep(800);
+      } else {
+        await chrome.tabs.update(found.id, { active: true });
+      }
+      await maybeHandleGptCloudflare(found.id, options.runtime || null, options.cloudflare || {});
+      return found.id;
+    } catch (e) {
+      if (!isNoTabError(e)) throw e;
+      try {
+        await options.runtime?.progress?.(2, { stage: "gpt_tab_missing_recreate", old_tab_id: found.id });
+      } catch (_) {}
     }
-    return found.id;
   }
   const tab = await chrome.tabs.create({ url: targetUrl || CHATGPT, active: true });
   if (tab && tab.id) {
     await waitTabComplete(tab.id, 45000);
     await sleep(1200);
+    await maybeHandleGptCloudflare(tab.id, options.runtime || null, options.cloudflare || {});
   }
   return tab.id;
 }
@@ -791,7 +1429,7 @@ async function runImage2CodexWorkflow(tabId, token, payload, runtime) {
   const size = normalizeImage2Size(p, resolution);
   const dims = parseSize(size);
   const refUrls = collectRefUrls(p);
-  // 2K/4K Codex responses 分支对齐 gpt2api-main 的 generateImage2():
+  // Aligns with gpt2api-main: /backend-api/codex/responses + image_generation tool.
   // 参考图不走 ChatGPT Web 文件上传；直接作为 input_image.image_url 传给
   // /backend-api/codex/responses。调用方应尽量提供上游可访问的 https URL
   //（data:image/...;base64,... 也会被原样透传）。
@@ -861,18 +1499,61 @@ async function runImage2CodexWorkflow(tabId, token, payload, runtime) {
   };
 }
 
-async function pageDownloadAssetAsDataUrl(tabId, url) {
+async function pageDownloadAssetAsDataUrl(tabId, url, options = {}) {
   if (/^data:(image|video)\//i.test(String(url || ""))) return String(url || "");
+  const timeoutMs = Math.max(5000, Number(options.timeoutMs || options.timeout_ms || options.downloadTimeoutMs || options.download_timeout_ms || 60000) || 60000);
   const frames = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    args: [String(url || "")],
-    func: async (assetUrl) => {
-      const resp = await fetch(assetUrl, {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store"
-      });
+    args: [String(url || ""), {
+      contentType: String(options.contentType || "").trim(),
+      jpegQuality: Number.isFinite(Number(options.jpegQuality)) ? Number(options.jpegQuality) : 0.86,
+      jpegBackground: String(options.jpegBackground || "#ffffff"),
+      timeoutMs
+    }],
+    func: async (assetUrl, convertOptions) => {
+      const encodeImageBlob = async (sourceBlob, targetMime, quality, background) => {
+        if (!/^image\/jpe?g$/i.test(String(targetMime || "")) || !/^image\//i.test(String(sourceBlob && sourceBlob.type || ""))) {
+          return sourceBlob;
+        }
+        const bitmap = await createImageBitmap(sourceBlob);
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+          const ctx = canvas.getContext("2d", { alpha: false });
+          ctx.fillStyle = background || "#ffffff";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(bitmap, 0, 0);
+          return await new Promise((resolve, reject) => {
+            canvas.toBlob((blob) => {
+              if (blob) resolve(blob);
+              else reject(new Error("JPEG encode returned empty blob"));
+            }, "image/jpeg", Math.max(0.1, Math.min(1, Number(quality) || 0.86)));
+          });
+        } finally {
+          try { bitmap.close(); } catch (_) {}
+        }
+      };
+      const timeoutMs = Math.max(5000, Number(convertOptions && convertOptions.timeoutMs || 60000) || 60000);
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        try { controller.abort(); } catch (_) {}
+      }, timeoutMs);
+      let resp;
+      try {
+        resp = await fetch(assetUrl, {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+          signal: controller.signal
+        });
+      } catch (e) {
+        if (e && e.name === "AbortError") throw new Error(`asset download timeout after ${timeoutMs}ms`);
+        throw e;
+      } finally {
+        clearTimeout(timer);
+      }
       if (!resp.ok) {
         let text = "";
         try { text = await resp.text(); } catch (_) {}
@@ -882,6 +1563,11 @@ async function pageDownloadAssetAsDataUrl(tabId, url) {
       let mime = blob.type || resp.headers.get("content-type") || "";
       if (!/^(image|video)\//i.test(mime)) mime = "image/png";
       if (blob.type !== mime) blob = new Blob([blob], { type: mime });
+      const targetMime = String(convertOptions && convertOptions.contentType || "").trim();
+      if (/^image\/jpe?g$/i.test(targetMime)) {
+        blob = await encodeImageBlob(blob, targetMime, convertOptions && convertOptions.jpegQuality, convertOptions && convertOptions.jpegBackground);
+        mime = "image/jpeg";
+      }
       const dataUrl = await new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result || ""));
@@ -899,55 +1585,6 @@ async function pageDownloadAssetAsDataUrl(tabId, url) {
   const res = Array.isArray(frames) && frames[0] ? frames[0].result : null;
   if (!res || !res.dataUrl) throw new Error(`asset download returned empty data URL: ${String(url || "").slice(0, 160)}`);
   return res.dataUrl;
-}
-
-async function pageDownloadAssetDirectlyToOss(tabId, url, putTarget) {
-  const frames = await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "MAIN",
-    args: [String(url || ""), putTarget],
-    func: async (assetUrl, target) => {
-      const assetResp = await fetch(assetUrl, {
-        method: "GET",
-        credentials: "include",
-        cache: "no-store"
-      });
-      if (!assetResp.ok) {
-        let text = "";
-        try { text = await assetResp.text(); } catch (_) {}
-        throw new Error(`asset download HTTP ${assetResp.status}: ${String(text).slice(0, 240)}`);
-      }
-      let blob = await assetResp.blob();
-      const actualMime = blob.type || assetResp.headers.get("content-type") || "";
-      const signedMime = String((target && target.content_type) || "").trim();
-      if (signedMime && blob.type !== signedMime) blob = new Blob([blob], { type: signedMime });
-      const putResp = await fetch(target.upload_url, {
-        method: "PUT",
-        headers: target.headers || {},
-        body: blob
-      });
-      if (!putResp.ok) {
-        let text = "";
-        try { text = await putResp.text(); } catch (_) {}
-        throw new Error(`OSS upload HTTP ${putResp.status}: ${String(text).slice(0, 500)}`);
-      }
-      return {
-        ok: true,
-        url: target.url,
-        upload_url: target.upload_url,
-        object_key: target.object_key,
-        content_type: signedMime || blob.type || actualMime || "application/octet-stream",
-        actual_mime: actualMime,
-        size: blob.size || 0,
-        source_final_url: assetResp.url || assetUrl,
-        bucket: target.bucket,
-        region: target.region
-      };
-    }
-  });
-  const res = Array.isArray(frames) && frames[0] ? frames[0].result : null;
-  if (!res || !res.url) throw new Error(`direct OSS upload returned empty result: ${String(url || "").slice(0, 160)}`);
-  return res;
 }
 
 function shouldProxyAssetThroughPage(url) {
@@ -990,44 +1627,12 @@ async function uploadPageAccessibleAssetsToOss(tabId, urls, payload, runtime, op
         });
       } catch (_) {}
     }
-    if (options.directOssUpload !== false) {
-      try {
-        const contentType = String(options.contentType || "image/png");
-        const target = await createAliyunOssPutTarget(cfg, {
-          ...options,
-          index: uploads.length + dataUrls.length + 1,
-          contentType,
-          extension: imageFormatForMime(contentType) || "png"
-        });
-        const uploaded = await pageDownloadAssetDirectlyToOss(tabId, url, target);
-        out[i] = uploaded.url;
-        uploads.push(uploaded);
-        if (runtime && typeof runtime.progress === "function") {
-          try {
-            await runtime.progress(options.directDoneProgress || options.downloadDoneProgress || 91, {
-              stage: options.directDoneStage || "page_asset_direct_oss_done",
-              index: uploads.length,
-              total: proxiedTotal,
-              size: uploaded.size || 0,
-              url: uploaded.url
-            });
-          } catch (_) {}
-        }
-        continue;
-      } catch (e) {
-        if (runtime && typeof runtime.progress === "function") {
-          try {
-            await runtime.progress(options.fallbackProgress || options.downloadProgress || 90, {
-              stage: "page_asset_direct_oss_fallback",
-              index: uploads.length + dataUrls.length + 1,
-              total: proxiedTotal,
-              error: String((e && e.message) || e || "").slice(0, 240)
-            });
-          } catch (_) {}
-        }
-      }
-    }
-    const dataUrl = await pageDownloadAssetAsDataUrl(tabId, url);
+    const dataUrl = await pageDownloadAssetAsDataUrl(tabId, url, {
+      contentType: options.contentType,
+      jpegQuality: options.jpegQuality,
+      jpegBackground: options.jpegBackground,
+      timeoutMs: options.downloadTimeoutMs || options.download_timeout_ms || options.timeoutMs || options.timeout_ms
+    });
     dataUrls.push(dataUrl);
     mapIndex.push(i);
     if (runtime && typeof runtime.progress === "function") {
@@ -1108,8 +1713,8 @@ async function runImage2Workflow(tabId, token, payload, runtime) {
   const aspectRatio = normalizeImage2Ratio(p);
   const size = normalizeImage2Size(p, resolution);
   const dims = parseSize(size);
-  // 1K 继续沿用已验证的 ChatGPT Web 对话流；2K/4K 走 Codex responses 分支，
-  // 对齐 gpt2api-main: /backend-api/codex/responses + image_generation tool。
+  // 1K keeps the ChatGPT Web conversation route; 2K/4K uses Codex responses.
+  // Aligns with gpt2api-main: /backend-api/codex/responses + image_generation tool.
   if (resolution === "2k" || resolution === "4k") {
     return await runImage2CodexWorkflow(tabId, token, p, runtime);
   }
@@ -1123,12 +1728,11 @@ async function runImage2Workflow(tabId, token, payload, runtime) {
       downloadProgress: 90,
       downloadDoneStage: "page_asset_download_done",
       downloadDoneProgress: 91,
-      directOssUpload: true,
-      directDoneStage: "page_asset_direct_oss_done",
-      directDoneProgress: 92,
       stage: "oss_upload",
       progress: 93,
-      contentType: mimeForImageFormat(preferredImage2OutputFormat(p, resolution) || p.output_format || "png"),
+      contentType: mimeForImageFormat(preferredImage2OutputFormat(p, resolution) || p.output_format || "jpeg"),
+      jpegQuality: Number.isFinite(Number(p.jpeg_quality || p.jpegQuality)) ? Number(p.jpeg_quality || p.jpegQuality) : 0.86,
+      downloadTimeoutMs: p.asset_download_timeout_ms || p.assetDownloadTimeoutMs || p.download_timeout_ms || p.downloadTimeoutMs,
       objectKeyPrefix: ((p.oss_upload || p.extension_oss_upload) && (p.oss_upload || p.extension_oss_upload).object_key_prefix) || `gpt_workflow/image/gpt-image-2/${resolution}`,
       resolution
     });
@@ -1677,7 +2281,7 @@ async function membershipTask(tabId, token, runtime, target = CHATGPT) {
   const accountPlan = account && (account.planType || account.plan_type);
   await runtime.progress(45, { stage: "subscriptions", account_id: accountIdFromInit(authRaw) || null });
   const sub = await fetchSubscriptionInfo(tabId, useToken, authRaw);
-  const membership = String(sub.membership || sub.plan_type || accountPlan || planFromToken(useToken) || "").trim();
+  const membership = String(accountPlan || planFromToken(useToken) || sub.membership || sub.plan_type || "").trim();
   await runtime.progress(100, { stage: "done", account_id: sub.account_id || accountIdFromInit(authRaw) || null, subscription_end: sub.subscription_end || null, membership: membership || null });
   return {
     type: "gpt_membership",
@@ -1718,12 +2322,32 @@ async function runVideoWorkflow(tabId, token, payload, runtime) {
 export async function runGptTask(msg, runtime) {
   const p = msg.payload || {};
   const target = p.target_url || p.gpt_url || CHATGPT;
-  const tabId = await ensureGptTab(target);
   const action = String(p.action || p.workflow_kind || "").trim();
 
   if (action === "get_access_token" || action === "fetch_access_token" || action === "fetch_tokens") {
-    return await getAccessToken(tabId, target);
+    const tabId = await ensureGptTab(target, { navigateToTarget: true, runtime });
+    await reloadProjectPage(5, tabId, target, runtime);
+    const cloudflareResult = await maybeHandleGptCloudflare(tabId, runtime, {
+      maxWaitMs: 65000,
+      maxClicks: 4,
+      initialDelayMs: 1500
+    });
+    let tokenInfo = null;
+    try {
+      tokenInfo = await getAccessToken(tabId, target);
+    } catch (e) {
+      await reloadProjectPage(2, tabId, target, runtime);
+      await maybeHandleGptCloudflare(tabId, runtime);
+      tokenInfo = await getAccessToken(tabId, target);
+    }
+    closeOtherTabsInSameWindowLater(tabId, 5000);
+    try { await runtime.progress(95, { stage: "close_other_tabs_scheduled", delay_ms: 5000 }); } catch (_) {}
+    return tokenInfo;
   }
+
+  const tabId = await ensureGptTab(target, { runtime });
+  try { await runtime?.setGptBusyTab?.(tabId); } catch (_) {}
+  try {
 
   if (action === "refresh_membership" || action === "membership_refresh" || action === "get_membership" || action === "membership" || action === "subscription_info") {
     let token = p.access_token || "";
@@ -1747,7 +2371,16 @@ export async function runGptTask(msg, runtime) {
   const shouldRunPreWorkflowActivity = kind === "video" || (kind === "image" && isImage2Payload(p));
   if (shouldRunPreWorkflowActivity) {
     // runImage2Workflow / runVideoWorkflow 前刷新页面并引入拟人操作
-    // await reloadProjectPage(3, tabId, target, runtime);
+    await reloadProjectPage(5, tabId, target, runtime);
+    const cloudflareResult = await maybeHandleGptCloudflare(tabId, runtime, {
+      maxWaitMs: 65000,
+      maxClicks: 4,
+      initialDelayMs: 1500
+    });
+    if (cloudflareResult && cloudflareResult.is_cloudflare && !cloudflareResult.passed) {
+      throw new Error(`GPT Cloudflare auto-pass failed after 65s: ${JSON.stringify(cloudflareResult).slice(0, 500)}`);
+    }
+    /*
     await simulateHumanActivity(tabId, runtime, 5000, 15000, {
       stage: "gpt_pre_workflow_human_activity",
       progress: 5,
@@ -1755,6 +2388,7 @@ export async function runGptTask(msg, runtime) {
       scroll: true,
       moveMouse: true
     });
+    */
   }
   if (kind === "video") {
     return await runVideoWorkflow(tabId, token, p, runtime);
@@ -1763,4 +2397,7 @@ export async function runGptTask(msg, runtime) {
     return await runImage2Workflow(tabId, token, p, runtime);
   }
   return await runConversationWorkflow(tabId, token, p, kind, runtime);
+  } finally {
+    try { await runtime?.clearGptBusyTab?.(tabId); } catch (_) {}
+  }
 }
