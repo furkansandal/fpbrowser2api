@@ -25,6 +25,7 @@ from ..core.public_api_limits import (
 )
 from ..services.task_service import TaskService
 from ..services.task_handler_registry import CreateTaskContext, get_create_task_handler
+from ..services import veo_model_registry
 
 
 router = APIRouter()
@@ -96,6 +97,9 @@ OPENAI_COMPAT_VIDEO_MODELS = (
     "nana-banana-2-4k",
     "nana-banana-pro-4k",
     "veo-3-1",
+    "veo-3-1-fast",
+    "veo-3-1-lite",
+    "veo-3-1-lite-low",
     "veo-omni-flash",
     "veo-omni-flash-video-edit",
     "gpt-image2-1k",
@@ -182,25 +186,49 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
         payload["duration"] = 1
         payload["image_model_name"] = "GEM_PIX_2"
         payload["resolution"] = "4k"
-    elif model in {"veo-3-1"}:
+    elif model in veo_model_registry.API_MODEL_TO_FAMILY:
+        # 统一的 Veo 3.1 族 + Omni Flash 路径：API 层只解析 family + duration，
+        # 具体 mode（t2v/i2v/start_end/r2v）由 backend 依据上传图像判定，并基于
+        # registry 解析最终 flow 模型 key。
         task_type_code = "veo_workflow"
-        duration = payload.get("duration")
-        if duration != 8:
-            raise HTTPException(status_code=400, detail="veo-3-1 only supports duration=8")
-        payload["n_frames"] = 240
+        family = veo_model_registry.API_MODEL_TO_FAMILY[model]
+        # 该族在任意模式下支持的全部时长集合；API 层仅按 (family, duration) 校验，
+        # mode+duration 的不兼容由 backend 返回 400。
+        supported: set[int] = set()
+        for mode in (
+            veo_model_registry.MODE_T2V,
+            veo_model_registry.MODE_I2V,
+            veo_model_registry.MODE_START_END,
+            veo_model_registry.MODE_R2V,
+        ):
+            supported.update(veo_model_registry.supported_durations(family, mode))
+        raw_duration = payload.get("duration")
+        if raw_duration is None:
+            # 缺省时长：omni 默认 10s，veo 3.1 系列默认 8s。
+            duration = 10 if family == veo_model_registry.FAMILY_OMNI else 8
+        else:
+            try:
+                duration = int(raw_duration)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{model} invalid duration {raw_duration!r}",
+                )
+        if duration not in supported:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{model} supports durations: {sorted(supported)}",
+            )
+        payload["veo_family"] = family
+        payload["duration"] = duration
+        # backend 从 model key 取真实帧数；这里仅给一个 >1 的占位值，
+        # 保证 image_mode（n_frames==1）判定不会误判为图像生成。
+        payload["n_frames"] = duration * 30
+        # backend 会基于 veo_family + mode + duration + orientation 经 registry 解析
+        # 出 video_model，因此这里统一 pop 掉（含 omni）。
         payload.pop("video_model", None)
         payload.pop("video_url", None)
         # 720p（默认）/ 1080p / 4k；1080p/4k 由插件在生成后做视频放大。
-        payload["resolution"] = _normalize_veo_video_resolution(payload.get("resolution"))
-    elif model in {"veo-omni-flash"}:
-        task_type_code = "veo_workflow"
-        duration = payload.get("duration")
-        if duration != 10:
-            raise HTTPException(status_code=400, detail="veo-omni-flash only supports duration=10")
-        payload["n_frames"] = 300
-        payload["video_model"] = "abra_t2v_10s"
-        payload.pop("video_url", None)
-        # 720p / 1080p / 4k；1080p/4k 由插件在生成后做视频放大。
         payload["resolution"] = _normalize_veo_video_resolution(payload.get("resolution"))
     elif model in {"veo-omni-flash-video-edit"}:
         task_type_code = "veo_workflow"

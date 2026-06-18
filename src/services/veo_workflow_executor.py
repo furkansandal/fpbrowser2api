@@ -51,6 +51,7 @@ from .sora_task_executor import (
     _pick_n_frames,
 )
 from .oss_uploader import build_veo_upsample_object_key, oss_config_from_setting_section, upload_bytes_to_oss
+from . import veo_model_registry
 from .task_executor_types import NonPenalizedTaskError, ProgressCB
 from .browser_extension_bridge import should_use_extension_executor
 from .browser_extension_interaction import (
@@ -4062,15 +4063,8 @@ VEO_R2V_MODEL_LANDSCAPE = "veo_3_1_r2v_fast_landscape"
 VEO_R2V_MODEL_PORTRAIT = "veo_3_1_r2v_fast_portrait"
 VEO_T2V_MODEL_FAST_PORTRAIT = "veo_3_1_t2v_fast_portrait"
 VEO_T2V_MODEL_FAST = "veo_3_1_t2v_fast"
-VEO_EXTENSION_ULTRA_BALANCE_THRESHOLD = 2000
-VEO_EXTENSION_ULTRA_MODEL_KEYS = {
-    VEO_I2V_MODEL_LANDSCAPE_FL,
-    VEO_I2V_MODEL_PORTRAIT_FL,
-    VEO_R2V_MODEL_LANDSCAPE,
-    VEO_R2V_MODEL_PORTRAIT,
-    VEO_T2V_MODEL_FAST_PORTRAIT,
-    VEO_T2V_MODEL_FAST,
-}
+# NOTE: auto-ultra (balance > 2000 -> `_ultra` 后缀) 已随 registry 迁移移除；
+# 8s 的 `_ultra` key 现在直接来自 veo_model_registry。
 
 
 def _veo_resolve_i2v_aspect_ratio(payload: Dict[str, Any]) -> str:
@@ -4095,16 +4089,43 @@ def _veo_extract_url_from_image_item(item: Any) -> Optional[str]:
     return None
 
 
-def _veo_collect_ingredients_image_urls(payload: Dict[str, Any]) -> List[str]:
-    """Ingredients（R2V）参考图 URL：来自 `Ingredients_images`（或 `ingredients_images`），与 flow2api r2v 一致最多 3 张。"""
+def _veo_r2v_max_ref_images(payload: Dict[str, Any]) -> int:
+    """从 registry 取 (veo_family, r2v, duration) 允许的最大参考图数量。
+
+    omni_flash=7，veo 系列=3。无 veo_family（旧 omni video-edit 兜底）或组合不受支持
+    时返回 8（沿用旧默认上限），真正的不支持组合由 `resolve()` 在模型解析阶段返回 400。
+    """
+    payload = payload or {}
+    family = str(payload.get("veo_family") or "").strip()
+    if not family:
+        return 8
+    try:
+        duration = int(payload.get("duration"))
+    except (TypeError, ValueError):
+        duration = 8
+    max_ref = veo_model_registry.max_ref_images(family, veo_model_registry.MODE_R2V, duration)
+    return max_ref if max_ref > 0 else 8
+
+
+def _veo_collect_ingredients_image_urls(payload: Dict[str, Any], max_ref_images: int = 8) -> List[str]:
+    """Ingredients（R2V）参考图 URL：来自 `Ingredients_images`（或 `ingredients_images`）。
+
+    最大参考图数量来自 registry（omni=7 / veo=3），由调用方按 veo_family 计算后传入。
+    """
     payload = payload or {}
     raw = payload.get("Ingredients_images")
     if raw is None:
         raw = payload.get("ingredients_images")
     if not isinstance(raw, list):
         return []
-    if len(raw) > 8:
-        raise NonPenalizedTaskError("Ingredients 模式最多支持 8 张参考图", status_code=400, content_violation=True)
+    if max_ref_images <= 0:
+        max_ref_images = 8
+    if len(raw) > max_ref_images:
+        raise NonPenalizedTaskError(
+            f"Ingredients 模式最多支持 {max_ref_images} 张参考图",
+            status_code=400,
+            content_violation=True,
+        )
     out: List[str] = []
     for it in raw:
         u = _veo_extract_url_from_image_item(it)
@@ -4296,9 +4317,57 @@ def _veo_resolve_extension_video_model_and_aspect(
     *,
     want_ingredients: bool = False,
     want_i2v: bool = False,
+    want_start_end: bool = False,
     window_balance: Optional[int] = None,
-) -> tuple[str, str]:
+) -> tuple[str, str, int]:
+    """解析 (flow_model_key, video_aspect, max_ref_img)。
+
+    主路径：payload.veo_family + 模式（want_* 派生）+ duration + orientation 经
+    `veo_model_registry.resolve()` 解析。不支持的组合 → 400。
+
+    兜底路径：payload 无 veo_family（仅 `veo-omni-flash-video-edit` 旧流程会命中，
+    该流程随后在调用处被覆盖为 `abra_edit`）时，沿用旧的 Fast 族解析，保持旧行为。
+    auto-ultra 已移除。
+    """
     payload = payload or {}
+    family = str(payload.get("veo_family") or "").strip()
+
+    if family:
+        o = _veo_resolve_orientation_str(payload)
+        orientation = (
+            veo_model_registry.ORIENTATION_PORTRAIT
+            if o == "portrait"
+            else veo_model_registry.ORIENTATION_LANDSCAPE
+        )
+        video_aspect = (
+            VIDEO_ASPECT_RATIO_PORTRAIT
+            if orientation == veo_model_registry.ORIENTATION_PORTRAIT
+            else VIDEO_ASPECT_RATIO_LANDSCAPE
+        )
+        if want_ingredients:
+            mode = veo_model_registry.MODE_R2V
+        elif want_start_end:
+            mode = veo_model_registry.MODE_START_END
+        elif want_i2v:
+            mode = veo_model_registry.MODE_I2V
+        else:
+            mode = veo_model_registry.MODE_T2V
+        try:
+            duration = int(payload.get("duration"))
+        except (TypeError, ValueError):
+            duration = 8
+        res = veo_model_registry.resolve(family, mode, duration, orientation)
+        if res is None:
+            supported = veo_model_registry.supported_durations(family, mode)
+            raise NonPenalizedTaskError(
+                f"该模型族不支持此组合：family={family} mode={mode} duration={duration}s。"
+                f"该族 {mode} 支持的时长：{supported or '不支持该模式'}",
+                status_code=400,
+            )
+        model_key, max_ref = res
+        return model_key, video_aspect, max_ref
+
+    # 兜底（旧 omni video-edit）：沿用旧的 Fast 族解析；调用处会覆盖为 abra_edit。
     if want_ingredients:
         model_key, video_aspect = _veo_resolve_r2v_model(payload)
     elif want_i2v:
@@ -4310,24 +4379,7 @@ def _veo_resolve_extension_video_model_and_aspect(
         )
     else:
         model_key, video_aspect = _veo_resolve_t2v_model(payload)
-
-    override_model = _veo_payload_video_model_override(payload)
-    if override_model:
-        if override_model == _VEO_OMNI_T2V_MODEL:
-            override_model = _VEO_OMNI_T2V_MODEL
-        elif override_model == "veo-omni-flash":
-            override_model = _VEO_OMNI_T2V_MODEL
-        else:
-            override_model = model_key;
-        model_key = override_model
-
-    try:
-        balance_i = int(window_balance) if window_balance is not None else int(payload.get("remaining_quota"))
-    except Exception:
-        balance_i = 0
-    if balance_i > VEO_EXTENSION_ULTRA_BALANCE_THRESHOLD and model_key in VEO_EXTENSION_ULTRA_MODEL_KEYS:
-        model_key = f"{model_key}_ultra"
-    return model_key, video_aspect
+    return model_key, video_aspect, 0
 
 def veo_format_paygate_tier_label(tier: Optional[str]) -> str:
     """将 userPaygateTier 转为可读套餐名（与 flow2api manage.html formatAccountType 一致）。"""
@@ -5373,7 +5425,9 @@ async def veo_workflow(
     ingredients_video_urls: List[str] = []
     want_ingredients = False
     if not image_mode:
-        ingredients_urls = _veo_collect_ingredients_image_urls(payload)
+        ingredients_urls = _veo_collect_ingredients_image_urls(
+            payload, max_ref_images=_veo_r2v_max_ref_images(payload)
+        )
         ingredients_video_urls = _veo_collect_ingredients_video_urls(payload)
         want_ingredients = len(ingredients_urls) >= 1 or len(ingredients_video_urls) >= 1
         #raise NonPenalizedTaskError("Veo3.1视频维护中，暂时下架", status_code=400,content_violation=True)
@@ -5384,6 +5438,8 @@ async def veo_workflow(
     if want_ingredients:
         want_i2v = False
 
+    # start_end（首尾帧插值）与 i2v（仅首帧）按图片数量区分：2 张 → start_end，1 张 → i2v。
+    want_start_end = False
     i2v_urls: List[str] = []
     r2v_from_i2v_urls: List[str] = []
     if want_i2v:
@@ -5395,11 +5451,15 @@ async def veo_workflow(
                 else "图生视频需要提供 1-2 张图片（first_image_url / image_url / images 等）",
                 status_code=400,
             )
+        # 首帧+尾帧（2 张）→ start_end（插值）；仅首帧（1 张）→ i2v。
+        if len(i2v_urls) >= 2:
+            want_start_end = True
         if _veo_payload_video_model_uses_r2v_for_i2v_refs(payload):
             r2v_from_i2v_urls = list(i2v_urls)
             ingredients_urls.extend(i2v_urls)
             want_ingredients = True
             want_i2v = False
+            want_start_end = False
             i2v_urls = []
 
     labs_hint = str(payload.get("veo_url") or payload.get("target_url") or "").strip() or "https://labs.google/fx"
@@ -5593,16 +5653,17 @@ async def veo_workflow(
             # 视频放大仅在视频分支生效；图片分支保持默认（不放大）。
             _ext_video_resolution_label, _ext_video_want_upsample, _ext_video_upsample_target, _ext_video_upsample_model_key = ("720p", False, None, None)
         else:
-            _ext_model_key, _ext_video_aspect = _veo_resolve_extension_video_model_and_aspect(
+            _ext_model_key, _ext_video_aspect, _ext_max_ref = _veo_resolve_extension_video_model_and_aspect(
                 payload,
                 want_ingredients=want_ingredients,
                 want_i2v=want_i2v,
+                want_start_end=want_start_end,
                 window_balance=_ext_window_balance,
             )
-            if want_ingredients:
-                _ext_model_key = _VEO_OMNI_R2V_MODEL
-                if ingredients_video_urls:
-                    _ext_model_key = _VEO_OMNI_VEDIT_MODEL
+            # 视频参考（reference video）仍走旧的 omni 视频编辑流程 abra_edit，与 veo_family 无关。
+            # 新版 veo 族在 API 层已 pop 掉 video_url，因此此分支仅命中 veo-omni-flash-video-edit。
+            if want_ingredients and ingredients_video_urls:
+                _ext_model_key = _VEO_OMNI_VEDIT_MODEL
             print(f"_ext_model_key:{_ext_model_key} _ext_video_aspect:{_ext_video_aspect}");
             _ext_image_aspect = None
             _ext_image_model = None
