@@ -463,8 +463,9 @@ def main(argv=None):
                     detail=detail,
                 )
             )
+            time.sleep(3)
             if success > 0 and success % 4 == 0:
-                time.sleep(60)
+                time.sleep(120)
 
     print("-" * 72)
     print(
