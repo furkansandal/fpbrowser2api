@@ -66,6 +66,7 @@ async def _noop_progress_cb(progress: int, data: Dict[str, Any]) -> None:
 
 
 def _veo_rewrite_flow_content_url(value: str) -> str:
+    return raw
     raw = str(value or "")
     if not raw:
         return raw

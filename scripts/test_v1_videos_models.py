@@ -49,6 +49,7 @@ Ornek kullanim:
 import argparse
 import json
 import sys
+import time
 
 # NOT: `requests` yalnizca gercek istek atarken gerekir; --dry-run icin gerekmez.
 # Bu yuzden import lazy yapilir (asagida _require_requests()).
@@ -113,22 +114,11 @@ ALL_MODES = [MODE_T2V, MODE_I2V, MODE_START_END, MODE_R2V]
 # ---------------------------------------------------------------------------
 
 MODEL_MATRIX = {
-    # Veo 3.1 Quality -> r2v YOK
-    "veo-3-1": {
-        "label": "Veo 3.1 Quality",
-        "modes": {
-            MODE_T2V: [4, 8],
-            MODE_I2V: [4, 8],
-            MODE_START_END: [4, 8],
-            # r2v desteklenmez
-        },
-    },
     # Veo 3.1 Fast -> r2v sadece 8s
     "veo-3-1-fast": {
         "label": "Veo 3.1 Fast",
         "modes": {
-            MODE_T2V: [4, 8],
-            MODE_I2V: [4, 8],
+            MODE_I2V: [8],
             MODE_START_END: [4, 8],
             MODE_R2V: [8],
         },
@@ -473,6 +463,8 @@ def main(argv=None):
                     detail=detail,
                 )
             )
+            if success > 0 and success % 4 == 0:
+                time.sleep(60)
 
     print("-" * 72)
     print(
