@@ -117,9 +117,9 @@ MODEL_MATRIX = {
     "veo-3-1": {
         "label": "Veo 3.1 Quality",
         "modes": {
-            MODE_T2V: [4, 6, 8],
-            MODE_I2V: [4, 6, 8],
-            MODE_START_END: [4, 6, 8],
+            MODE_T2V: [4, 8],
+            MODE_I2V: [4, 8],
+            MODE_START_END: [4, 8],
             # r2v desteklenmez
         },
     },
@@ -127,9 +127,9 @@ MODEL_MATRIX = {
     "veo-3-1-fast": {
         "label": "Veo 3.1 Fast",
         "modes": {
-            MODE_T2V: [4, 6, 8],
-            MODE_I2V: [4, 6, 8],
-            MODE_START_END: [4, 6, 8],
+            MODE_T2V: [4, 8],
+            MODE_I2V: [4, 8],
+            MODE_START_END: [4, 8],
             MODE_R2V: [8],
         },
     },
@@ -137,9 +137,9 @@ MODEL_MATRIX = {
     "veo-3-1-lite": {
         "label": "Veo 3.1 Lite",
         "modes": {
-            MODE_T2V: [4, 6, 8],
-            MODE_I2V: [4, 6, 8],
-            MODE_START_END: [4, 6, 8],
+            MODE_T2V: [4, 8],
+            MODE_I2V: [4, 8],
+            MODE_START_END: [4, 8],
             MODE_R2V: [8],
         },
     },
@@ -147,9 +147,9 @@ MODEL_MATRIX = {
     "veo-3-1-lite-low": {
         "label": "Veo 3.1 Lite [Low]",
         "modes": {
-            MODE_T2V: [4, 6, 8],
-            MODE_I2V: [4, 6, 8],
-            MODE_START_END: [4, 6, 8],
+            MODE_T2V: [4, 8],
+            MODE_I2V: [4, 8],
+            MODE_START_END: [4, 8],
             MODE_R2V: [8],
         },
     },
@@ -157,10 +157,10 @@ MODEL_MATRIX = {
     "veo-omni-flash": {
         "label": "Omni Flash",
         "modes": {
-            MODE_T2V: [4, 6, 8, 10],
-            MODE_I2V: [4, 6, 8, 10],
+            MODE_T2V: [4, 8, 10],
+            MODE_I2V: [4, 8, 10],
             # start-end desteklenmez
-            MODE_R2V: [4, 6, 8, 10],
+            MODE_R2V: [4, 8, 10],
         },
     },
 }
