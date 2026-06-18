@@ -2338,7 +2338,7 @@ async function upsampleVideo(tabId, opts, at, runtime, p) {
   // 默认 PAYGATE_TIER_NOT_PAID 会导致 4K 失败）。
   const tier = normalizePaygateTier(userPaygateTier || await fetchVeoUserPaygateTier(tabId, at));
   const body = {
-    mediaGenerationContext: { batchId: crypto.randomUUID() },
+    mediaGenerationContext: { batchId: crypto.randomUUID(), audioFailurePreference: "BLOCK_SILENCED_VIDEOS" },
     clientContext: {
       projectId: String(projectId || ""),
       tool: "PINHOLE",
