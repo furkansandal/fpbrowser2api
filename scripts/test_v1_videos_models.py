@@ -48,7 +48,9 @@ Ornek kullanim:
 
 import argparse
 import json
+import random
 import sys
+import time
 import time
 
 # NOT: `requests` yalnizca gercek istek atarken gerekir; --dry-run icin gerekmez.
@@ -98,6 +100,9 @@ EXAMPLE_REF_IMAGES = [
 DEFAULT_ASPECT_LANDSCAPE = "16:9"
 DEFAULT_ASPECT_PORTRAIT = "9:16"
 
+# --sample modunda kullanilacak upscale cozunurlukleri (ASLA 720p degil).
+SAMPLE_RESOLUTIONS = ["1080p", "4k"]
+
 # Modlar (payload alan adlari)
 MODE_T2V = "t2v"
 MODE_I2V = "i2v"
@@ -114,12 +119,23 @@ ALL_MODES = [MODE_T2V, MODE_I2V, MODE_START_END, MODE_R2V]
 # ---------------------------------------------------------------------------
 
 MODEL_MATRIX = {
+    # Veo 3.1 Quality -> r2v YOK
+    "veo-3-1": {
+        "label": "Veo 3.1 Quality",
+        "modes": {
+            MODE_T2V: [4, 6, 8],
+            MODE_I2V: [4, 6, 8],
+            MODE_START_END: [4, 6, 8],
+            # r2v desteklenmez
+        },
+    },
     # Veo 3.1 Fast -> r2v sadece 8s
     "veo-3-1-fast": {
         "label": "Veo 3.1 Fast",
         "modes": {
-            MODE_I2V: [8],
-            MODE_START_END: [4, 8],
+            MODE_T2V: [4, 6, 8],
+            MODE_I2V: [4, 6, 8],
+            MODE_START_END: [4, 6, 8],
             MODE_R2V: [8],
         },
     },
@@ -127,9 +143,9 @@ MODEL_MATRIX = {
     "veo-3-1-lite": {
         "label": "Veo 3.1 Lite",
         "modes": {
-            MODE_T2V: [4, 8],
-            MODE_I2V: [4, 8],
-            MODE_START_END: [4, 8],
+            MODE_T2V: [4, 6, 8],
+            MODE_I2V: [4, 6, 8],
+            MODE_START_END: [4, 6, 8],
             MODE_R2V: [8],
         },
     },
@@ -137,9 +153,9 @@ MODEL_MATRIX = {
     "veo-3-1-lite-low": {
         "label": "Veo 3.1 Lite [Low]",
         "modes": {
-            MODE_T2V: [4, 8],
-            MODE_I2V: [4, 8],
-            MODE_START_END: [4, 8],
+            MODE_T2V: [4, 6, 8],
+            MODE_I2V: [4, 6, 8],
+            MODE_START_END: [4, 6, 8],
             MODE_R2V: [8],
         },
     },
@@ -147,10 +163,10 @@ MODEL_MATRIX = {
     "veo-omni-flash": {
         "label": "Omni Flash",
         "modes": {
-            MODE_T2V: [4, 8, 10],
-            MODE_I2V: [4, 8, 10],
+            MODE_T2V: [4, 6, 8, 10],
+            MODE_I2V: [4, 6, 8, 10],
             # start-end desteklenmez
-            MODE_R2V: [4, 8, 10],
+            MODE_R2V: [4, 6, 8, 10],
         },
     },
 }
@@ -197,7 +213,39 @@ def build_combinations(models, modes):
     return combos
 
 
-def build_payload(model, duration, mode, aspect_ratio, args):
+def families_supporting(mode):
+    """Verilen modu DESTEKLEYEN aile listesini mevcut MODEL_MATRIX'ten turetir.
+
+    Elle ikinci bir destek tablosu tutulmaz; tek kaynak MODEL_MATRIX'tir.
+    Ornek: t2v -> tum aileler; start-end -> omni haric; r2v -> quality haric.
+    """
+    return [
+        m
+        for m in ALL_MODELS
+        if MODEL_MATRIX[m]["modes"].get(mode)
+    ]
+
+
+def build_sample_plan():
+    """Her mode icin TAM 1 random (model, duration, mode, resolution) uretir.
+
+    - Aile: o modu destekleyen ailelerden random.
+    - Sure: secilen aile+mod icin gecerli surelerden random.
+    - Resolution: SAMPLE_RESOLUTIONS (1080p/4k) arasindan random (asla 720p).
+    Toplam 4 uretim (t2v, i2v, start-end, r2v).
+    """
+    plan = []
+    for mode in ALL_MODES:
+        families = families_supporting(mode)
+        model = random.choice(families)
+        durations = MODEL_MATRIX[model]["modes"][mode]
+        duration = random.choice(durations)
+        resolution = random.choice(SAMPLE_RESOLUTIONS)
+        plan.append((model, duration, mode, resolution))
+    return plan
+
+
+def build_payload(model, duration, mode, aspect_ratio, args, resolution=None):
     """Verilen kombinasyon icin /v1/videos POST body'sini kurar."""
     payload = {
         "model": model,
@@ -205,8 +253,10 @@ def build_payload(model, duration, mode, aspect_ratio, args):
         "duration": duration,
         "aspect_ratio": aspect_ratio,
     }
-    if args.resolution:
-        payload["resolution"] = args.resolution
+    # Acik resolution (orn. --sample modunda random secilen) oncelikli; yoksa CLI.
+    effective_resolution = resolution if resolution else args.resolution
+    if effective_resolution:
+        payload["resolution"] = effective_resolution
 
     if mode == MODE_T2V:
         pass  # sadece prompt
@@ -255,6 +305,17 @@ HEADER = ROW_FMT.format(
     model="MODEL", dur="DUR", mode="MODE", status="STATUS", detail="TASK_ID / HATA"
 )
 
+# --sample modunda resolution sutunu da gosterilir.
+SAMPLE_ROW_FMT = "{model:<18} {dur:>4}  {mode:<10} {res:<6} {status:<8} {detail}"
+SAMPLE_HEADER = SAMPLE_ROW_FMT.format(
+    model="MODEL",
+    dur="DUR",
+    mode="MODE",
+    res="RES",
+    status="STATUS",
+    detail="TASK_ID / HATA",
+)
+
 
 def send_request(session, url, headers, payload, timeout):
     """Tek bir kombinasyonu gonderir. (status, detail, ok) doner."""
@@ -293,6 +354,86 @@ def send_request(session, url, headers, payload, timeout):
     if not detail:
         detail = resp.text or "bilinmeyen hata"
     return (status, short_error(detail), False)
+
+
+def run_sample(args):
+    """--sample modu: her mode icin 1 random (aile+sure+resolution) uretim."""
+    if args.seed is not None:
+        random.seed(args.seed)
+
+    aspect = DEFAULT_ASPECT_LANDSCAPE  # sabit 16:9
+    plan = build_sample_plan()
+    url = normalize_endpoint(args.endpoint)
+
+    print("Endpoint     : %s" % url)
+    print("Prompt       : %s" % short_error(args.prompt, 70))
+    print("Mod           : SAMPLE (her mode 1 random uretim)")
+    print("Aspect       : %s (sabit)" % aspect)
+    print("Resolution   : random %s" % "/".join(SAMPLE_RESOLUTIONS))
+    if args.seed is not None:
+        print("Seed         : %d" % args.seed)
+    print("Kombinasyon  : %d (her mode 1)" % len(plan))
+    print("-" * 72)
+
+    # DRY RUN
+    if args.dry_run:
+        print(SAMPLE_HEADER)
+        print("-" * 72)
+        for model, duration, mode, resolution in plan:
+            payload = build_payload(model, duration, mode, aspect, args, resolution)
+            print(
+                SAMPLE_ROW_FMT.format(
+                    model=model,
+                    dur=str(duration) + "s",
+                    mode=mode,
+                    res=resolution,
+                    status=aspect,
+                    detail="payload: " + json.dumps(payload, ensure_ascii=False),
+                )
+            )
+        print("-" * 72)
+        print("DRY-RUN: %d random kombinasyon listelendi, istek atilmadi." % len(plan))
+        return 0
+
+    # GERCEK ISTEKLER
+    _require_requests()
+    headers = {
+        "Authorization": "Bearer %s" % args.api_key,
+        "Content-Type": "application/json",
+    }
+    session = requests.Session()
+
+    print(SAMPLE_HEADER)
+    print("-" * 72)
+
+    success = 0
+    failed = 0
+    for model, duration, mode, resolution in plan:
+        payload = build_payload(model, duration, mode, aspect, args, resolution)
+        status, detail, ok = send_request(
+            session, url, headers, payload, args.timeout
+        )
+        if ok:
+            success += 1
+        else:
+            failed += 1
+        print(
+            SAMPLE_ROW_FMT.format(
+                model=model,
+                dur=str(duration) + "s",
+                mode=mode,
+                res=resolution,
+                status=status,
+                detail=detail,
+            )
+        )
+
+    print("-" * 72)
+    print(
+        "OZET: %d toplam | %d basarili | %d basarisiz"
+        % (success + failed, success, failed)
+    )
+    return 0 if failed == 0 else 1
 
 
 def main(argv=None):
@@ -353,6 +494,18 @@ def main(argv=None):
         help="Ek olarak portrait (9:16) varyantlarini da test et.",
     )
     parser.add_argument(
+        "--sample",
+        action="store_true",
+        help="Tam matris yerine her mode icin TAM 1 random uretim yapar "
+        "(4 istek: t2v/i2v/start-end/r2v). Aile, sure ve resolution (1080p/4k) random.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="--sample random secimini tekrarlanabilir yapar (random.seed).",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Istek atmadan hangi kombinasyonlarin deneneceğini yazar.",
@@ -373,6 +526,10 @@ def main(argv=None):
         parser.error("--images en az 2 gorsel icermeli (start,end).")
     if len(args.ref_images) < 1:
         parser.error("--ref-images en az 1 gorsel icermeli.")
+
+    # --sample: tam matris yerine her mode icin 1 random uretim
+    if args.sample:
+        return run_sample(args)
 
     # Model / mod secimi
     selected_models = parse_csv(args.models) or list(ALL_MODELS)
