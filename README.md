@@ -4,6 +4,8 @@
 
 - QQ 交流群：1035463132
 - 操作视频：<[https://www.bilibili.com/video/BV1vL5r65EzE/?vd_source=7fa3ff8dba916183629a05529aa18af2](https://www.bilibili.com/video/BV1AjEH62EBV/)>
+- <img width="1920" height="1033" alt="image" src="https://github.com/user-attachments/assets/af0b0ebc-afc0-4de6-8baa-949e541a8974" />
+
 ## 重要声明
 
 - 本项目只供技术研究、学习验证、私有测试环境使用。
