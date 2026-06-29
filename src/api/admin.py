@@ -965,7 +965,7 @@ class PaypalWindowActionRequest(BaseModel):
 
 class AIAgentChatMessage(BaseModel):
     role: str = Field(default="user", max_length=32)
-    content: str = Field(default="", max_length=200000)
+    content: str = Field(default="", max_length=2000000)
 
     @field_validator("role")
     @classmethod
@@ -4099,7 +4099,7 @@ async def get_ai_agent_config(token: str = Depends(verify_admin_token)):
         "base_url_locked": True,
         "models": models,
         "default_model": default_model,
-        # 不把服务端/数据库 key 明文下发到前端；请求里不传 api_key 时后端会自动使用数据库/环境变量配置。
+        "api_key": db_key,
         "has_default_api_key": bool(db_key or env_or_file_key),
         "has_db_api_key": bool(db_key),
         "db_updated_at": row.get("updated_at"),
@@ -4122,6 +4122,7 @@ async def update_ai_agent_config(req: AIAgentConfigUpdateRequest, token: str = D
     return {
         "success": True,
         "default_model": normalize_ai_agent_model(row.get("default_model")),
+        "api_key": str(row.get("api_key") or "").strip(),
         "has_db_api_key": bool(str(row.get("api_key") or "").strip()),
         "updated_at": row.get("updated_at"),
     }

@@ -310,10 +310,6 @@ async def admin_network_capture_page():
     return _page(static_dir / "network_capture.html")
 
 
-@app.get("/admin/agent", response_class=HTMLResponse)
-async def admin_agent_page():
-    return _page(static_dir / "agent.html")
-
 
 @app.get("/admin/paypal", response_class=HTMLResponse)
 async def admin_paypal_page():

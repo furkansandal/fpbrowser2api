@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import unicodedata
 import uuid
 from datetime import datetime
 from collections import deque
@@ -177,9 +178,12 @@ class TaskService:
         # 任务 payload 仍保留一份内存副本供执行器使用；DB 侧仅保存一个“可查看/可检索”的 prompt 字符串
         self._task_payloads: dict[str, Dict[str, Any]] = {}
         # 1) payload["prompt"] 本身的长度上限（便于查看，也避免超长文本撑爆 DB）
-        self._payload_prompt_max_chars: int = 500
+        self._payload_prompt_max_chars: int = 1024
         # 2) 最终落库到 tasks.prompt 的总长度上限（兼容某些历史/自定义 schema 的较短字段）
-        self._prompt_max_chars: int = 2000
+        self._prompt_max_chars: int = 2500
+        # Hard character caps still protect DB/admin pages from very long unspaced input.
+        self._payload_prompt_hard_max_chars: int = 20000
+        self._prompt_hard_max_chars: int = 20000
 
         # ---- 专用窗口并发控制（generation_id + head_url 类任务） ----
         self._dedicated_window_inflight: int = 0
@@ -1081,6 +1085,119 @@ class TaskService:
         return s[:keep] + suffix
 
     @staticmethod
+    def _prompt_length_units(s: str) -> int:
+        """Count prompt text by words where possible and by chars for no-space scripts."""
+        text = str(s or "")
+        if not text:
+            return 0
+
+        def _char_script(ch: str) -> str:
+            name = unicodedata.name(ch, "")
+            for script in (
+                "CJK",
+                "HIRAGANA",
+                "KATAKANA",
+                "HANGUL",
+                "THAI",
+                "LAO",
+                "KHMER",
+                "MYANMAR",
+            ):
+                if script in name:
+                    return script
+            return ""
+
+        def _is_word_char(ch: str) -> bool:
+            if _char_script(ch):
+                return False
+            return ch.isalnum()
+
+        def _word_units(token: str) -> int:
+            # Long unspaced strings should not count as a single harmless word.
+            return max(1, (len(token) + 15) // 16)
+
+        units = 0
+        token: list[str] = []
+        for ch in text:
+            if ch.isspace():
+                if token:
+                    units += _word_units("".join(token))
+                    token.clear()
+                continue
+            script = _char_script(ch)
+            if script:
+                if token:
+                    units += _word_units("".join(token))
+                    token.clear()
+                units += 1
+            elif _is_word_char(ch):
+                token.append(ch)
+            else:
+                if token:
+                    units += _word_units("".join(token))
+                    token.clear()
+                units += 1
+        if token:
+            units += _word_units("".join(token))
+        return units
+
+    def _truncate_prompt_text(self, s: str, max_units: int, *, label: str) -> str:
+        s = str(s or "")
+        max_units = int(max_units or 0)
+        if max_units <= 0:
+            return ""
+        orig_units = self._prompt_length_units(s)
+        if orig_units <= max_units:
+            return s
+
+        suffix = f"...({label} truncated, orig_units={orig_units}, max_units={max_units})"
+        keep_units = max(0, max_units - self._prompt_length_units(suffix))
+        if keep_units <= 0:
+            return self._truncate_text(suffix, max_units, label=label)
+
+        used = 0
+        out: list[str] = []
+        word_len = 0
+
+        def _char_script(ch: str) -> str:
+            name = unicodedata.name(ch, "")
+            for script in (
+                "CJK",
+                "HIRAGANA",
+                "KATAKANA",
+                "HANGUL",
+                "THAI",
+                "LAO",
+                "KHMER",
+                "MYANMAR",
+            ):
+                if script in name:
+                    return script
+            return ""
+
+        for ch in s:
+            if ch.isspace():
+                token_units = 0
+                next_word_len = 0
+            elif _char_script(ch):
+                token_units = 1
+                next_word_len = 0
+            elif ch.isalnum():
+                before = 0 if word_len <= 0 else (word_len + 15) // 16
+                next_word_len = word_len + 1
+                after = (next_word_len + 15) // 16
+                token_units = after - before
+            else:
+                token_units = 1
+                next_word_len = 0
+            if used + token_units > keep_units:
+                break
+            out.append(ch)
+            word_len = next_word_len
+            used += token_units
+        return "".join(out).rstrip() + suffix
+
+    @staticmethod
     def _task_created_at_for_sql(v: Any) -> Optional[str]:
         """将任务行的 created_at 转为 SQLite 可接受的本地时间字符串（用于 INSERT 覆盖）。"""
         if v is None:
@@ -1120,8 +1237,8 @@ class TaskService:
                         "orig_chars": len(value),
                         "preview": self._truncate_text(text, 80, label=label),
                     }
-                if len(text) > 200:
-                    return self._truncate_text(text, 200, label=label)
+                if len(text) > 400:
+                    return self._truncate_text(text, 400, label=label)
                 return value
             if isinstance(value, dict):
                 summarized = dict(value)
@@ -1141,6 +1258,8 @@ class TaskService:
 
         total_max = max(64, int(self._prompt_max_chars or 0))
         prompt_max = max(0, int(self._payload_prompt_max_chars or 0))
+        total_hard_max = max(total_max, int(getattr(self, "_prompt_hard_max_chars", 0) or 0))
+        prompt_hard_max = max(prompt_max, int(getattr(self, "_payload_prompt_hard_max_chars", 0) or 0))
 
         base_payload: Dict[str, Any]
         if isinstance(payload, dict):
@@ -1151,7 +1270,8 @@ class TaskService:
         # 先对 payload["prompt"] 做“字段级”限长（<=1000）
         orig_prompt = str(base_payload.get("prompt") or "")
         if "prompt" in base_payload or orig_prompt:
-            base_payload["prompt"] = self._truncate_text(orig_prompt, prompt_max, label="prompt")
+            prompt_text = self._truncate_prompt_text(orig_prompt, prompt_max, label="prompt")
+            base_payload["prompt"] = self._truncate_text(prompt_text, prompt_hard_max, label="prompt_chars")
 
         for image_field in ("images", "Ingredients_images", "ingredients_images","first_image_url","last_image_url"):
             if image_field in base_payload:
@@ -1165,9 +1285,12 @@ class TaskService:
             # 极端兜底：保证永远能落库
             s = self._truncate_text(str(payload or {}), total_max, label="payload")
 
-        if len(s) <= total_max:
+        if len(s) > total_hard_max:
+            s = self._truncate_text(s, total_hard_max, label="payload_chars")
+
+        if self._prompt_length_units(s) <= total_max:
             return s
-        raise RuntimeError(f"参数长度超过{total_max}个字符了")
+        raise RuntimeError(f"参数长度超过{total_max}（中文按字、英文按词统计）")
 
     async def submit_task(
         self,

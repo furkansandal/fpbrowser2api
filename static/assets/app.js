@@ -87,11 +87,8 @@ const PAGE_PATHS = {
   task_types: "/admin/task-types",
     tasks: "/admin/tasks",
     test: "/admin/test",
-    network_capture: "/admin/network-capture",
-    agent: "/admin/agent",
-    paypal: "/admin/paypal",
     image_resources: "/admin/image-resources",
-    card_keys: "/admin/card-keys",
+    totp: "/admin/totp",
   logs: "/admin/logs",
   users: "/admin/users",
 };
@@ -210,4 +207,3 @@ try {
     }
   }
 } catch (_e) {}
-

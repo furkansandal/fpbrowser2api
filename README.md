@@ -4,7 +4,6 @@
 
 - QQ 交流群：1035463132
 - 操作视频：<[https://www.bilibili.com/video/BV1vL5r65EzE/?vd_source=7fa3ff8dba916183629a05529aa18af2](https://www.bilibili.com/video/BV1AjEH62EBV/)>
-- 通过邀请码下载有15%优惠： RoxyBrowser：<https://roxybrowser.com?code=0416Z62A>
 ## 重要声明
 
 - 本项目只供技术研究、学习验证、私有测试环境使用。
@@ -132,7 +131,7 @@ powershell -ExecutionPolicy Bypass -File .\fpbrowser2api_service.ps1 stop
 
 ### 1. RoxyBrowser 侧准备
 
-1. 下载并登录 RoxyBrowser：<https://roxybrowser.com?code=0416Z62A>。
+1. 在线注册：<https://roxybrowser.com?code=0416Z62A>。
 2. 创建空间 Workspace、项目和浏览器窗口。
 3. 为窗口配置代理、账号信息和目标站点登录态。
 4. 启用 RoxyBrowser 本地 API 或局域网 API。
