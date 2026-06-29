@@ -1,6 +1,6 @@
 # FPBrowser2API
 
-基于 RoxyBrowser 指纹浏览器的 AI 视频/图片自动化任务框架。项目通过指纹浏览器保活账号、隔离环境，并在真实页面上下文中执行插件自动化逻辑，把 Sora、Google Flow/Veo、Seedance、Grok、ChatGPT 图片等站点能力封装成可管理、可调度、可对外调用的 API。
+基于 RoxyBrowser 指纹浏览器的 AI 视频/图片自动化任务框架。通过AI智能体分析目标网站的token、接口、漏洞，把 Sora、Google Flow/Veo、Seedance、Grok、ChatGPT 图片等站点任何能力都可以封装成可管理、可调度、可对外调用的 API。
 
 - QQ 交流群：1035463132
 - 操作视频：<[https://www.bilibili.com/video/BV1vL5r65EzE/?vd_source=7fa3ff8dba916183629a05529aa18af2](https://www.bilibili.com/video/BV1AjEH62EBV/)>
