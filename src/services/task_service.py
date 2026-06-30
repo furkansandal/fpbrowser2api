@@ -146,7 +146,7 @@ def _remaining_quota_exclusive_floor_for_pick(
         if payload is None:
             return 0,credit_threthold,plan_type
         elif _veo_payload_image_model_4k(payload or {}): #4k图片，0积分 至少pro账号
-            plan_type = 2
+            plan_type = 1
             return 0,credit_threthold,plan_type
         #elif _veo_payload_video_model_is_omni(payload or {}): #参考视频，20积分 任意账号
         #    return 20,credit_threthold,plan_type
