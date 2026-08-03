@@ -274,21 +274,14 @@ async def refresh_quota__dreamina_credits(ctx: RefreshQuotaContext) -> int:
 
     from types import SimpleNamespace
 
-    from .jimeng_task_executor import dreamina_fetch_credits_in_window  # type: ignore
+    from .jimeng_task_executor import dreamina_fetch_credits_in_window, dreamina_store_country_code_from_mapping  # type: ignore
 
     access_token = str(row.get("sora_access_token") or "").strip()
     if not access_token:
         raise RuntimeError("缺少 Dreamina sessionid，请先点击 access_token 列的“更新”读取并保存")
 
     window_pk = int(row.get("window_pk") or 0)
-    country_code = ""
-    try:
-        if window_pk > 0:
-            country_code = await ctx.db.get_window_bound_ip_last_country(window_pk=window_pk)
-        if not country_code:
-            country_code = await ctx.db.get_window_bound_ip_last_country(space_id=space_id, window_key=window_key)
-    except Exception:
-        country_code = ""
+    country_code = dreamina_store_country_code_from_mapping(row)
 
     picked = SimpleNamespace(
         window_pk=window_pk,

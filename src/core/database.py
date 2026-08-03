@@ -3004,6 +3004,22 @@ class Database:
             except Exception:
                 return 0
 
+    async def update_platform_account_efa(self, *, space_pk: int, account_id: int, efa: str) -> int:
+        async with self._write_conn() as db:
+            cur = await db.execute(
+                """
+                UPDATE platform_accounts
+                SET platform_efa = ?, updated_at = datetime('now','localtime')
+                WHERE space_pk = ? AND account_id = ? AND deleted = 0
+                """,
+                (str(efa or "").strip(), int(space_pk), int(account_id)),
+            )
+            await db.commit()
+            try:
+                return int(cur.rowcount or 0)
+            except Exception:
+                return 0
+
     async def list_account_bindings(self, space_pk: int = 0) -> Dict[int, Dict[str, Any]]:
         """返回全局账号绑定信息：account_id -> {count, windows}（跨所有空间）。"""
         async with self._read_conn() as db:
@@ -4362,6 +4378,7 @@ class Database:
                   t.timeout_seconds AS task_timeout_seconds,
                   w.window_key,
                   w.window_name,
+                  w.space_pk AS space_pk,
                   w.platform_account,
                   w.platform_account_id,
                   w.platform_url,
@@ -4519,6 +4536,27 @@ class Database:
                   w.window_key,
                   w.window_sort_num,
                   w.platform_account,
+                  COALESCE(
+                    CASE
+                      WHEN w.platform_account_id IS NOT NULL AND w.platform_account_id > 0 THEN w.platform_account_id
+                      ELSE NULL
+                    END,
+                    (
+                      SELECT a.account_id
+                      FROM platform_accounts a
+                      WHERE a.deleted = 0
+                        AND a.space_pk = w.space_pk
+                        AND TRIM(COALESCE(a.platform_username, '')) <> ''
+                        AND TRIM(COALESCE(a.platform_username, '')) = TRIM(COALESCE(w.platform_account, ''))
+                        AND (
+                          TRIM(COALESCE(a.platform_url, '')) = ''
+                          OR TRIM(COALESCE(w.platform_url, '')) = ''
+                          OR TRIM(COALESCE(a.platform_url, '')) = TRIM(COALESCE(w.platform_url, ''))
+                        )
+                      ORDER BY a.updated_at DESC, a.id DESC
+                      LIMIT 1
+                    )
+                  ) AS platform_account_id,
                   w.platform_url,
                   COALESCE(
                     (
@@ -5411,6 +5449,7 @@ class Database:
                   m.sora_remaining_count,
                   m.sora_access_token,
                   m.sora_access_expires,
+                  m.sora_plan_title,
                   m.cooldown_until,
                   m.error_cooldown_until,
                   m.inflight_slots,

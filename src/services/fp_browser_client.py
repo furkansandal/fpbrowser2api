@@ -346,6 +346,7 @@ class FPBrowserClient:
         base_url: str,
         access_key: Optional[str],
         window_keys: List[str],
+        partial: bool = True,
     ) -> Dict[str, Any]:
         """清空窗口本地缓存（RoxyBrowser：POST /browser/clear_local_cache）。
 
@@ -362,7 +363,12 @@ class FPBrowserClient:
         if vendor not in ("roxy", "roxybrowser", "generic"):
             raise RuntimeError(f"暂不支持 vendor={vendor} 的 browser_clear_local_cache，请设置为 roxy")
 
-        return await self._roxy_clear_local_cache(base_url=base_url, token=access_key, dir_ids=keys)
+        return await self._roxy_clear_local_cache(
+            base_url=base_url,
+            token=access_key,
+            dir_ids=keys,
+            partial=bool(partial),
+        )
 
     async def browser_clear_server_cache(
         self,
@@ -1064,12 +1070,22 @@ class FPBrowserClient:
             {"workspaceId": int(workspace_id), "dirId": str(dir_id)},
         )
 
-    async def _roxy_clear_local_cache(self, *, base_url: str, token: Optional[str], dir_ids: List[str]) -> Dict[str, Any]:
+    async def _roxy_clear_local_cache(
+        self,
+        *,
+        base_url: str,
+        token: Optional[str],
+        dir_ids: List[str],
+        partial: bool = True,
+    ) -> Dict[str, Any]:
+        payload = {"dirIds": [str(x).strip() for x in (dir_ids or []) if str(x or "").strip()]}
+        if partial:
+            payload["type"] = "partial"
         return await self._roxy_post(
             base_url,
             token,
             "/browser/clear_local_cache",
-            {"dirIds": [str(x).strip() for x in (dir_ids or []) if str(x or "").strip()], "type": "partial"},
+            payload,
         )
 
     async def _roxy_clear_server_cache(

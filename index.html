@@ -21,7 +21,6 @@
 <body>
   <div class="app">
     <aside class="side">
-      <a class="home-link" href="https://www.newtoken.club">返回官网 newtoken.club</a>
       <div class="brand"><div class="logo">AI</div><div><h1>生成接口中心</h1><p>Image & Video API Docs</p></div></div>
       <div class="search"><input id="q" placeholder="搜索模型、接口、文档..."></div>
       <nav id="nav"></nav>
@@ -35,11 +34,13 @@
   </div>
   <script>
     const DOCS = [
-      {type:'video', title:'video-pro-720p', file:'api-docs/video-pro-720p.html', endpoint:'POST /v1/videos · GET /v1/videos/{task_id}', models:['video-pro-720p']},
+      {type:'video', title:'video-xxx-720/1080模型', file:'api-docs/video-pro-720p.html', endpoint:'POST /v1/videos · GET /v1/videos/{task_id}', models:['video-fast-480p','video-pro-480p','video-fast-720p','video-pro-720p','video-pro-1080p']},
+      {type:'video', title:'video-standard-720p', file:'api-docs/video-standard-720p.html', endpoint:'POST /v1/videos · GET /v1/videos/{task_id}', models:['video-standard-720p']},
       {type:'video', title:'Sora 2', file:'api-docs/sora-2.html', endpoint:'POST /v1/videos · GET /v1/videos/{task_id}', models:['sora-2']},
       {type:'video', title:'Sora Pro 2', file:'api-docs/sora-pro-2.html', endpoint:'POST /v1/videos · GET /v1/videos/{task_id}', models:['sora-vip3-pro-720p','sora-vip3-pro-1080p']},
       {type:'video', title:'VEO Omni Flash', file:'api-docs/veo-omni-flash.html', endpoint:'POST /v1/videos · GET /v1/videos/{task_id}', models:['veo-omni-flash']},
       {type:'video', title:'VEO Omni Flash Video Edit', file:'api-docs/veo-omni-flash-video-edit.html', endpoint:'POST /v1/videos · GET /v1/videos/{task_id}', models:['veo-omni-flash-video-edit']},
+      {type:'video', title:'VEO 3.1', file:'api-docs/veo-3-1.html', endpoint:'POST /v1/videos · GET /v1/videos/{task_id}', models:['veo-3-1']},
       {type:'image', title:'GPT Image 2', file:'api-docs/gpt-image-2.html', endpoint:'POST /v1/videos · GET /v1/videos/{task_id}', models:['gpt-image-2-2K']},
       {type:'image', title:'Nana Banana', file:'api-docs/nana-banana.html', endpoint:'POST /v1/videos · GET /v1/videos/{task_id}', models:['nana-banana-2','nana-banana-pro']}
     ];

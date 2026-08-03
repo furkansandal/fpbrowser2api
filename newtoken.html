@@ -3,34 +3,36 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>API供应 | 源头直供</title>
+    <title>NewTokenClub API</title>
     <style>
-        /* 全局CSS变量 */
         :root {
             --primary-color: #2c7da0;
             --primary-light: #5fa7c2;
             --text-secondary: #547c93;
             --text-muted: #8aaec2;
-            --card-bg: rgba(255, 255, 255, 0.5);
+            --card-bg: rgba(255, 255, 255, 0.58);
             --border-light: #e2ecf5;
             --tag-bg: #eef3fc;
             --price-color: #bc6f3c;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
         }
-        
-        /* 深色模式变量覆盖 */
+
         @media (prefers-color-scheme: dark) {
             :root {
                 --primary-color: #5fa7c2;
                 --primary-light: #8fc1d6;
-                --text-secondary: #A8C4D8;
-                --text-muted: #7E9EB5;
-                --card-bg: rgba(30, 40, 50, 0.6);
+                --text-secondary: #a8c4d8;
+                --text-muted: #7e9eb5;
+                --card-bg: rgba(30, 40, 50, 0.66);
                 --border-light: rgba(80, 120, 140, 0.3);
                 --tag-bg: rgba(47, 85, 105, 0.5);
-                --price-color: #E8935C;
+                --price-color: #e8935c;
+                --warning-color: #fbbf24;
+                --danger-color: #f87171;
             }
         }
-        
+
         * {
             margin: 0;
             padding: 0;
@@ -39,174 +41,806 @@
 
         body {
             background: transparent;
-            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
-            padding: 2rem;
+            padding: 1.25rem 1rem;
+            color: #1f2937;
         }
 
         .hero-card {
-            max-width: 860px;
+            max-width: 1280px;
             width: 100%;
             margin: 0 auto;
             background: transparent;
         }
 
-        /* ========== 标题样式：浅色模式用渐变 ========== */
+        .accent-line {
+            height: 4px;
+            width: 100%;
+            border-radius: 4px 4px 0 0;
+            background: linear-gradient(90deg, var(--primary-color), var(--primary-light), var(--primary-color));
+        }
+
+        .content-shell {
+            padding: 1rem 1.35rem 1.05rem;
+            background: transparent;
+        }
+
+        .top-badges,
+        .contact-row,
+        .footer,
+        .footer-links {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+        }
+
+        .top-badges {
+            justify-content: space-between;
+            margin-bottom: 0.8rem;
+        }
+
+        .pill {
+            background: var(--tag-bg);
+            color: var(--primary-color);
+            border: 0.5px solid var(--border-light);
+            border-radius: 60px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.3rem 1rem;
+            overflow-wrap: anywhere;
+        }
+
+        .pill.small {
+            font-size: 0.7rem;
+            font-weight: 500;
+            padding: 0.2rem 0.8rem;
+        }
+
+        .title-block {
+            margin-bottom: 0.8rem;
+        }
+
+        h1 {
+            font-size: clamp(1.85rem, 3.2vw, 2.25rem);
+            font-weight: 700;
+            line-height: 1.15;
+            letter-spacing: 0;
+            margin-bottom: 0.45rem;
+        }
+
         .gradient-title {
-            background: linear-gradient(135deg, #1E2F3F 0%, #215D77 100%);
-            background-clip: text;
+            background: linear-gradient(135deg, var(--primary-color), var(--primary-light));
             -webkit-background-clip: text;
+            background-clip: text;
             color: transparent;
         }
-        
-        /* ========== 深色模式：标题用纯白色 + 阴影，100%清晰可见 ========== */
+
+        .subtitle {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            border-left: 2px solid var(--primary-color);
+            padding-left: 1rem;
+            margin-top: 0.25rem;
+            overflow-wrap: anywhere;
+        }
+
+        .value-grid,
+        .video-notice {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 1rem;
+        }
+
+        .value-grid {
+            margin: 0.9rem 0 0.75rem;
+        }
+
+        .video-notice {
+            margin-bottom: 1rem;
+        }
+
+        .value-card,
+        .contact-card,
+        .video-notice-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-light);
+            border-radius: 1rem;
+            backdrop-filter: blur(2px);
+        }
+
+        .value-card {
+            padding: 0.75rem 0.9rem;
+        }
+
+        .contact-card {
+            padding: 0.85rem 1rem;
+            margin-bottom: 0.75rem;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.75rem;
+        }
+
+        .contact-row + .contact-row {
+            margin-top: 0.65rem;
+        }
+
+        .contact-card > .contact-row + .contact-row {
+            margin-top: 0;
+        }
+
+        .icon-bubble {
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            background: var(--tag-bg);
+            border: 0.5px solid var(--border-light);
+            border-radius: 50%;
+            font-size: 1.2rem;
+        }
+
+        .label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+        }
+
+        .value {
+            font-size: 1.35rem;
+            font-weight: 700;
+            color: var(--price-color);
+            overflow-wrap: anywhere;
+        }
+
+        .value.primary {
+            color: var(--primary-color);
+        }
+
+        .note {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin-top: 0.3rem;
+            overflow-wrap: anywhere;
+        }
+
+        a.action,
+        button.action {
+            background: var(--tag-bg);
+            border: 0.5px solid var(--border-light);
+            border-radius: 60px;
+            color: var(--primary-color);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            padding: 0.3rem 1rem;
+            text-decoration: none;
+            white-space: nowrap;
+        }
+
+        button.action {
+            background: transparent;
+            cursor: pointer;
+            font-size: 0.7rem;
+            padding: 0.2rem 0.8rem;
+        }
+
+        .video-notice-card {
+            padding: 0.75rem 0.85rem;
+            min-width: 0;
+        }
+
+        .notice-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.75rem;
+            align-items: flex-start;
+            margin-bottom: 0.65rem;
+        }
+
+        .notice-kicker {
+            font-size: 0.66rem;
+            line-height: 1.2;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            margin-bottom: 0.18rem;
+        }
+
+        .notice-title {
+            color: var(--primary-color);
+            font-size: 0.95rem;
+            font-weight: 700;
+            line-height: 1.28;
+        }
+
+        .notice-badge {
+            flex: 0 0 auto;
+            background: var(--tag-bg);
+            border: 0.5px solid var(--border-light);
+            border-radius: 999px;
+            color: var(--primary-color);
+            font-size: 0.68rem;
+            font-weight: 600;
+            line-height: 1;
+            padding: 0.32rem 0.55rem;
+        }
+
+        .notice-list {
+            display: grid;
+            gap: 0.32rem;
+            list-style: none;
+            color: var(--text-secondary);
+            font-size: 0.72rem;
+            line-height: 1.38;
+        }
+
+        .notice-list li {
+            position: relative;
+            padding-left: 0.85rem;
+        }
+
+        .notice-list li::before {
+            content: "";
+            width: 0.38rem;
+            height: 0.38rem;
+            border-radius: 50%;
+            background: var(--warning-color);
+            position: absolute;
+            left: 0;
+            top: 0.46rem;
+        }
+
+        .notice-list.danger li::before {
+            background: var(--danger-color);
+        }
+
+        .notice-detail {
+            margin-top: 0.45rem;
+            color: var(--text-muted);
+            font-size: 0.7rem;
+            line-height: 1.38;
+        }
+
+        .notice-detail summary {
+            color: var(--primary-color);
+            cursor: pointer;
+            font-weight: 600;
+            list-style-position: inside;
+        }
+
+        .notice-detail p {
+            margin-top: 0.35rem;
+        }
+
+        .footer {
+            justify-content: space-between;
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            padding-top: 0.5rem;
+            border-top: 1px solid var(--border-light);
+        }
+
+        .footer a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+
         @media (prefers-color-scheme: dark) {
-            .gradient-title {
-                background: none !important;
-                -webkit-background-clip: unset !important;
-                background-clip: unset !important;
-                color: #FFFFFF !important;
-                text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
-                font-weight: 700;
+            body {
+                color: #e5edf4;
             }
         }
 
         @media (max-width: 640px) {
             body {
+                padding: 0.85rem;
+            }
+
+            .content-shell {
                 padding: 1rem;
             }
-            .hero-card > div:last-child {
-                padding: 1.5rem;
+
+            .top-badges {
+                margin-bottom: 0.95rem;
+            }
+
+            .value-grid,
+            .video-notice,
+            .contact-card {
+                grid-template-columns: 1fr;
+            }
+
+            h1 {
+                font-size: 1.9rem;
+            }
+        }
+
+        @media (max-height: 820px) and (min-width: 760px) {
+            body {
+                align-items: flex-start;
+            }
+
+            .content-shell {
+                padding-top: 1rem;
+                padding-bottom: 1rem;
+            }
+
+            .value-grid {
+                margin: 1rem 0 0.85rem;
+            }
+
+            .contact-card,
+            .video-notice {
+                margin-bottom: 0.75rem;
             }
         }
     </style>
 </head>
 <body>
 <div class="hero-card">
-    <!-- 顶部装饰线 -->
-    <div style="height: 4px; background: linear-gradient(90deg, var(--primary-color), var(--primary-light), var(--primary-color)); width: 100%; border-radius: 4px 4px 0 0;"></div>
-    
-    <div style="padding: 2rem 2rem 2.2rem 2rem; background: transparent;">
-        
-        <!-- 顶部徽章 -->
-        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 2rem;">
-            <div style="background: var(--tag-bg); color: var(--primary-color); padding: 0.3rem 1rem; border-radius: 60px; font-size: 0.75rem; font-weight: 600; border: 0.5px solid var(--border-light);">
-                ⚙️ 官方API · 源头直供
+    <div class="accent-line"></div>
+    <div class="content-shell">
+        <div class="top-badges">
+            <div class="pill" data-i18n="badgeMain"></div>
+            <div class="pill small" data-i18n="badgeSla"></div>
+        </div>
+
+        <div class="title-block">
+            <h1><span class="gradient-title" data-i18n-html="heroTitle"></span></h1>
+            <div class="subtitle" data-i18n="heroSubtitle"></div>
+        </div>
+
+        <div class="value-grid">
+            <div class="value-card">
+                <div class="label" data-i18n="pricingLabel"></div>
+                <div class="value" data-i18n="pricingTitle"></div>
+                <div class="note" data-i18n="pricingNote"></div>
             </div>
-            <div style="font-size: 0.7rem; background: var(--tag-bg); padding: 0.2rem 0.8rem; border-radius: 40px; color: var(--primary-color); font-weight: 500;">
-                ✅ SLA 99.99%
+            <div class="value-card">
+                <div class="label" data-i18n="promiseLabel"></div>
+                <div class="value primary" data-i18n="promiseTitle"></div>
+                <div class="note" data-i18n="promiseNote"></div>
             </div>
         </div>
 
-        <!-- 主标题 -->
-        <div style="margin-bottom: 1.5rem;">
-            <h1 style="font-size: 2.5rem; font-weight: 700; line-height: 1.2; letter-spacing: -0.02em; margin: 0 0 0.5rem 0;">
-                <span class="gradient-title">官方API，<br>源头供应</span>
-            </h1>
-            <div style="font-size: 0.9rem; color: var(--text-secondary); border-left: 2px solid var(--primary-color); padding-left: 1rem; margin-top: 0.25rem;">
-                🛡️ 不追逐最低价格，只交付最可靠的API架构
-            </div>
-        </div>
-
-        <!-- 价值卡片 -->
-        <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; margin: 2rem 0 2.2rem 0;">
-            <div style="flex: 1; background: var(--card-bg); border-radius: 1.5rem; padding: 1.2rem 1.3rem; border: 1px solid var(--border-light); backdrop-filter: blur(2px);">
-                <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem;">定价策略</div>
-                <div style="font-size: 1.6rem; font-weight: 700; color: var(--price-color);">不是最便宜的</div>
-                <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.3rem;">价值优先 · 拒绝牺牲稳定性换取低价</div>
-            </div>
-            <div style="flex: 1; background: var(--card-bg); border-radius: 1.5rem; padding: 1.2rem 1.3rem; border: 1px solid var(--border-light); backdrop-filter: blur(2px);">
-                <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.5rem;">核心承诺</div>
-                <div style="font-size: 1.6rem; font-weight: 700; color: var(--primary-color);">一定最稳定的API</div>
-                <div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.3rem;">企业级自建池 · 7x24h 高可用链路</div>
-            </div>
-        </div>
-
-        <!-- 联系信息 -->
-        <div style="background: var(--card-bg); border-radius: 1.5rem; padding: 1.5rem 1.8rem; margin: 0 0 1.5rem 0; border: 1px solid var(--border-light); backdrop-filter: blur(2px);">
-            <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
-                <div style="width: 40px; height: 40px; background: var(--tag-bg); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; border: 0.5px solid var(--border-light);">📡</div>
+        <div class="contact-card">
+            <div class="contact-row">
+                <div class="icon-bubble">✈️</div>
                 <div style="flex: 1;">
-                    <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.2rem;">专属客服通道</div>
-                    <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 0.8rem;">
-                        <a href="https://t.me/newtoken_club" target="_blank" rel="noopener noreferrer" style="background: var(--tag-bg); padding: 0.3rem 1rem; border-radius: 60px; text-decoration: none; font-size: 0.85rem; font-weight: 500; color: var(--primary-color); display: inline-flex; align-items: center; gap: 6px; border: 0.5px solid var(--border-light);">
-                            ✈️ Telegram: @newtoken_club
-                        </a>
-                        <button onclick="copyToClipboard('newtoken_club', 'tg')" style="background: transparent; border: 0.5px solid var(--border-light); font-size: 0.7rem; cursor: pointer; color: var(--primary-color); padding: 0.2rem 0.8rem; border-radius: 30px; font-weight: 500;">复制账号</button>
+                    <div class="label" data-i18n="supportLabel"></div>
+                    <div class="contact-row">
+                        <a class="action" href="https://t.me/newtoken_club" target="_blank" rel="noopener noreferrer">Telegram: @newtoken_club</a>
+                        <button class="action" type="button" onclick="copyToClipboard('newtoken_club', 'tg')" data-i18n="copyAccount"></button>
                     </div>
                 </div>
             </div>
-            <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 1rem;">
-                <div style="width: 40px; height: 40px; background: var(--tag-bg); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; border: 0.5px solid var(--border-light);">🔗</div>
+            <div class="contact-row">
+                <div class="icon-bubble">🌐</div>
                 <div style="flex: 1;">
-                    <div style="font-size: 0.7rem; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.2rem;">API 接入端点</div>
-                    <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 0.8rem;">
-                        <a href="https://api.newtoken.club" target="_blank" rel="noopener noreferrer" style="background: var(--tag-bg); padding: 0.3rem 1rem; border-radius: 60px; text-decoration: none; font-family: monospace; font-size: 0.8rem; color: var(--primary-color); font-weight: 500; border: 0.5px solid var(--border-light);">
-                            🌐 https://api.newtoken.club
-                        </a>
-                        <button onclick="copyToClipboard('https://api.newtoken.club', 'api')" style="background: transparent; border: 0.5px solid var(--border-light); font-size: 0.7rem; cursor: pointer; color: var(--primary-color); padding: 0.2rem 0.8rem; border-radius: 30px; font-weight: 500;">复制链接</button>
+                    <div class="label" data-i18n="apiLabel"></div>
+                    <div class="contact-row">
+                        <a class="action" href="https://api.newtoken.club" target="_blank" rel="noopener noreferrer" style="font-family: monospace; font-size: 0.8rem;">https://api.newtoken.club</a>
+                        <button class="action" type="button" onclick="copyToClipboard('https://api.newtoken.club', 'api')" data-i18n="copyLink"></button>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- 底部 -->
-        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; font-size: 0.7rem; color: var(--text-muted); padding-top: 0.5rem; border-top: 1px solid var(--border-light);">
-            <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-                <span>⚡ 企业级支持</span>
-                <span>🛡️ 长期稳定承诺</span>
-                <span>📞 有事联系客服</span>
+        <div class="video-notice" data-i18n-aria="videoNoticeAria">
+            <section class="video-notice-card">
+                <div class="notice-head">
+                    <div>
+                        <div class="notice-kicker">video-xxx-xxx</div>
+                        <div class="notice-title" data-i18n="videoTitle"></div>
+                    </div>
+                    <span class="notice-badge" data-i18n="videoBadge"></span>
+                </div>
+                <ul class="notice-list">
+                    <li data-i18n-html="videoTip1"></li>
+                    <li data-i18n-html="videoTip2"></li>
+                    <li data-i18n-html="videoTip3"></li>
+                </ul>
+                <details class="notice-detail">
+                    <summary data-i18n="videoMore"></summary>
+                    <p data-i18n="videoMoreText"></p>
+                </details>
+            </section>
+
+            <section class="video-notice-card">
+                <div class="notice-head">
+                    <div>
+                        <div class="notice-kicker">Google Omni / VEO</div>
+                        <div class="notice-title" data-i18n="moderationTitle"></div>
+                    </div>
+                    <span class="notice-badge" data-i18n="moderationBadge"></span>
+                </div>
+                <ul class="notice-list danger">
+                    <li data-i18n-html="moderationTip1"></li>
+                    <li data-i18n="moderationTip2"></li>
+                    <li data-i18n="moderationTip3"></li>
+                </ul>
+                <details class="notice-detail">
+                    <summary data-i18n="moderationMore"></summary>
+                    <p data-i18n="moderationMoreText"></p>
+                </details>
+            </section>
+        </div>
+
+        <div class="footer">
+            <div class="footer-links">
+                <span data-i18n="footerSupport"></span>
+                <span data-i18n="footerStable"></span>
+                <span data-i18n="footerContact"></span>
             </div>
-            <div>API 直连 · 企业级架构</div>
+            <div class="footer-links">
+                <span>&copy; 2026 Mirrmart Inc. All rights reserved.</span>
+                <a href="legal/terms.html" target="_blank" rel="noopener noreferrer">Terms of Service</a>
+                <a href="legal/privacy.html" target="_blank" rel="noopener noreferrer">Privacy Policy</a>
+            </div>
         </div>
     </div>
 </div>
 
 <script>
+const TRANSLATIONS = {
+    "zh-CN": {
+        title: "NewTokenClub API",
+        badgeMain: "官方 API · 源头直供",
+        badgeSla: "SLA 99.99%",
+        heroTitle: "官方 API<br>源头供应",
+        heroSubtitle: "不追逐最低价格，只交付可靠的 API 架构",
+        pricingLabel: "定价策略",
+        pricingTitle: "不是最便宜",
+        pricingNote: "价值优先 · 拒绝牺牲稳定性换低价",
+        promiseLabel: "核心承诺",
+        promiseTitle: "一定更稳定",
+        promiseNote: "企业级自建池 · 7x24h 高可用链路",
+        supportLabel: "专属客服通道",
+        apiLabel: "API 接入端点",
+        copyAccount: "复制账号",
+        copyLink: "复制链接",
+        videoNoticeAria: "视频生成注意事项",
+        videoTitle: "失败优化建议",
+        videoBadge: "先排查再重试",
+        videoTip1: "<strong>版权/品牌/IP</strong>：避免知名品牌、logo、影视角色，使用原创或已授权素材。",
+        videoTip2: "<strong>CONTENT_MODERATION</strong>：检查提示词和参考图，删除敏感、违规或擦边描述。",
+        videoTip3: "<strong>素材问题</strong>：链接保持长期有效；图片/视频使用公网可直连地址，比例和尺寸符合模型要求。",
+        videoMore: "更多常见原因",
+        videoMoreText: "真人不合规、人脸过于写实、素材上传失败、参数错误、素材预处理失败、ASPECT_UNSUPPORTED 都可能导致失败；更换合规素材、调整比例或精简提示词后成功率更高。",
+        moderationTitle: "内容审核避坑",
+        moderationBadge: "改内容才有效",
+        moderationTip1: "遇到 <strong>didn't pass content review</strong> 通常不是网络波动，重复提交或换账号帮助不大。",
+        moderationTip2: "避开真人正脸、名人、未成年人、性/暴力/危险、品牌 IP、医疗病症、政治宗教等主题。",
+        moderationTip3: "更稳写法：非写实风格、虚构主体、侧面/背面/远景、无版权且健康的参考素材。",
+        moderationMore: "提交前快速自检",
+        moderationMoreText: "如果包含真人照片、具名角色、品牌标识或敏感场景，请先改成原创通用描述；参考图也要同步更换，否则仍可能被拒。",
+        footerSupport: "企业级支持",
+        footerStable: "长期稳定承诺",
+        footerContact: "有事联系客服",
+        copiedAccount: "已复制 Telegram ID",
+        copiedApi: "已复制 API 地址",
+        manualCopy: "手动复制："
+    },
+    en: {
+        title: "NewTokenClub API",
+        badgeMain: "Official API · Direct supply",
+        badgeSla: "SLA 99.99%",
+        heroTitle: "Official API<br>Direct Supply",
+        heroSubtitle: "We do not chase the lowest price. We deliver reliable API infrastructure.",
+        pricingLabel: "Pricing",
+        pricingTitle: "Not the cheapest",
+        pricingNote: "Value first · No stability trade-offs for bargain pricing",
+        promiseLabel: "Core promise",
+        promiseTitle: "Built for stability",
+        promiseNote: "Enterprise-grade private pools · 24/7 high-availability routes",
+        supportLabel: "Dedicated support",
+        apiLabel: "API endpoint",
+        copyAccount: "Copy account",
+        copyLink: "Copy link",
+        videoNoticeAria: "Video generation notes",
+        videoTitle: "Failure recovery tips",
+        videoBadge: "Check before retrying",
+        videoTip1: "<strong>Copyright/brand/IP</strong>: Avoid famous brands, logos, and media characters. Use original or licensed assets.",
+        videoTip2: "<strong>CONTENT_MODERATION</strong>: Review prompts and references, then remove sensitive, unsafe, or borderline content.",
+        videoTip3: "<strong>Asset issues</strong>: Keep links durable and public. Make sure image/video ratios and sizes match model requirements.",
+        videoMore: "More common causes",
+        videoMoreText: "Real-person compliance, overly realistic faces, failed uploads, invalid parameters, asset preprocessing failures, and ASPECT_UNSUPPORTED can all cause failures. Use compliant assets, adjust ratios, or simplify prompts to improve success rate.",
+        moderationTitle: "Content review guidance",
+        moderationBadge: "Change the content",
+        moderationTip1: "When you see <strong>didn't pass content review</strong>, it is usually not a network issue. Repeating the same request or switching accounts rarely helps.",
+        moderationTip2: "Avoid front-facing real people, celebrities, minors, sexual/violent/dangerous topics, brand IP, medical conditions, politics, and religion.",
+        moderationTip3: "Safer approach: non-photorealistic style, fictional subjects, side/back/distant views, and healthy copyright-safe references.",
+        moderationMore: "Quick pre-submit check",
+        moderationMoreText: "If the request contains real-person photos, named characters, brand marks, or sensitive scenes, rewrite it as an original generic description and replace the reference images too.",
+        footerSupport: "Enterprise support",
+        footerStable: "Long-term stability",
+        footerContact: "Contact support anytime",
+        copiedAccount: "Telegram ID copied",
+        copiedApi: "API address copied",
+        manualCopy: "Copy manually:"
+    }
+};
+
+const LANG_ALIASES = {
+    zh: "zh-CN",
+    "zh-cn": "zh-CN",
+    "zh-hans": "zh-CN",
+    "zh-sg": "zh-CN",
+    cn: "zh-CN",
+    en: "en",
+    "en-us": "en",
+    "en-gb": "en"
+};
+
+const BILINGUAL_TRANSLATION = {
+    title: "NewTokenClub API",
+    badgeMain: "官方 API · 源头直供 / Official API · Direct supply",
+    badgeSla: "SLA 99.99%",
+    heroTitle: "官方 API · 源头供应<br>Official API · Direct Supply",
+    heroSubtitle: "不追逐最低价格，只交付可靠的 API 架构 / We do not chase the lowest price. We deliver reliable API infrastructure.",
+    pricingLabel: "定价策略 / Pricing",
+    pricingTitle: "不是最便宜 / Not the cheapest",
+    pricingNote: "价值优先，不牺牲稳定性换低价 / Value first, no stability trade-offs for bargain pricing",
+    promiseLabel: "核心承诺 / Core promise",
+    promiseTitle: "一定更稳定 / Built for stability",
+    promiseNote: "企业级自建池，7x24h 高可用链路 / Enterprise-grade private pools, 24/7 high-availability routes",
+    supportLabel: "专属客服通道 / Dedicated support",
+    apiLabel: "API 接入端点 / API endpoint",
+    copyAccount: "复制账号 / Copy",
+    copyLink: "复制链接 / Copy",
+    videoNoticeAria: "视频生成注意事项 / Video generation notes",
+    videoTitle: "失败优化建议 / Failure recovery tips",
+    videoBadge: "先排查再重试 / Check first",
+    videoTip1: "<strong>版权/品牌/IP / Copyright/brand/IP</strong>：避免知名品牌、logo、影视角色；use original or licensed assets.",
+    videoTip2: "<strong>内容审核 / CONTENT_MODERATION</strong>：检查提示词和参考图；remove sensitive, unsafe, or borderline content.",
+    videoTip3: "<strong>素材问题 / Asset issues</strong>：链接长期有效且公网可直连；make sure ratios and sizes match model requirements.",
+    videoMore: "更多常见原因 / More common causes",
+    videoMoreText: "真人合规、人脸写实、上传失败、参数错误、预处理失败、ASPECT_UNSUPPORTED 都可能导致失败；use compliant assets, adjust ratios, or simplify prompts to improve success rate.",
+    moderationTitle: "内容审核避坑 / Content review guidance",
+    moderationBadge: "改内容才有效 / Change content",
+    moderationTip1: "遇到 <strong>didn't pass content review</strong> 通常不是网络波动；repeating the same request or switching accounts rarely helps.",
+    moderationTip2: "避开真人正脸、名人、未成年人、性/暴力/危险、品牌 IP、医疗病症、政治宗教等主题 / Avoid real faces, celebrities, minors, unsafe topics, brand IP, medical conditions, politics, and religion.",
+    moderationTip3: "更稳写法：非写实风格、虚构主体、侧面/背面/远景、无版权且健康的参考素材 / Safer approach: non-photorealistic style, fictional subjects, distant views, and copyright-safe references.",
+    moderationMore: "提交前快速自检 / Quick pre-submit check",
+    moderationMoreText: "如果包含真人照片、具名角色、品牌标识或敏感场景，请改成原创通用描述并同步更换参考图 / Rewrite as an original generic description and replace reference images too.",
+    footerSupport: "企业级支持 / Enterprise support",
+    footerStable: "长期稳定承诺 / Long-term stability",
+    footerContact: "有事联系客服 / Contact support anytime",
+    copiedAccount: "已复制 Telegram ID / Telegram ID copied",
+    copiedApi: "已复制 API 地址 / API address copied",
+    manualCopy: "手动复制 / Copy manually:"
+};
+
+let currentLang = "zh-CN";
+
+function normalizeLang(value) {
+    if (!value || typeof value !== "string") return "";
+    const key = value.trim().toLowerCase().replace("_", "-");
+    return LANG_ALIASES[key] || LANG_ALIASES[key.split("-")[0]] || "";
+}
+
+function getQueryLang() {
+    const params = new URLSearchParams(window.location.search);
+    return normalizeLang(params.get("lang") || params.get("locale") || params.get("lng"));
+}
+
+function getHashLang() {
+    const raw = window.location.hash.replace(/^#/, "");
+    if (!raw) return "";
+    const params = new URLSearchParams(raw.includes("=") ? raw : `lang=${raw}`);
+    return normalizeLang(params.get("lang") || params.get("locale") || raw);
+}
+
+function getReferrerLang() {
+    try {
+        if (!document.referrer) return "";
+        const url = new URL(document.referrer);
+        const fromQuery = normalizeLang(
+            url.searchParams.get("lang") ||
+            url.searchParams.get("locale") ||
+            url.searchParams.get("lng")
+        );
+        if (fromQuery) return fromQuery;
+
+        const fromHash = normalizeLang(url.hash.replace(/^#/, ""));
+        if (fromHash) return fromHash;
+
+        const path = url.pathname.toLowerCase();
+        if (/(^|\/)(en|en-us|en-gb)(\/|$)/.test(path)) return "en";
+        if (/(^|\/)(zh|zh-cn|zh-hans|cn)(\/|$)/.test(path)) return "zh-CN";
+    } catch (_) {}
+    return "";
+}
+
+function getCookieLang() {
+    const candidates = [
+        "i18next",
+        "i18nextLng",
+        "NEXT_LOCALE",
+        "locale",
+        "lang",
+        "language"
+    ];
+    const cookies = document.cookie.split(";").map((item) => item.trim());
+    for (const name of candidates) {
+        const prefix = `${name}=`;
+        const found = cookies.find((item) => item.startsWith(prefix));
+        if (!found) continue;
+        const normalized = normalizeLang(decodeURIComponent(found.slice(prefix.length)));
+        if (normalized) return normalized;
+    }
+    return "";
+}
+
+function getReadableParentLang() {
+    try {
+        const lang = window.parent?.document?.documentElement?.lang;
+        return normalizeLang(lang);
+    } catch (_) {
+        return "";
+    }
+}
+
+function getFrameTitleLang() {
+    try {
+        const title = window.frameElement?.getAttribute?.("title") || "";
+        const normalizedTitle = title.trim().toLowerCase();
+        if (!normalizedTitle) return "";
+        if (normalizedTitle.includes("custom home")) return "en";
+        if (normalizedTitle.includes("自定义主页") || normalizedTitle.includes("首頁") || normalizedTitle.includes("主页")) {
+            return "zh-CN";
+        }
+    } catch (_) {}
+    return "";
+}
+
+function detectInitialLang() {
+    const fromUrl = getQueryLang() || getHashLang();
+    if (fromUrl) return fromUrl;
+
+    const fromReferrer = getReferrerLang();
+    if (fromReferrer) return fromReferrer;
+
+    const fromFrameTitle = getFrameTitleLang();
+    if (fromFrameTitle) return fromFrameTitle;
+
+    const fromParent = getReadableParentLang();
+    if (fromParent) return fromParent;
+
+    const fromCookie = getCookieLang();
+    if (fromCookie) return fromCookie;
+
+    try {
+        const saved = localStorage.getItem("newtoken_locale");
+        const normalized = normalizeLang(saved);
+        if (normalized) return normalized;
+    } catch (_) {}
+
+    return normalizeLang(navigator.language) || "zh-CN";
+}
+
+function render(lang) {
+    const nextLang = "zh-CN";
+    const t = BILINGUAL_TRANSLATION;
+    currentLang = nextLang;
+    document.documentElement.lang = "zh-CN";
+    document.title = t.title;
+
+    document.querySelectorAll("[data-i18n]").forEach((node) => {
+        const key = node.getAttribute("data-i18n");
+        node.textContent = t[key] || "";
+    });
+    document.querySelectorAll("[data-i18n-html]").forEach((node) => {
+        const key = node.getAttribute("data-i18n-html");
+        node.innerHTML = t[key] || "";
+    });
+    document.querySelectorAll("[data-i18n-aria]").forEach((node) => {
+        const key = node.getAttribute("data-i18n-aria");
+        node.setAttribute("aria-label", t[key] || "");
+    });
+
+    try {
+        localStorage.setItem("newtoken_locale", nextLang);
+    } catch (_) {}
+}
+
+function extractMessageLang(data) {
+    if (!data) return "";
+    if (typeof data === "string") return normalizeLang(data);
+    return normalizeLang(data.lang || data.locale || data.language || data.i18n);
+}
+
+window.addEventListener("message", (event) => {
+    const allowedOrigins = new Set([
+        "https://www.newtoken.club",
+        "https://newtoken.club",
+        window.location.origin
+    ]);
+    if (!allowedOrigins.has(event.origin)) return;
+
+    const lang = extractMessageLang(event.data);
+    if (lang) render(lang);
+});
+
+window.addEventListener("hashchange", () => {
+    const lang = getHashLang();
+    if (lang) render(lang);
+});
+
+function logLanguageProbe() {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has("debugLang") && !params.has("debug_lang")) return;
+    console.info("[newtoken] language probe", {
+        currentLang,
+        query: getQueryLang(),
+        hash: getHashLang(),
+        referrer: document.referrer,
+        referrerLang: getReferrerLang(),
+        frameTitleLang: getFrameTitleLang(),
+        parentLang: getReadableParentLang(),
+        cookieLang: getCookieLang(),
+        navigatorLanguage: navigator.language
+    });
+}
+
+setInterval(() => {
+    const lang = getQueryLang() || getHashLang() || getReferrerLang() || getFrameTitleLang() || getReadableParentLang() || getCookieLang();
+    if (lang) render(lang);
+    logLanguageProbe();
+}, 1000);
+
 window.copyToClipboard = function(content, type) {
-    let finalCopy = content;
-    if (type === 'tg') finalCopy = content.replace(/^@/, '');
-    
+    const finalCopy = type === "tg" ? content.replace(/^@/, "") : content;
+    const t = BILINGUAL_TRANSLATION;
+
     const showMessage = (msg) => {
-        let toast = document.querySelector('.dynamic-toast');
-        if(toast) toast.remove();
-        toast = document.createElement('div');
-        toast.className = 'dynamic-toast';
-        toast.innerText = msg;
-        toast.style.position = 'fixed';
-        toast.style.bottom = '24px';
-        toast.style.left = '50%';
-        toast.style.transform = 'translateX(-50%)';
-        toast.style.backgroundColor = '#1e2f3c';
-        toast.style.color = 'white';
-        toast.style.padding = '0.5rem 1.2rem';
-        toast.style.borderRadius = '40px';
-        toast.style.fontSize = '0.8rem';
-        toast.style.zIndex = '9999';
-        toast.style.fontFamily = 'system-ui, sans-serif';
+        let toast = document.querySelector(".dynamic-toast");
+        if (toast) toast.remove();
+        toast = document.createElement("div");
+        toast.className = "dynamic-toast";
+        toast.textContent = msg;
+        toast.style.position = "fixed";
+        toast.style.bottom = "24px";
+        toast.style.left = "50%";
+        toast.style.transform = "translateX(-50%)";
+        toast.style.backgroundColor = "#1e2f3c";
+        toast.style.color = "white";
+        toast.style.padding = "0.5rem 1.2rem";
+        toast.style.borderRadius = "40px";
+        toast.style.fontSize = "0.8rem";
+        toast.style.zIndex = "9999";
+        toast.style.fontFamily = "system-ui, sans-serif";
         document.body.appendChild(toast);
         setTimeout(() => toast.remove(), 2000);
     };
-    
+
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(finalCopy).then(() => {
-            showMessage(`✓ 已复制 ${type === 'tg' ? 'Telegram ID' : 'API地址'}`);
+            showMessage(type === "tg" ? t.copiedAccount : t.copiedApi);
         }).catch(() => {
-            alert('手动复制: ' + finalCopy);
+            alert(`${t.manualCopy} ${finalCopy}`);
         });
     } else {
-        const textarea = document.createElement('textarea');
+        const textarea = document.createElement("textarea");
         textarea.value = finalCopy;
         document.body.appendChild(textarea);
         textarea.select();
-        document.execCommand('copy');
+        document.execCommand("copy");
         document.body.removeChild(textarea);
-        showMessage(`✓ 已复制`);
+        showMessage(type === "tg" ? t.copiedAccount : t.copiedApi);
     }
 };
+
+render(detectInitialLang());
 </script>
 </body>
 </html>

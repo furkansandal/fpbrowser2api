@@ -6,6 +6,7 @@
     <title>任务类型管理 - Mirr矩阵</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
     <link href="/assets/admin-nav.css" rel="stylesheet" />
+    <link href="/assets/admin-theme.css" rel="stylesheet" />
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet" />
     <style>
       html, body { height: 100%; }
@@ -146,16 +147,14 @@
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
           <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
-          <a class="nav-link" data-nav="network_capture" href="/admin/network-capture">网络抓取</a>
-          <a class="nav-link" data-nav="agent" href="/admin/agent">智能体</a>
-          <a class="nav-link" data-nav="paypal" href="/admin/paypal">PayPal管理</a>
           <a class="nav-link" data-nav="image_resources" href="/admin/image-resources">图片资源</a>
-          <a class="nav-link" data-nav="card_keys" href="/admin/card-keys">卡密管理</a>
+          <a class="nav-link" data-nav="totp" href="/admin/totp">2FA生成</a>
           <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
           <a class="nav-link" data-nav="users" href="/admin/users">用户管理</a>
         </div>
         <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
-        <span class="navbar-text text-light small me-3">Telegram：<span class="font-monospace">@newtoken_me</span></span>
+        <a class="btn btn-warning btn-sm me-3" href="https://roxybrowser.com/?code=0416Z62A" target="_blank" rel="noopener noreferrer">Roxy浏览器下载</a>
+        <a class="btn btn-danger btn-sm me-3" href="https://rola-ip.co/?code=2911CECA" target="_blank" rel="noopener noreferrer">购买代理IP</a>
         <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.club/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
@@ -293,7 +292,7 @@
                   <div class="vr d-none d-md-block"></div>
 
                   <div class="btn-group btn-group-sm" role="group" aria-label="bulk-actions">
-                    <button class="btn btn-outline-success" id="btnBulkOpen">批量打开</button>
+                    <button class="btn btn-outline-warning" id="btnBulkClearCache" title="清除已勾选指纹窗口本地缓存（不清除服务器缓存）">批量清缓存</button>
                     <button class="btn btn-outline-danger" id="btnBulkClose">批量关闭</button>
                     <button class="btn btn-outline-danger" id="btnBulkTransfer">批量转移</button>
                     <button class="btn btn-outline-warning" id="btnBulkHeadlessOn">批量开无头</button>
@@ -303,6 +302,7 @@
                     <button class="btn btn-outline-warning" id="btnBulkResetConsecutiveErrors" title="将勾选窗口的连续错误清零，并清空错误重置时间">批量重置错误</button>
                     <button class="btn btn-outline-primary" id="btnBulkPureModeOn" title="将勾选窗口的「纯净」列设为开启，并同步账号/工作台设置">批量开纯净</button>
                     <button class="btn btn-outline-secondary" id="btnBulkPureModeOff" title="将勾选窗口的「纯净」列设为关闭，并同步账号/工作台设置">批量关纯净</button>
+                    <button class="btn btn-outline-info" id="btnExportSelectedAccounts" title="导出勾选窗口的账号、密码和 EFA">导出账号信息</button>
                     <button class="btn btn-outline-secondary" id="btnReloadMappings" title="刷新窗口列表">⟳ 刷新列表</button>
                     <input type="text" inputmode="numeric" class="form-control form-control-sm mono" id="bulkCoreVersionInput" placeholder="内核版本" title="勾选窗口后批量设为该 coreVersion（Roxy POST /browser/mdf）" style="max-width: 92px;" />
                     <button class="btn btn-outline-dark btn-sm" id="btnBulkSetCore" type="button" title="将已勾选窗口的内核版本改为左侧数字（每个窗口会先清空本地缓存）">批量改内核</button>
@@ -355,7 +355,7 @@
                       <th style="width: 36px;"></th>
                       <th class="sort-head" id="thEnabled" title="点击按启用排序">启用 <span class="text-muted" id="enabledSortHint">↕</span></th>
                       <th class="sort-head" id="thWinName" title="点击按窗口编号（#）排序">窗口 <span class="text-muted" id="winNameSortHint">↕</span></th>
-                      <th>备注</th>
+                      <th class="sort-head" id="thRemark" title="点击按备注排序">备注 <span class="text-muted" id="remarkSortHint">↕</span></th>
                       <th class="sort-head" id="thWinStatus" title="点击按窗口状态排序">状态 <span class="text-muted" id="winStatusSortHint">↕</span></th>
                       <th class="sort-head" id="thAccessTokenExpires" title="点击按 access_token 过期时间排序">AccessToken / 过期 <span class="text-muted" id="accessTokenSortHint">↕</span></th>
                       <th class="quota-sort" id="thBalanceInfo" title="点击按 remaining_quota 排序">余额信息 <span class="text-muted small ms-1" id="balanceSummaryAll">总余额: 0</span> <span class="text-muted" id="balanceSortHint">↕</span></th>
@@ -818,6 +818,56 @@
       </div>
     </div>
 
+    <!-- Export Account Info Modal -->
+    <div class="modal fade" id="exportAccountsModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">导出账号信息</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="small text-muted mb-2" id="exportAccountsHint">-</div>
+            <textarea class="form-control mono" id="exportAccountsText" rows="12" readonly spellcheck="false"></textarea>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">关闭</button>
+            <button type="button" class="btn btn-primary btn-sm" id="btnCopyExportAccounts">复制</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Account Edit Modal -->
+    <div class="modal fade" id="accountEditModal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="accountEditModalTitle">Edit Account</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="text-muted small mb-3" id="accountEditMeta">-</div>
+            <div class="row g-3">
+              <div class="col-md-6">
+                <label class="form-label">Password</label>
+                <input class="form-control form-control-sm mono" id="accountEditPasswordInput" type="text" placeholder="Password" autocomplete="off" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">EFA</label>
+                <input class="form-control form-control-sm mono" id="accountEditEfaInput" type="text" placeholder="EFA" autocomplete="off" />
+              </div>
+            </div>
+            <div class="form-text mt-2">Password and EFA will sync to the fingerprint browser, then update the local database.</div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" id="btnSaveAccountEdit">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script type="module">
       import { adminFetch, toast, setActiveNav, logout, escapeHtml, initAdminPage, getAdminProfile } from "/assets/app.js";
@@ -865,7 +915,9 @@
       const closeHintModal = new bootstrap.Modal("#closeHintModal");
       const tokenModal = new bootstrap.Modal("#tokenModal");
       const remarkBsModal = new bootstrap.Modal("#remarkModal");
+      const exportAccountsBsModal = new bootstrap.Modal("#exportAccountsModal");
       const veoProjectsBsModal = new bootstrap.Modal("#veoProjectsModal");
+      const accountEditBsModal = new bootstrap.Modal("#accountEditModal");
       let veoProjectsModalMappingId = 0;
       let aiModels = FALLBACK_AI_MODELS;
       let aiDefaultModel = "gpt-5.5";
@@ -983,6 +1035,12 @@
       const autoRefreshErrorModalBody = document.getElementById("autoRefreshErrorModalBody");
       const closeHintWinNameEl = document.getElementById("closeHintWinName");
       const closeHintSecEl = document.getElementById("closeHintSec");
+      const accountEditModalTitle = document.getElementById("accountEditModalTitle");
+      const accountEditMeta = document.getElementById("accountEditMeta");
+      const accountEditPasswordInput = document.getElementById("accountEditPasswordInput");
+      const accountEditEfaInput = document.getElementById("accountEditEfaInput");
+      const btnSaveAccountEdit = document.getElementById("btnSaveAccountEdit");
+      let accountEditState = { mappingId: 0, spacePk: 0, accountId: 0, password: "", efa: "", passwordDirty: false, efaDirty: false };
 
       function badgeForStatus(s) {
         const v = String(s || "").toLowerCase();
@@ -1889,6 +1947,93 @@
         return !!(m && m.pure_mode);
       }
 
+      function openAccountEditModal(mappingId) {
+        const m = (state.mappings || []).find(x => String(x?.id || "") === String(mappingId));
+        if (!m) return toast("Mapping not found, please refresh and retry", "warning");
+        const accountId = parseInt(String(m.platform_account_id || "0"), 10) || 0;
+        const spacePk = parseInt(String(m.space_pk || "0"), 10) || 0;
+        if (!spacePk || !accountId) {
+          return toast("No local account ID matched for this window. Please sync accounts/windows in Projects first.", "warning");
+        }
+        accountEditState = {
+          mappingId: parseInt(String(mappingId || "0"), 10) || 0,
+          spacePk,
+          accountId,
+          password: String(m.platform_password || ""),
+          efa: String(m.platform_efa || ""),
+          passwordDirty: false,
+          efaDirty: false,
+        };
+        if (accountEditModalTitle) accountEditModalTitle.textContent = `Edit Account #${accountId}`;
+        if (accountEditMeta) {
+          const winLabel = `#${m.window_sort_num ?? m.window_pk ?? "-"} ${m.window_name || "-"}`;
+          const account = String(m.platform_username || m.platform_account || "-").trim() || "-";
+          accountEditMeta.textContent = `Window: ${winLabel} | Account: ${account}`;
+        }
+        if (accountEditPasswordInput) accountEditPasswordInput.value = accountEditState.password;
+        if (accountEditEfaInput) accountEditEfaInput.value = accountEditState.efa;
+        setTimeout(() => {
+          try { accountEditPasswordInput?.focus?.(); accountEditPasswordInput?.select?.(); } catch (_e) {}
+        }, 0);
+        accountEditBsModal.show();
+      }
+
+      async function updateAccountPassword(spacePk, accountId, password) {
+        const spk = parseInt(String(spacePk || "0"), 10) || 0;
+        const aid = parseInt(String(accountId || "0"), 10) || 0;
+        if (!spk || !aid) return false;
+        const r = await adminFetch(`/api/admin/spaces/${spk}/accounts/${aid}/password`, {
+          method: "POST",
+          body: JSON.stringify({ platform_password: String(password || "") }),
+        });
+        if (!r) return false;
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "Failed to update password");
+        return true;
+      }
+
+      async function updateAccountEfa(spacePk, accountId, efa) {
+        const spk = parseInt(String(spacePk || "0"), 10) || 0;
+        const aid = parseInt(String(accountId || "0"), 10) || 0;
+        if (!spk || !aid) return false;
+        const r = await adminFetch(`/api/admin/spaces/${spk}/accounts/${aid}/efa`, {
+          method: "POST",
+          body: JSON.stringify({ platform_efa: String(efa || "") }),
+        });
+        if (!r) return false;
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.detail || "Failed to update EFA");
+        return true;
+      }
+
+      async function saveAccountEdit() {
+        const spacePk = parseInt(String(accountEditState.spacePk || "0"), 10) || 0;
+        const accountId = parseInt(String(accountEditState.accountId || "0"), 10) || 0;
+        if (!spacePk || !accountId) return;
+        const password = accountEditPasswordInput ? String(accountEditPasswordInput.value || "") : "";
+        const efa = accountEditEfaInput ? String(accountEditEfaInput.value || "") : "";
+        const oldPassword = String(accountEditState.password || "");
+        const oldEfa = String(accountEditState.efa || "");
+        const passwordChanged = !!accountEditState.passwordDirty && password !== oldPassword;
+        const efaChanged = !!accountEditState.efaDirty && efa !== oldEfa;
+        if (!passwordChanged && !efaChanged) {
+          accountEditBsModal.hide();
+          return;
+        }
+        try {
+          setBtnBusy(btnSaveAccountEdit, true, { loadingText: "Saving" });
+          if (passwordChanged) await updateAccountPassword(spacePk, accountId, password);
+          if (efaChanged) await updateAccountEfa(spacePk, accountId, efa);
+          toast("Account updated", "success");
+          accountEditBsModal.hide();
+          await loadMappings({ preserveSelection: true });
+        } catch (e) {
+          toast(e.message || "Failed to update account", "error");
+        } finally {
+          setBtnBusy(btnSaveAccountEdit, false);
+        }
+      }
+
       function getMappingById(mappingId) {
         return (state.mappings || []).find(x => String(x?.id || "") === String(mappingId)) || null;
       }
@@ -2135,7 +2280,7 @@
           appendAiOperationLog("尚未配置 AI 参数，请先到智能体页面配置模型和 API Key");
           toast("请先到智能体页面配置AI参数", "warning");
           if (confirm("当前未配置 AI API Key。是否现在前往智能体页面配置？")) {
-            window.location.href = "/admin/agent";
+            window.location.href = "/admin/network-capture";
           }
           return;
         }
@@ -2655,7 +2800,7 @@
         state.mappings = (d.items || [])
           .slice()
           .sort((a, b) => (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0));
-        if (preserveSelection && prevSelected.size) {
+        if (preserveSelection) {
           const ids = new Set((state.mappings || []).map(x => x.id));
           state.mapSelected = new Set(Array.from(prevSelected).filter(x => ids.has(x)));
         } else {
@@ -2703,6 +2848,19 @@
             const av = a?.enabled ? 1 : 0;
             const bv = b?.enabled ? 1 : 0;
             if (av !== bv) return (av - bv) * sign;
+            return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
+          });
+          return items;
+        }
+        if (key === "window_remark") {
+          items.sort((a, b) => {
+            const av = String(a?.window_remark || "").trim().toLowerCase();
+            const bv = String(b?.window_remark || "").trim().toLowerCase();
+            const aMissing = !av;
+            const bMissing = !bv;
+            if (aMissing !== bMissing) return aMissing ? 1 : -1;
+            const cmp = av.localeCompare(bv);
+            if (cmp !== 0) return cmp * sign;
             return (parseInt(b?.id, 10) || 0) - (parseInt(a?.id, 10) || 0);
           });
           return items;
@@ -2910,6 +3068,7 @@
         };
         mk(document.getElementById("balanceSortHint"), ui.mappingSortKey === "remaining_quota");
         mk(document.getElementById("winNameSortHint"), ui.mappingSortKey === "window_name");
+        mk(document.getElementById("remarkSortHint"), ui.mappingSortKey === "window_remark");
         mk(document.getElementById("winStatusSortHint"), ui.mappingSortKey === "window_status");
         mk(document.getElementById("proxySortHint"), ui.mappingSortKey === "proxy");
         mk(document.getElementById("spaceNameSortHint"), ui.mappingSortKey === "space_name");
@@ -3095,19 +3254,8 @@
           const _isGpt = _handler === "gpt_workflow";
           const _isDreamina = _handler === "dreamina_workflow";
           const _targetPageHandler = _isVeo || _isGrok || _isDreamina || _isGpt;
-          const _showOpenAccount = _handler === "sora_gen_video" || _handler === "veo_workflow" || _handler === "grok_workflow" || _handler === "dreamina_workflow" || _handler === "gpt_workflow";
           const _openTitle = "仅打开/唤起指纹浏览器窗口；不判断或打开目标页，不连接 CDP（禁止自动关闭）";
-          const _startTitle = _targetPageHandler ? "立刻重启窗口并进入目标页面（不改变启用状态）" : "立刻重启窗口并进入 Sora drafts（不改变启用状态）";
-          const _openAccountTitle = _isVeo
-            ? "开号/连接：连接后自动判断是否为 Google 登录页；若页面可见 @gmail.com（选账号列表）则走「连接置前」自动点选；否则走完整 Google 登录并打开 Flow（完成后断开 CDP）"
-            : _isDreamina
-              ? "开号/连接：打开 Dreamina 目标页并断开 CDP；默认使用窗口 Cookie，可用「access_token」列获取/保存 sessionid"
-              : _isGrok
-                ? "连接：打开 Grok 默认页并断开 CDP；默认用窗口 Cookie，可选在「access_token」列保存 Grok SSO（与 grok2api 同源）"
-                : _isGpt
-                  ? "连接：打开 ChatGPT 页面并断开 CDP；点击「access_token」列的更新可读取 ChatGPT 长 access_token"
-                : "开号：Sora 走 Plus 注册自动化；Veo/Dreamina 为打开目标页并断开 CDP";
-          const _openAccountLabel = (_isVeo || _isDreamina) ? "开号/连接" : ((_isGrok || _isGpt) ? "连接" : "开号");
+          const _startTitle = "Open fingerprint browser window and navigate to 2FA + Google Security";
           return `
           <tr class="small2" data-mid="${m.id}">
             <td>
@@ -3120,15 +3268,23 @@
             </td>
             <td style="width: 80px; min-width: 80px;">
               <div class="d-flex flex-wrap gap-2 align-items-center">
-                <span class="badge text-bg-light mono border">#${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")} ${escapeHtml(m.platform_account || "-")}</span>
+                <span class="badge text-bg-light mono border">
+                  #${escapeHtml(String((m.window_sort_num ?? m.window_pk) ?? "-"))}-${escapeHtml(m.window_name || "-")}
+                  <button
+                    type="button"
+                    class="btn btn-link btn-sm p-0 align-baseline mono text-decoration-none"
+                    data-role="accountEdit"
+                    data-mid="${escapeHtml(String(m.id ?? ""))}"
+                    title="Edit account password and EFA"
+                  >${escapeHtml(m.platform_username || m.platform_account || "-")}</button>
+                </span>
                 <div class="btn-group btn-group-sm btn-group-xs" role="group" aria-label="window-manual-open-close">
                   <button class="btn btn-outline-success btn-sm btn-icon" title="${_openTitle}" aria-label="打开" data-act="manualOpen" data-mid="${m.id}"><i class="bi bi-box-arrow-up-right" aria-hidden="true"></i><span class="visually-hidden">打开</span></button>
 
-                  <button class="btn btn-outline-primary btn-sm btn-icon" title="${_startTitle}" aria-label="启动" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-play-fill" aria-hidden="true"></i><span class="visually-hidden">启动</span></button>
+                  <button class="btn btn-outline-primary btn-sm btn-icon" title="${_startTitle}" aria-label="Open 2FA" data-act="manualStart" data-mid="${m.id}"><i class="bi bi-key" aria-hidden="true"></i><span class="visually-hidden">Open 2FA</span></button>
                   <button class="btn btn-outline-secondary btn-sm btn-icon" title="关闭（后台倒计时）" aria-label="关闭" data-act="manualClose" data-mid="${m.id}"><i class="bi bi-x-lg" aria-hidden="true"></i><span class="visually-hidden">关闭</span></button>
                   <button class="btn btn-outline-danger btn-sm btn-icon" title="转移到其他任务类型" aria-label="转移" data-act="transfer" data-mid="${m.id}"><i class="bi bi-arrow-left-right" aria-hidden="true"></i><span class="visually-hidden">转移</span></button>
-                  <button class="btn btn-outline-warning btn-sm btn-icon" title="清除指纹窗口本地与服务器缓存，并清空本行已保存的 access_token、额度与会员信息（Roxy：clear_local_cache + clear_server_cache）" aria-label="清缓存" data-act="clearBrowserCache" data-mid="${m.id}"><i class="bi bi-brush" aria-hidden="true"></i><span class="visually-hidden">清缓存</span></button>
-                  ${_showOpenAccount ? `<button class="btn btn-outline-info btn-sm btn-icon" title="${escapeHtml(_openAccountTitle)}" aria-label="${escapeHtml(_openAccountLabel)}" data-act="openAccount" data-mid="${m.id}"><i class="bi bi-person-plus" aria-hidden="true"></i><span class="visually-hidden">${escapeHtml(_openAccountLabel)}</span></button>` : ""}
+                  <button class="btn btn-outline-warning btn-sm btn-icon" title="清除指纹窗口本地缓存（Roxy：clear_local_cache，不添加 type=partial，不清除服务器缓存）" aria-label="清缓存" data-act="clearBrowserCache" data-mid="${m.id}"><i class="bi bi-brush" aria-hidden="true"></i><span class="visually-hidden">清缓存</span></button>
                   <button class="btn btn-outline-primary btn-sm btn-icon" title="输入任意信息并发送到插件数据面板" aria-label="传输数据" data-act="transferData" data-mid="${m.id}"><i class="bi bi-send" aria-hidden="true"></i><span class="visually-hidden">传输</span></button>
                 </div>
               </div>
@@ -3384,6 +3540,8 @@
             toggleSubscriptionSort();
           } else if (role === "taskStats") {
             if (!Number.isNaN(mid)) openSuccessModalByMappingId(mid);
+          } else if (role === "accountEdit") {
+            if (!Number.isNaN(mid)) openAccountEditModal(mid);
           } else if (role === "draftsCount") {
             if (!Number.isNaN(mid)) clearDrafts(mid);
           } else if (role === "inviteCode") {
@@ -3712,9 +3870,6 @@
         if (act === "clearBrowserCache") {
           return clearBrowserCache(mappingId, el);
         }
-        if (act === "openAccount") {
-          return openAccountForMapping(mappingId, el);
-        }
         if (act === "applyCoreVersion") {
           if (!canEditTaskTypeConfig()) {
             toast("当前账号无权修改绑定窗口", "warning");
@@ -3823,6 +3978,9 @@
             sora_subscription_end: d?.subscription_end != null ? d.subscription_end : "",
           };
           const _subHandler = String(state.current?.create_task_handler || "").trim().toLowerCase();
+          if (_subHandler === "dreamina_workflow" && d?.store_country_code) {
+            patch.sora_plan_title = String(d.store_country_code || "").trim();
+          }
           // veo_workflow：刷新会员信息复用刷新余额能力，同时更新余额与套餐档位。
           // grok_workflow / gpt_workflow：仅更新套餐名。
           if (_subHandler === "veo_workflow" && d && (typeof d.remaining_quota === "number" || typeof d.credits === "number")) {
@@ -4683,18 +4841,18 @@
         try {
           cancelCloseHintCountdown({ hideModal: true });
           const { openBtn, startBtn, closeBtn, veoConnectBringBtn } = getRowActionButtons(mappingId, fromEl);
-          setBtnBusy(startBtn, true, { loadingText: "重启中" });
+          setBtnBusy(startBtn, true, { loadingText: "Opening" });
           if (openBtn) openBtn.disabled = true;
           if (closeBtn) closeBtn.disabled = true;
           if (veoConnectBringBtn) veoConnectBringBtn.disabled = true;
 
           const hl = getMappingHeadless(mappingId);
           const pm = getMappingPureMode(mappingId);
-          await postJson(`/api/admin/task-type-windows/${mappingId}/manual-start?headless=${hl}&pure_mode=${pm}`, { method: "POST" });
+          await postJson(`/api/admin/task-type-windows/${mappingId}/open-account?headless=${hl}&pure_mode=${pm}`, { method: "POST" });
           updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl });
-          const _h2 = String(state.current?.create_task_handler || "").trim().toLowerCase();
-          toast(_h2 === "veo_workflow" || _h2 === "grok_workflow" || _h2 === "dreamina_workflow" || _h2 === "gpt_workflow" ? "已重启窗口并进入目标页面" : "已重启窗口并进入 drafts", "success");
-          flashBtnText(startBtn, "已重启");
+          await loadMappings({ preserveSelection: true });
+          toast("Google 2FA changed and account EFA synced", "success");
+          flashBtnText(startBtn, "Opened");
         } catch (e) {
           toast(e.message, "error");
         } finally {
@@ -4710,46 +4868,12 @@
         const btn = fromEl?.closest?.("button") || fromEl;
         try {
           setBtnBusy(btn, true, { loadingText: "清缓存" });
-          await postJson(`/api/admin/task-type-windows/${mappingId}/clear-browser-cache`, { method: "POST" });
+          await postJson(`/api/admin/task-type-windows/${mappingId}/clear-browser-cache?local_only=true&local_partial=false`, { method: "POST" });
           await loadMappings({ preserveSelection: true });
-          toast("已清除窗口本地与服务器缓存，并已清空 access_token、额度与会员信息", "success");
+          toast("已清除窗口本地缓存", "success");
           flashBtnText(btn, "已清除");
         } catch (e) {
           toast(e.message || "清除缓存失败", "error");
-        } finally {
-          setBtnBusy(btn, false);
-        }
-      }
-
-      async function openAccountForMapping(mappingId, fromEl) {
-        const btn = fromEl?.closest?.("button") || fromEl;
-        try {
-          cancelCloseHintCountdown({ hideModal: true });
-          const _h = String(state.current?.create_task_handler || "").trim().toLowerCase();
-          const loadingText = (_h === "veo_workflow" || _h === "dreamina_workflow" || _h === "grok_workflow" || _h === "gpt_workflow") ? "连接中" : "开号中";
-          setBtnBusy(btn, true, { loadingText });
-          const hl = getMappingHeadless(mappingId);
-          const pm = getMappingPureMode(mappingId);
-          const r = await postJson(`/api/admin/task-type-windows/${mappingId}/open-account?headless=${hl}&pure_mode=${pm}`, { method: "POST" });
-          // 开号/连接流程会打开或唤起指纹窗口；成功后立即同步本行“状态”列，
-          // 避免必须整页刷新后才能看到“打开”。
-          updateMappingRowUI(mappingId, { window_status: 1 }, { fromEl: btn });
-          const resMsg = r?.result && typeof r.result.message === "string" ? String(r.result.message).trim() : "";
-          const line =
-            resMsg ||
-            (_h === "veo_workflow"
-              ? "已完成：Google 登录并打开 Flow，已断开自动化连接"
-              : _h === "dreamina_workflow"
-                ? "已打开 Dreamina 页面，已断开自动化连接（请在本窗口完成登录/确认 Cookie）"
-                : _h === "grok_workflow"
-                  ? "已打开 Grok 页面，已断开自动化连接（请在本窗口完成登录）"
-                  : _h === "gpt_workflow"
-                    ? "已打开 ChatGPT 页面，已断开自动化连接（请在本窗口完成登录）"
-                  : "已完成：Sora Plus 开号流程（窗口已保留，CDP 已断开）");
-          toast(line, "success");
-          flashBtnText(btn, "完成");
-        } catch (e) {
-          toast(e.message || "开号/连接失败", "error");
         } finally {
           setBtnBusy(btn, false);
         }
@@ -5402,6 +5526,58 @@
         return Array.from(state.mapSelected || []).map(x => parseInt(x, 10)).filter(x => !Number.isNaN(x));
       }
 
+      function getSelectedMappings() {
+        const ids = getSelectedMappingIds();
+        if (!ids.length) return [];
+        const byId = new Map((state.mappings || []).map(m => [parseInt(m?.id, 10), m]));
+        return ids.map(id => byId.get(id)).filter(Boolean);
+      }
+
+      function buildExportAccountLines(items) {
+        return (items || []).map(m => {
+          const account = String(m?.platform_username || m?.platform_account || "").trim();
+          const password = String(m?.platform_password || "");
+          const efa = String(m?.platform_efa || "").trim();
+          return `${account}----${password}----无邮箱----${efa}`;
+        }).join("\n");
+      }
+
+      function openExportSelectedAccountsModal() {
+        const items = getSelectedMappings();
+        if (!items.length) return toast("请先勾选窗口", "error");
+        const text = buildExportAccountLines(items);
+        const hint = document.getElementById("exportAccountsHint");
+        const area = document.getElementById("exportAccountsText");
+        if (hint) hint.textContent = `已选择 ${items.length} 个窗口，每行格式：账号----密码----无邮箱----EFA`;
+        if (area) area.value = text;
+        exportAccountsBsModal.show();
+        setTimeout(() => {
+          try {
+            area?.focus();
+            area?.select();
+          } catch {}
+        }, 150);
+      }
+
+      async function copyExportAccountsText() {
+        const area = document.getElementById("exportAccountsText");
+        const text = String(area?.value || "");
+        if (!text) return toast("没有可复制的账号信息", "warning");
+        try {
+          await navigator.clipboard.writeText(text);
+          toast("账号信息已复制", "success");
+        } catch {
+          try {
+            area?.focus();
+            area?.select();
+            document.execCommand("copy");
+            toast("账号信息已复制", "success");
+          } catch {
+            toast("复制失败，请手动复制弹窗内容", "error");
+          }
+        }
+      }
+
       async function runBulkAction({ label, ids, runner }) {
         if (!ids.length) return toast("请先勾选窗口", "error");
         const hint = document.getElementById("bulkProgressHint");
@@ -5416,7 +5592,7 @@
           hint.textContent = "";
         };
 
-        setBtnDisabledById("btnBulkOpen", true);
+        setBtnDisabledById("btnBulkClearCache", true);
         setBtnDisabledById("btnBulkClose", true);
         setBtnDisabledById("btnBulkTransfer", true);
         setBtnDisabledById("btnBulkHeadlessOn", true);
@@ -5442,7 +5618,7 @@
           }
           toast(`${label}完成：成功 ${ok}，失败 ${fail}`, fail ? "warning" : "success");
         } finally {
-          setBtnDisabledById("btnBulkOpen", false);
+          setBtnDisabledById("btnBulkClearCache", false);
           setBtnDisabledById("btnBulkClose", false);
           setBtnDisabledById("btnBulkTransfer", false);
           setBtnDisabledById("btnBulkHeadlessOn", false);
@@ -5458,17 +5634,16 @@
         }
       }
 
-      async function bulkOpenSelected() {
+      async function bulkClearCacheSelected() {
         const ids = getSelectedMappingIds();
         await runBulkAction({
-          label: "批量打开",
+          label: "批量清缓存",
           ids,
           runner: async (mappingId) => {
-            const hl = getMappingHeadless(mappingId);
-            const pm = getMappingPureMode(mappingId);
-            await postJson(`/api/admin/task-type-windows/${mappingId}/manual-open?headless=${hl}&pure_mode=${pm}`, { method: "POST" });
+            await postJson(`/api/admin/task-type-windows/${mappingId}/clear-browser-cache?local_only=true&local_partial=false`, { method: "POST" });
           },
         });
+        await loadMappings({ preserveSelection: true });
       }
 
       async function bulkCloseSelected() {
@@ -5878,7 +6053,7 @@
         });
         updateMapSelectedCountUI();
       });
-      document.getElementById("btnBulkOpen")?.addEventListener("click", bulkOpenSelected);
+      document.getElementById("btnBulkClearCache")?.addEventListener("click", bulkClearCacheSelected);
       document.getElementById("btnBulkClose")?.addEventListener("click", bulkCloseSelected);
       document.getElementById("btnBulkTransfer")?.addEventListener("click", bulkTransferSelected);
       document.getElementById("btnBulkHeadlessOn")?.addEventListener("click", bulkHeadlessOnSelected);
@@ -5888,6 +6063,15 @@
       document.getElementById("btnBulkResetConsecutiveErrors")?.addEventListener("click", bulkResetConsecutiveErrorsSelected);
       document.getElementById("btnBulkPureModeOn")?.addEventListener("click", bulkPureModeOnSelected);
       document.getElementById("btnBulkPureModeOff")?.addEventListener("click", bulkPureModeOffSelected);
+      document.getElementById("btnExportSelectedAccounts")?.addEventListener("click", openExportSelectedAccountsModal);
+      document.getElementById("btnCopyExportAccounts")?.addEventListener("click", copyExportAccountsText);
+      btnSaveAccountEdit?.addEventListener("click", saveAccountEdit);
+      accountEditPasswordInput?.addEventListener("input", () => {
+        accountEditState.passwordDirty = true;
+      });
+      accountEditEfaInput?.addEventListener("input", () => {
+        accountEditState.efaDirty = true;
+      });
       document.getElementById("btnBulkSetCore")?.addEventListener("click", bulkSetCoreVersionSelected);
       document.getElementById("btnReloadMappings")?.addEventListener("click", async (e) => {
         const btn = e.currentTarget;
@@ -5984,6 +6168,7 @@
       });
       document.getElementById("thBalanceInfo")?.addEventListener("click", toggleQuotaSort);
       document.getElementById("thWinName")?.addEventListener("click", () => toggleSort("window_name", "asc"));
+      document.getElementById("thRemark")?.addEventListener("click", () => toggleSort("window_remark", "asc"));
       document.getElementById("thWinStatus")?.addEventListener("click", () => toggleSort("window_status", "desc"));
       document.getElementById("thProxy")?.addEventListener("click", () => toggleSort("proxy", "asc"));
       document.getElementById("thSpaceName")?.addEventListener("click", () => toggleSort("space_name", "asc"));

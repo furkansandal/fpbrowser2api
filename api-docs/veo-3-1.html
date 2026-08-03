@@ -3,26 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>VEO Omni Flash Video Edit · 视频编辑接口</title>
+  <title>VEO 3.1 · 视频异步 API 接入文档</title>
   <link rel="stylesheet" href="doc.css">
 </head>
 <body>
   <header>
     <a href="../index.html">返回接口目录</a>
-    <h1>VEO Omni Flash Video Edit · 视频编辑接口</h1>
-    <p>基于 1 个参考视频地址进行编辑，可附加参考图片。</p>
+    <h1>VEO 3.1 · 视频异步 API 接入文档</h1>
+    <p>通过 <code>POST /v1/videos</code> 创建 8 秒视频任务，支持文生视频、首尾帧图生视频、多参考图生成视频。</p>
   </header>
   <main>
     <article>
       <a class="notice-link" href="omni-video-content-review-guide.html" aria-label="查看视频生成内容审查避坑指南">
         <span class="notice-mark" aria-hidden="true">!</span>
         <span class="notice-body">
-          <strong>内容审查避坑提醒：编辑视频前先检查参考视频、图片和提示词</strong>
-          <span class="notice-summary">如果返回 <code>didn't pass content review</code>，重试或换账号通常无效，需要改提示词、替换参考视频或替换参考图。</span>
+          <strong>内容审查避坑提醒：提交 VEO 3.1 任务前建议先看详细指南</strong>
+          <span class="notice-summary">如果返回 <code>didn't pass content review</code>，重试或换账号通常无效，需要改提示词、换参考图或避开受保护 IP。</span>
           <span class="notice-checks">
-            <span>参考视频里的人脸、logo、影视画面也会参与审查</span>
-            <span>附加参考图要同步避开真人正脸、未成年人和受保护 IP</span>
-            <span>尽量改成虚构主体、侧背远景或非写实风格后再提交</span>
+            <span>先排查真人正脸、名人、未成年人</span>
+            <span>再检查性/暴力/危险、医疗病症、政治宗教</span>
+            <span>多参考图和首尾帧都要逐张确认素材风险</span>
           </span>
         </span>
         <span class="notice-cta">查看详细页面 <span aria-hidden="true">→</span></span>
@@ -33,25 +33,56 @@
   -H "Authorization: Bearer api-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "veo-omni-flash-video-edit",
-    "prompt": "make the reference video brighter and more cinematic",
-    "duration": 10,
-    "aspect_ratio": "16:9",
-    "video_url": "https://your-cdn.com/reference-video.mp4",
-    "Ingredients_images": [
-      "https://your-cdn.com/product.jpg"
+    "model": "veo-3-1",
+    "prompt": "a cinematic product reveal, smooth camera movement, natural lighting",
+    "duration": 8,
+    "aspect_ratio": "16:9"
+  }'</code></pre>
+
+      <h2>图生视频</h2>
+<pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "veo-3-1",
+    "prompt": "the subject turns toward the camera, cinematic lighting",
+    "duration": 8,
+    "aspect_ratio": "9:16",
+    "images": [
+      "https://your-cdn.com/first-frame.jpg"
     ]
   }'</code></pre>
 
-      <h2>参数</h2>
-      <table>
-        <tr><th>字段</th><th>说明</th></tr>
-        <tr><td><code>model</code></td><td>固定 <code>veo-omni-flash-video-edit</code></td></tr>
-        <tr><td><code>video_url</code></td><td>必填，只支持 1 个参考视频地址</td></tr>
-        <tr><td><code>Ingredients_images</code></td><td>可选，参考图片 URL 数组</td></tr>
-        <tr><td><code>duration</code></td><td>固定 10</td></tr>
-        <tr><td><code>aspect_ratio</code></td><td><code>16:9</code> / <code>9:16</code>，默认横屏</td></tr>
-      </table>
+      <h2>首尾帧模式</h2>
+<pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "veo-3-1",
+    "prompt": "animate from the first frame to the last frame with smooth natural motion",
+    "duration": 8,
+    "aspect_ratio": "16:9",
+    "images": [
+      "https://your-cdn.com/first-frame.jpg",
+      "https://your-cdn.com/last-frame.jpg"
+    ]
+  }'</code></pre>
+
+      <h2>多参考图</h2>
+<pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "veo-3-1",
+    "prompt": "combine these references into one polished brand video",
+    "duration": 8,
+    "aspect_ratio": "16:9",
+    "Ingredients_images": [
+      "https://your-cdn.com/ref-1.jpg",
+      "https://your-cdn.com/ref-2.jpg",
+      "https://your-cdn.com/ref-3.jpg"
+    ]
+  }'</code></pre>
 
       <h2>查询任务</h2>
 <pre><code>curl https://xxx.xxx.xxx/v1/videos/8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234 \
@@ -68,13 +99,13 @@
   "state": "in_progress",
   "task_status": "in_progress",
   "progress": 45,
-  "model": "veo-omni-flash-video-edit",
+  "model": "veo-3-1",
   "video_url": null,
   "metadata": {
     "result_urls": []
   },
-  "seconds": "10",
-  "duration": 10,
+  "seconds": "8",
+  "duration": 8,
   "aspect_ratio": "16:9",
   "success": false,
   "final": false
@@ -89,19 +120,52 @@
   "state": "completed",
   "task_status": "completed",
   "progress": 100,
-  "model": "veo-omni-flash-video-edit",
+  "model": "veo-3-1",
   "video_url": "https://xxx.xxx.xxx/generated/video.mp4",
   "url": "https://xxx.xxx.xxx/generated/video.mp4",
   "metadata": {
     "result_urls": ["https://xxx.xxx.xxx/generated/video.mp4"]
   },
-  "seconds": "10",
-  "duration": 10,
+  "seconds": "8",
+  "duration": 8,
   "aspect_ratio": "16:9",
   "success": true,
   "final": true,
   "completed_at": 1714200180000
 }</code></pre>
+      <p>失败：</p>
+<pre><code>{
+  "id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "task_id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "object": "video",
+  "created_at": 1714200000000,
+  "status": "failed",
+  "state": "failed",
+  "task_status": "failed",
+  "progress": 0,
+  "model": "veo-3-1",
+  "video_url": null,
+  "metadata": {
+    "result_urls": []
+  },
+  "success": false,
+  "final": true,
+  "error": {
+    "message": "任务失败原因",
+    "code": "task_failed"
+  }
+}</code></pre>
+
+      <h2>字段</h2>
+      <table>
+        <tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr>
+        <tr><td><code>model</code></td><td>string</td><td>是</td><td>固定为 <code>veo-3-1</code></td></tr>
+        <tr><td><code>prompt</code></td><td>string</td><td>是</td><td>视频内容描述</td></tr>
+        <tr><td><code>duration</code></td><td>int</td><td>是</td><td>固定为 <code>8</code>，其他值会返回 400</td></tr>
+        <tr><td><code>aspect_ratio</code></td><td>string</td><td>否</td><td><code>16:9</code> / <code>9:16</code>，默认横屏</td></tr>
+        <tr><td><code>images</code></td><td>array</td><td>否</td><td>图生视频参考图，传 1 张为单图生视频，传 2 张为首尾帧模式；顺序为首帧、尾帧。数组项使用图片 URL 字符串</td></tr>
+        <tr><td><code>Ingredients_images</code></td><td>array</td><td>否</td><td>多参考图模式，最多 8 张；传入后优先按多参考图视频生成处理</td></tr>
+      </table>
 
       <h2>查询返回字段</h2>
       <table>
@@ -119,9 +183,9 @@
         <tr><td><code>error.message</code></td><td>失败原因，仅失败时返回</td></tr>
       </table>
 
-      <h2>状态说明</h2>
+      <h2>返回状态</h2>
       <table>
-        <tr><th>status</th><th>含义</th><th>处理方式</th></tr>
+        <tr><th>status</th><th>含义</th><th>说明</th></tr>
         <tr><td><code>queued</code></td><td>排队中</td><td>继续轮询</td></tr>
         <tr><td><code>in_progress</code></td><td>生成中</td><td>继续轮询</td></tr>
         <tr><td><code>completed</code></td><td>已完成</td><td>读取 <code>video_url</code>、<code>url</code> 或 <code>metadata.result_urls</code></td></tr>

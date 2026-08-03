@@ -1,0 +1,224 @@
+/* ===== Mirr矩阵 Admin Design System ===== */
+
+/* Compact layout — equivalent to ~80% browser zoom */
+html {
+  font-size: 80%;
+}
+
+/* Body */
+body {
+  background: #f0f4f8 !important;
+  color: #1a1f36;
+}
+
+/* Navbar */
+.admin-top-nav.navbar {
+  background: linear-gradient(135deg, #0d1b2a 0%, #1a2744 100%) !important;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+  padding-top: 0;
+  padding-bottom: 0;
+  min-height: 52px;
+}
+
+.admin-top-nav .navbar-brand {
+  font-weight: 700;
+  font-size: 1.05rem;
+  letter-spacing: -0.2px;
+  background: linear-gradient(90deg, #60a5fa, #a78bfa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  padding: 0.5rem 0;
+}
+
+.admin-top-nav .nav-link {
+  font-size: 12.5px;
+  padding: 0.4rem 0.65rem !important;
+  color: rgba(255,255,255,0.65) !important;
+  border-radius: 5px;
+  transition: color 0.15s, background 0.15s;
+  margin: 0 1px;
+}
+
+.admin-top-nav .nav-link:hover {
+  color: #fff !important;
+  background: rgba(255,255,255,0.1);
+}
+
+.admin-top-nav .nav-link.active,
+.admin-top-nav .nav-link[aria-current] {
+  color: #93c5fd !important;
+  background: rgba(96,165,250,0.15);
+}
+
+/* Cards */
+.card {
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 10px !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 4px 14px rgba(0,0,0,0.04) !important;
+}
+
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1a1f36;
+}
+
+/* Tables */
+.table {
+  font-size: 13px;
+  color: #334155;
+}
+
+.table > thead > tr > th {
+  background: #f8fafc;
+  color: #64748b;
+  font-weight: 600;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  border-bottom: 1px solid #e2e8f0 !important;
+  padding: 0.55rem 0.75rem;
+  white-space: nowrap;
+}
+
+.table > tbody > tr:hover > td {
+  background: #f8fbff;
+}
+
+.table > tbody > tr > td {
+  border-bottom-color: #f1f5f9;
+  vertical-align: middle;
+}
+
+/* Badges - pastel style */
+.badge { border-radius: 20px !important; font-weight: 500; font-size: 11px; padding: 0.28em 0.65em; }
+.text-bg-success { background: #dcfce7 !important; color: #15803d !important; }
+.text-bg-danger  { background: #fee2e2 !important; color: #b91c1c !important; }
+.text-bg-primary { background: #dbeafe !important; color: #1d4ed8 !important; }
+.text-bg-secondary { background: #f1f5f9 !important; color: #475569 !important; }
+.text-bg-warning { background: #fef9c3 !important; color: #92400e !important; }
+.text-bg-info    { background: #e0f2fe !important; color: #0369a1 !important; }
+.bg-danger.badge { background: #fee2e2 !important; color: #b91c1c !important; border: none; }
+
+/* Buttons */
+.btn {
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  border-color: #2563eb;
+  box-shadow: 0 1px 3px rgba(37,99,235,0.2);
+}
+.btn-primary:hover {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  border-color: #1d4ed8;
+  box-shadow: 0 3px 8px rgba(37,99,235,0.3);
+  transform: translateY(-0.5px);
+}
+
+.btn-outline-secondary {
+  border-color: #d1d5db;
+  color: #374151;
+}
+.btn-outline-secondary:hover {
+  background: #f9fafb;
+  border-color: #9ca3af;
+  color: #111827;
+}
+
+.btn-outline-danger:hover { transform: translateY(-0.5px); }
+.btn-outline-primary:hover { transform: translateY(-0.5px); }
+
+/* Form controls */
+.form-control, .form-select {
+  border-color: #d1d5db;
+  border-radius: 7px;
+  font-size: 13px;
+  color: #1a1f36;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.form-control:focus, .form-select:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59,130,246,0.12);
+}
+
+.form-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 4px;
+}
+
+.form-text { font-size: 11.5px; color: #6b7280; }
+
+/* Alert queue bar */
+.alert-info {
+  background: linear-gradient(135deg, #eff6ff, #dbeafe) !important;
+  border-color: #bfdbfe !important;
+  color: #1e3a8a !important;
+}
+.alert-warning {
+  background: linear-gradient(135deg, #fffbeb, #fef3c7) !important;
+  border-color: #fcd34d !important;
+  color: #78350f !important;
+}
+
+/* Progress bars */
+.progress {
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+.progress-bar {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #3b82f6, #6366f1);
+  transition: width 0.4s ease;
+}
+
+/* Modals */
+.modal-content {
+  border-radius: 12px !important;
+  border: none !important;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.18), 0 4px 16px rgba(0,0,0,0.08) !important;
+}
+.modal-header {
+  border-bottom: 1px solid #f1f5f9;
+  padding: 1rem 1.25rem 0.8rem;
+  background: #fafbfc;
+  border-radius: 12px 12px 0 0 !important;
+}
+.modal-title { font-size: 15px; font-weight: 600; color: #1a1f36; }
+.modal-footer { border-top: 1px solid #f1f5f9; padding: 0.75rem 1.25rem; }
+
+/* Input groups */
+.input-group > .form-control:not(:last-child),
+.input-group > .form-select:not(:last-child) {
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+}
+.input-group > .btn:last-child {
+  border-top-left-radius: 0 !important;
+  border-bottom-left-radius: 0 !important;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* Section headers & page titles */
+h3.mb-1 { font-size: 1.2rem; font-weight: 700; color: #0f172a; }
+
+/* chat agent page specific */
+.chat-shell { background: linear-gradient(180deg, #f8faff 0%, #eef4ff 100%) !important; }
+.msg-assistant { background: #fff !important; border: 1px solid #e2e8f0 !important; box-shadow: 0 1px 3px rgba(0,0,0,0.05) !important; }
+.msg-user { background: linear-gradient(135deg, #3b82f6, #2563eb) !important; }
+
+/* Compact util */
+.fw-semibold { font-weight: 600 !important; }

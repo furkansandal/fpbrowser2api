@@ -53,6 +53,8 @@ _SYSTEM_CONFIG_TTL_SEC = max(0.1, float(os.getenv("SYSTEM_CONFIG_CACHE_TTL_SEC",
 _TASK_TYPE_TTL_SEC = max(0.1, float(os.getenv("TASK_TYPE_CACHE_TTL_SEC", "60.0")))
 _system_config_cache: tuple[float, Optional[bool], Optional[int], Optional[int]] = (0.0, None, None, None)
 _task_type_cache: dict[str, tuple[float, Any]] = {}
+_IMAGE_GENERATION_SYNC_TIMEOUT_SEC = max(1.0, float(os.getenv("IMAGE_GENERATION_SYNC_TIMEOUT_SEC", "600")))
+_IMAGE_GENERATION_SYNC_POLL_INTERVAL_SEC = max(0.2, float(os.getenv("IMAGE_GENERATION_SYNC_POLL_INTERVAL_SEC", "2.0")))
 
 
 def set_dependencies(database: Database) -> None:
@@ -89,6 +91,27 @@ class CreateVideoRequest(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class CreateImageGenerationRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=128)
+    prompt: str
+    n: Optional[int] = Field(default=None, ge=1, le=4)
+    size: Optional[str] = None
+    quality: Optional[str] = None
+    response_format: Optional[str] = None
+    background: Optional[str] = None
+    output_format: Optional[str] = None
+    output_compression: Optional[int] = Field(default=None, ge=0, le=100)
+    user: Optional[str] = None
+    image: Optional[Any] = None
+    images: Optional[List[Any]] = None
+    mask: Optional[Any] = None
+    negative_prompt: Optional[str] = None
+    seed: Optional[int] = None
+    aspect_ratio: Optional[str] = None
+    # Allow compatible clients to pass provider-specific image parameters.
+    model_config = {"extra": "allow"}
+
+
 OPENAI_COMPAT_VIDEO_MODELS = (
     "seedance-2",
     "seedance-2-fast",
@@ -107,13 +130,25 @@ OPENAI_COMPAT_VIDEO_MODELS = (
     "gpt-image2-4k",
 )
 OPENAI_COMPAT_VIDEO_MODEL_SET = set(OPENAI_COMPAT_VIDEO_MODELS)
+OPENAI_COMPAT_IMAGE_MODELS = (
+    "nana-banana-2",
+    "nana-banana-pro",
+    "nana-banana-2-4k",
+    "nana-banana-pro-4k",
+    "gpt-image2-1k",
+    "gpt-image2-2k",
+    "gpt-image2-4k",
+)
+OPENAI_COMPAT_IMAGE_MODEL_SET = set(OPENAI_COMPAT_IMAGE_MODELS)
+OPENAI_COMPAT_SYNC_IMAGE_MODELS = tuple(f"{model}_sync" for model in OPENAI_COMPAT_IMAGE_MODELS)
+OPENAI_COMPAT_SYNC_IMAGE_MODEL_SET = set(OPENAI_COMPAT_SYNC_IMAGE_MODELS)
 OPENAI_COMPAT_NOOP_MODELS = (
     # 专用于 NewAPI 按次扣费：不创建真实任务，只返回一个合法的
     # OpenAI chat completion 响应，让 NewAPI 完成鉴权、日志和额度扣减。
     "fpbrowser-use",
 )
 OPENAI_COMPAT_NOOP_MODEL_SET = set(OPENAI_COMPAT_NOOP_MODELS)
-OPENAI_COMPAT_MODEL_SET = OPENAI_COMPAT_VIDEO_MODEL_SET | OPENAI_COMPAT_NOOP_MODEL_SET
+OPENAI_COMPAT_MODEL_SET = OPENAI_COMPAT_VIDEO_MODEL_SET | OPENAI_COMPAT_SYNC_IMAGE_MODEL_SET | OPENAI_COMPAT_NOOP_MODEL_SET
 GPT_IMAGE2_VIDEO_MODELS: Dict[str, str] = {
     "gpt-image2-1k": "1k",
     "gpt-image2-2k": "2k",
@@ -141,11 +176,101 @@ def _normalize_veo_video_resolution(raw: Any) -> str:
     )
 
 
-def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+def _public_image_model_from_sync_model(model: str) -> Optional[str]:
+    raw = str(model or "").strip()
+    if not raw.endswith("_sync"):
+        return None
+    base = raw[: -len("_sync")]
+    return base if base in OPENAI_COMPAT_IMAGE_MODEL_SET else None
+
+
+def _require_video_image_seconds_4(payload: Dict[str, Any], model: str) -> None:
+    if model not in OPENAI_COMPAT_IMAGE_MODEL_SET:
+        return
+    if payload.get("seconds") is None:
+        payload["seconds"] = 4
+    elif _maybe_number(payload.get("seconds")) != 4:
+        raise HTTPException(status_code=400, detail=f"{model} must set seconds=4 when used with /v1/videos")
+    else:
+        payload["seconds"] = 4
+
+    if payload.get("duration") is not None and _maybe_number(payload.get("duration")) != 4:
+        raise HTTPException(status_code=400, detail=f"{model} must set duration=4 when used with /v1/videos")
+
+
+def _resolution_from_openai_image_size(size: Any) -> Optional[str]:
+    raw = str(size or "").strip().lower()
+    if not raw or raw == "auto":
+        return None
+    if raw in {"1k", "2k", "4k"}:
+        return raw
+    if "4096" in raw or raw.startswith("4k"):
+        return "4k"
+    if "2048" in raw or raw.startswith("2k"):
+        return "2k"
+    if "1024" in raw or raw.startswith("1k"):
+        return "1k"
+    return None
+
+
+def _aspect_ratio_from_openai_image_size(size: Any) -> Optional[str]:
+    raw = str(size or "").strip().lower()
+    if "x" not in raw:
+        return None
+    left, right = raw.split("x", 1)
+    try:
+        width = int(left)
+        height = int(right)
+    except ValueError:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    if width == height:
+        return "1:1"
+    return f"{width}:{height}"
+
+
+def _normalize_image_generation_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+    """Map OpenAI image generation requests to the existing async task payload."""
+
+    payload = dict(payload or {})
+    model = str(payload.get("model") or "").strip()
+    public_model = _public_image_model_from_sync_model(model)
+    if not public_model:
+        raise HTTPException(
+            status_code=400,
+            detail=f"model {model or '<empty>'} is not supported by image generation endpoint; use *_sync image models",
+        )
+    payload["model"] = public_model
+
+    if payload.get("n") not in (None, 1):
+        raise HTTPException(status_code=400, detail="/v1/images/generations currently supports n=1")
+
+    size = payload.get("size")
+    resolution = _resolution_from_openai_image_size(size)
+    ratio = _aspect_ratio_from_openai_image_size(size)
+    if ratio and not str(payload.get("aspect_ratio") or payload.get("ratio") or "").strip():
+        payload["aspect_ratio"] = ratio
+        payload["ratio"] = ratio
+    if resolution and not str(payload.get("resolution") or "").strip():
+        payload["resolution"] = resolution
+
+    payload["duration"] = 1
+    task_type_code, normalized = _normalize_video_task_payload(payload, require_image_seconds_4=False)
+    normalized["workflow_kind"] = "image"
+    normalized["duration"] = 1
+    if ratio and not str(normalized.get("ratio") or "").strip():
+        normalized["ratio"] = ratio
+    return task_type_code, normalized
+
+
+def _normalize_video_task_payload(payload: Dict[str, Any], *, require_image_seconds_4: bool = True) -> tuple[str, Dict[str, Any]]:
     """Map OpenAI-compatible public video model names to internal task types."""
 
     payload = dict(payload or {})
     model = str(payload.get("model") or "").strip()
+    if require_image_seconds_4:
+        _require_video_image_seconds_4(payload, model)
     if model in {"seedance-2", "seedance-2-fast"}:
         task_type_code = "dreamina_workflow"
     elif model in {"nana-banana-2"}:
@@ -233,7 +358,7 @@ def _normalize_video_task_payload(payload: Dict[str, Any]) -> tuple[str, Dict[st
     elif model in {"veo-omni-flash-video-edit"}:
         task_type_code = "veo_workflow"
         duration = payload.get("duration")
-        if duration != 8 and duration != 10:
+        if duration != 10:
             raise HTTPException(status_code=400, detail="veo-omni-flash only supports duration=10")
         payload["n_frames"] = 240
         payload["video_model"] = "abra_t2v_10s"
@@ -371,7 +496,7 @@ def _build_newapi_video_create_response(task_id: str, payload: Dict[str, Any]) -
 
     p = dict(payload or {})
     model = str(p.get("model") or "").strip()
-    duration = _public_duration(p)
+    duration = 4 if model in OPENAI_COMPAT_IMAGE_MODEL_SET else _public_duration(p)
     aspect_ratio = _public_aspect_ratio(p)
     resp: Dict[str, Any] = {
         "id": task_id,
@@ -431,6 +556,97 @@ def _extract_public_result_urls(result: Any) -> tuple[Optional[str], Optional[st
     return share_url, None, result_urls
 
 
+def _extract_openai_image_data(result: Any, response_format: Any) -> List[Dict[str, Any]]:
+    if not isinstance(result, dict):
+        return []
+
+    fmt = str(response_format or "url").strip().lower()
+    data: List[Dict[str, Any]] = []
+
+    raw_data = result.get("data")
+    if isinstance(raw_data, list):
+        for item in raw_data:
+            if not isinstance(item, dict):
+                continue
+            entry: Dict[str, Any] = {}
+            b64 = str(item.get("b64_json") or item.get("base64") or "").strip()
+            url = str(item.get("url") or item.get("image_url") or item.get("video_url") or "").strip()
+            if fmt == "b64_json" and b64:
+                entry["b64_json"] = b64
+            elif url:
+                entry["url"] = url
+            elif b64:
+                entry["b64_json"] = b64
+            revised = str(item.get("revised_prompt") or "").strip()
+            if revised:
+                entry["revised_prompt"] = revised
+            if entry:
+                data.append(entry)
+
+    if not data:
+        b64 = str(result.get("b64_json") or result.get("base64") or "").strip()
+        if fmt == "b64_json" and b64:
+            data.append({"b64_json": b64})
+
+    if not data:
+        _video_url, image_url, result_urls = _extract_public_result_urls(result)
+        for url in result_urls or ([image_url] if image_url else []):
+            if url:
+                data.append({"url": url})
+
+    revised_prompt = str(result.get("revised_prompt") or "").strip()
+    if revised_prompt:
+        for entry in data:
+            entry.setdefault("revised_prompt", revised_prompt)
+    return data
+
+
+def _build_openai_image_generation_response(task: Any, payload: Dict[str, Any]) -> Dict[str, Any]:
+    data = _extract_openai_image_data(task.result if isinstance(task.result, dict) else None, payload.get("response_format"))
+    if not data:
+        raise HTTPException(status_code=502, detail="image generation completed without image data")
+    return {
+        "created": int(_timestamp_ms(getattr(task, "completed_at", None) or getattr(task, "created_at", None)) / 1000),
+        "data": data,
+    }
+
+
+async def _wait_for_task_final(task_id: str, timeout_sec: float, poll_interval_sec: float) -> Any:
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+
+    deadline = time.monotonic() + timeout_sec
+    last_task = None
+    while True:
+        task = await db.get_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        last_task = task
+        status = _normalize_newapi_task_status(task.status)
+        if status == "completed":
+            return task
+        if status == "failed":
+            result = task.result if isinstance(task.result, dict) else {}
+            raise HTTPException(
+                status_code=int(result.get("status_code") or 500),
+                detail={
+                    "message": task.error_message or "image generation failed",
+                    "code": str(result.get("error_type") or "task_failed"),
+                },
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise HTTPException(
+                status_code=504,
+                detail={
+                    "message": "image generation timed out",
+                    "code": "task_timeout",
+                    "task_id": getattr(last_task, "task_id", task_id),
+                },
+            )
+        await asyncio.sleep(min(poll_interval_sec, remaining))
+
+
 async def _get_newapi_video_status_response(task_id: str) -> JSONResponse:
     """NewAPI-compatible status response for GET /v1/videos/{task_id}."""
 
@@ -449,8 +665,9 @@ async def _get_newapi_video_status_response(task_id: str) -> JSONResponse:
     result = task.result if isinstance(task.result, dict) else None
     status = _normalize_newapi_task_status(task.status)
     video_url, image_url, result_urls = _extract_public_result_urls(result)
+    original_watermarked_video_url = str((result or {}).get("original_watermarked_video_url") or "").strip() or None
     model = str(payload.get("model") or (result or {}).get("model") or "").strip()
-    duration = _public_duration(payload)
+    duration = 4 if model in OPENAI_COMPAT_IMAGE_MODEL_SET else _public_duration(payload)
     aspect_ratio = _public_aspect_ratio(payload)
 
     resp: Dict[str, Any] = {
@@ -465,7 +682,11 @@ async def _get_newapi_video_status_response(task_id: str) -> JSONResponse:
         "progress": int(task.progress or 0),
         "model": model,
         "video_url": video_url,
-        "metadata": {"result_urls": result_urls},
+        "original_watermarked_video_url": original_watermarked_video_url,
+        "metadata": {
+            "result_urls": result_urls,
+            "original_watermarked_video_url": original_watermarked_video_url,
+        },
         # 冗余标志，便于中转站判断是否终态。
         "success": status == "completed",
         "final": status in {"completed", "failed"},
@@ -724,7 +945,7 @@ async def list_openai_compatible_models(api_key: str = Depends(verify_api_key_he
                 "created": now,
                 "owned_by": "fpbrowser2api",
             }
-            for model in (*OPENAI_COMPAT_VIDEO_MODELS, *OPENAI_COMPAT_NOOP_MODELS)
+            for model in (*OPENAI_COMPAT_VIDEO_MODELS, *OPENAI_COMPAT_SYNC_IMAGE_MODELS, *OPENAI_COMPAT_NOOP_MODELS)
         ],
     }
 
@@ -792,6 +1013,29 @@ async def create_video(
     if not task_id:
         return created
     return _build_newapi_video_create_response(task_id, payload)
+
+
+@router.post("/v1/images/generations")
+async def create_image_generation(
+    api_key: str = Depends(verify_api_key_header),
+    body: CreateImageGenerationRequest = Body(...),
+):
+    task_type_code, payload = _normalize_image_generation_task_payload(body.model_dump(exclude_none=True))
+    created = await _create_task_from_request(
+        CreateTaskRequest(
+            task_type_code=task_type_code,
+            json=payload,
+        )
+    )
+    task_id = str(created.get("task_id") or "").strip()
+    if not task_id:
+        return created
+    task = await _wait_for_task_final(
+        task_id,
+        timeout_sec=_IMAGE_GENERATION_SYNC_TIMEOUT_SEC,
+        poll_interval_sec=_IMAGE_GENERATION_SYNC_POLL_INTERVAL_SEC,
+    )
+    return _build_openai_image_generation_response(task, payload)
 
 
 @router.get("/v1/tasks/{task_id}")

@@ -1,15 +1,166 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GPT Image 2 · 图片异步 API 接入文档</title><link rel="stylesheet" href="doc.css"></head><body><header><a href="../index.html">返回接口目录</a><h1>GPT Image 2 · 图片异步 API 接入文档</h1><p>入口路径使用 <code>/v1/videos</code>，最终结果为图片。</p></header><main><article><h2>文生图</h2><pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>GPT Image 2 · 图片 API 接入文档</title>
+  <link rel="stylesheet" href="doc.css">
+</head>
+<body>
+  <header>
+    <a href="../index.html">返回接口目录</a>
+    <h1>GPT Image 2 · 图片 API 接入文档</h1>
+    <p>本文档将异步接口 <code>/v1/videos</code> 与同步接口 <code>/v1/images/generations</code> 分开说明。</p>
+  </header>
+  <main>
+    <article>
+      <h2>异步接口：/v1/videos</h2>
+      <p>异步接口提交后立即返回任务 ID，需要继续轮询 <code>/v1/videos/{task_id}</code> 获取结果。图片模型通过该接口创建时，<code>seconds</code> 可省略；如果传入则必须写成字符串 <code>"4"</code>，省略时按 <code>"4"</code> 处理。<code>duration</code> 如果传入也必须为 <code>4</code>。</p>
+
+      <h3>异步模型</h3>
+      <table>
+        <tr><th>模型</th><th>说明</th></tr>
+        <tr><td><code>gpt-image2-1k</code></td><td>GPT Image 2，1K 图片任务</td></tr>
+        <tr><td><code>gpt-image2-2k</code></td><td>GPT Image 2，2K 图片任务</td></tr>
+        <tr><td><code>gpt-image2-4k</code></td><td>GPT Image 2，4K 图片任务</td></tr>
+      </table>
+
+      <h3>异步提交示例</h3>
+<pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
   -H "Authorization: Bearer api-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-image-2-2K",
+    "model": "gpt-image2-2k",
     "prompt": "retro neon poster, cyberpunk girl",
+    "seconds": "4",
     "aspect_ratio": "9:16"
-  }'</code></pre><h2>多图生图</h2><pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+  }'</code></pre>
+
+      <h3>异步多图参考示例</h3>
+<pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
   -H "Authorization: Bearer api-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-image-2-2K",
+    "model": "gpt-image2-2k",
     "prompt": "the character from the reference photo, in a futuristic city",
-    "image_urls": ["https://your-cdn.com/ref.jpg"]
-  }'</code></pre><p>完成后读取 <code>image_url</code>、<code>url</code> 或 <code>metadata.result_urls</code>。</p></article></main></body></html>
+    "seconds": "4",
+    "images": ["https://your-cdn.com/ref.jpg"]
+  }'</code></pre>
+
+      <h3>异步请求字段</h3>
+      <table>
+        <tr><th>字段</th><th>说明</th></tr>
+        <tr><td><code>model</code></td><td><code>gpt-image2-1k</code> / <code>gpt-image2-2k</code> / <code>gpt-image2-4k</code></td></tr>
+        <tr><td><code>prompt</code></td><td>生成提示词</td></tr>
+        <tr><td><code>seconds</code></td><td>可选；如果传入，必须使用字符串 <code>"4"</code>；省略时默认按 <code>"4"</code> 处理</td></tr>
+        <tr><td><code>duration</code></td><td>可选；如果传入必须为 <code>4</code></td></tr>
+        <tr><td><code>images</code></td><td>参考图 URL 数组，可用于图生图 / 编辑</td></tr>
+        <tr><td><code>aspect_ratio</code> / <code>ratio</code></td><td>支持 <code>16:9</code> / <code>9:16</code> / <code>3:4</code> / <code>4:3</code> / <code>1:1</code></td></tr>
+      </table>
+
+      <h3>异步查询任务</h3>
+<pre><code>curl https://xxx.xxx.xxx/v1/videos/8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234 \
+  -H "Authorization: Bearer api-key"</code></pre>
+
+      <h3>异步查询返回示例</h3>
+      <p>处理中：</p>
+<pre><code>{
+  "id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "task_id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "object": "video",
+  "created_at": 1714200000000,
+  "status": "processing",
+  "state": "processing",
+  "task_status": "processing",
+  "progress": 45,
+  "model": "gpt-image2-2k",
+  "video_url": null,
+  "metadata": {
+    "result_urls": []
+  },
+  "success": false,
+  "final": false
+}</code></pre>
+      <p>完成：</p>
+<pre><code>{
+  "id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "task_id": "8c7e4b0e6f3b4b0a9e0a0d8f4f0c1234",
+  "object": "video",
+  "created_at": 1714200000000,
+  "status": "completed",
+  "state": "completed",
+  "task_status": "completed",
+  "progress": 100,
+  "model": "gpt-image2-2k",
+  "seconds": "4",
+  "duration": 4,
+  "video_url": null,
+  "image_url": "https://xxx.xxx.xxx/generated/image.jpg",
+  "url": "https://xxx.xxx.xxx/generated/image.jpg",
+  "metadata": {
+    "result_urls": ["https://xxx.xxx.xxx/generated/image.jpg"]
+  },
+  "success": true,
+  "final": true,
+  "completed_at": 1714200180000
+}</code></pre>
+
+      <h3>异步返回字段</h3>
+      <table>
+        <tr><th>字段</th><th>说明</th></tr>
+        <tr><td><code>id</code> / <code>task_id</code></td><td>任务 ID，用于继续查询</td></tr>
+        <tr><td><code>status</code> / <code>state</code> / <code>task_status</code></td><td>任务状态，常见值为 <code>queued</code> / <code>processing</code> / <code>completed</code> / <code>failed</code></td></tr>
+        <tr><td><code>progress</code></td><td>进度，范围 <code>0</code>-<code>100</code></td></tr>
+        <tr><td><code>image_url</code></td><td>图片任务完成后的主结果地址</td></tr>
+        <tr><td><code>url</code></td><td>完成后的通用结果地址，图片任务等同于 <code>image_url</code></td></tr>
+        <tr><td><code>metadata.result_urls</code></td><td>结果地址数组，通常取第一项即可</td></tr>
+        <tr><td><code>success</code></td><td><code>status</code> 为 <code>completed</code> 时为 <code>true</code></td></tr>
+        <tr><td><code>final</code></td><td><code>completed</code> 或 <code>failed</code> 时为 <code>true</code></td></tr>
+      </table>
+
+      <h2>同步接口：/v1/images/generations</h2>
+      <p>同步接口会在服务端等待图片任务完成后再返回，响应格式对齐 OpenAI 图片生成接口：顶层包含 <code>created</code> 和 <code>data</code>。同步接口使用独立模型名，不与异步模型混用。</p>
+
+      <h3>同步模型</h3>
+      <table>
+        <tr><th>模型</th><th>对应异步模型</th></tr>
+        <tr><td><code>gpt-image2-1k_sync</code></td><td><code>gpt-image2-1k</code></td></tr>
+        <tr><td><code>gpt-image2-2k_sync</code></td><td><code>gpt-image2-2k</code></td></tr>
+        <tr><td><code>gpt-image2-4k_sync</code></td><td><code>gpt-image2-4k</code></td></tr>
+      </table>
+
+      <h3>同步请求示例</h3>
+<pre><code>curl -X POST https://xxx.xxx.xxx/v1/images/generations \
+  -H "Authorization: Bearer api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-image2-2k_sync",
+    "prompt": "retro neon poster, cyberpunk girl",
+    "size": "2048x2048",
+    "n": 1
+  }'</code></pre>
+
+      <h3>同步请求字段</h3>
+      <table>
+        <tr><th>字段</th><th>说明</th></tr>
+        <tr><td><code>model</code></td><td>必须使用 <code>*_sync</code> 同步模型名</td></tr>
+        <tr><td><code>prompt</code></td><td>生成提示词</td></tr>
+        <tr><td><code>size</code></td><td>OpenAI 风格尺寸，例如 <code>1024x1024</code> / <code>2048x2048</code> / <code>4096x4096</code>；也可使用 <code>1k</code> / <code>2k</code> / <code>4k</code></td></tr>
+        <tr><td><code>n</code></td><td>当前仅支持 <code>1</code></td></tr>
+        <tr><td><code>images</code> / <code>image</code></td><td>参考图，可用于图生图 / 编辑</td></tr>
+        <tr><td><code>response_format</code></td><td>支持 <code>url</code>；如果后端结果提供 <code>b64_json</code>，也可返回 <code>b64_json</code></td></tr>
+      </table>
+
+      <h3>同步返回示例</h3>
+<pre><code>{
+  "created": 1714200180,
+  "data": [
+    {
+      "url": "https://xxx.xxx.xxx/generated/image.jpg"
+    }
+  ]
+}</code></pre>
+    </article>
+  </main>
+</body>
+</html>

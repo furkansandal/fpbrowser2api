@@ -6,6 +6,7 @@
     <title>项目管理 - Mirr矩阵</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
     <link href="/assets/admin-nav.css" rel="stylesheet" />
+    <link href="/assets/admin-theme.css" rel="stylesheet" />
     <style>
       .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
       .small2 { font-size: 12px; }
@@ -33,6 +34,8 @@
       #accountsModal .form-check-input:not(:checked) {
         background-color: #fff;
       }
+      #accountsModal .account-secret-col { max-width: 120px; width: 120px; }
+      #accountsModal .account-efa-col { max-width: 180px; width: 180px; }
       .proxy-sync-mismatch {
         background-color: #dc3545 !important;
         border-color: #dc3545 !important;
@@ -52,16 +55,14 @@
           <a class="nav-link" data-nav="task_types" href="/admin/task-types">任务类型管理</a>
           <a class="nav-link" data-nav="tasks" href="/admin/tasks">任务列表</a>
           <a class="nav-link" data-nav="test" href="/admin/test">测试</a>
-          <a class="nav-link" data-nav="network_capture" href="/admin/network-capture">网络抓取</a>
-          <a class="nav-link" data-nav="agent" href="/admin/agent">智能体</a>
-          <a class="nav-link" data-nav="paypal" href="/admin/paypal">PayPal管理</a>
           <a class="nav-link" data-nav="image_resources" href="/admin/image-resources">图片资源</a>
-          <a class="nav-link" data-nav="card_keys" href="/admin/card-keys">卡密管理</a>
+          <a class="nav-link" data-nav="totp" href="/admin/totp">2FA生成</a>
           <a class="nav-link" data-nav="logs" href="/admin/logs">请求日志</a>
           <a class="nav-link" data-nav="users" href="/admin/users">用户管理</a>
         </div>
         <a class="btn btn-outline-info btn-sm me-3" href="https://github.com/lakysir/fpbrowser2api" target="_blank" rel="noopener noreferrer">源码部署</a>
-        <span class="navbar-text text-light small me-3">Telegram：<span class="font-monospace">@newtoken_me</span></span>
+        <a class="btn btn-warning btn-sm me-3" href="https://roxybrowser.com/?code=0416Z62A" target="_blank" rel="noopener noreferrer">Roxy浏览器下载</a>
+        <a class="btn btn-danger btn-sm me-3" href="https://rola-ip.co/?code=2911CECA" target="_blank" rel="noopener noreferrer">购买代理IP</a>
         <a class="btn btn-outline-info btn-sm me-3" href="https://www.newtoken.club/" target="_blank" rel="noopener noreferrer">[官方中转站]</a>
         <span class="navbar-text text-light small font-monospace me-3" data-role="navbarClock" title="当前时间"></span>
         <button class="btn btn-outline-light btn-sm" id="btnLogout">退出</button>
@@ -75,7 +76,6 @@
         <button class="btn btn-primary btn-sm" id="btnNewProject">新增项目</button>
         <button class="btn btn-outline-secondary btn-sm" id="btnEditProject">修改项目</button>
         <button class="btn btn-outline-danger btn-sm" id="btnDeleteProject">删除项目</button>
-        <span class="text-muted small ms-auto">提示：窗口信息不可编辑，只能“同步”更新。</span>
       </div>
 
       <div class="d-flex flex-wrap gap-2 mb-3">
@@ -213,6 +213,7 @@
           <div class="modal-header">
             <div class="d-flex align-items-center gap-2">
               <h5 class="modal-title mb-0" id="proxiesModalTitle">代理列表</h5>
+              <a class="btn btn-danger btn-sm fw-semibold" href="https://rola-ip.co/?code=2911CECA" target="_blank" rel="noopener noreferrer">购买代理IP</a>
               <button type="button" class="btn btn-link btn-sm text-muted text-decoration-none px-1 py-0" id="btnProxyDetectChannels" title="查询 RoxyBrowser /proxy/detect_channel">检测渠道</button>
             </div>
             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -232,7 +233,13 @@
               <label class="form-label small mb-1">批量导入/更新代理（格式：IP地址:端口:账号:密码，每行一个）</label>
               <textarea class="form-control form-control-sm mono" id="proxiesImportText" rows="5" placeholder="138.226.69.92:5283:username:password&#10;138.226.60.37:6710:username:password"></textarea>
               <div class="d-flex flex-wrap justify-content-end align-items-center gap-2 mt-2">
-                <span class="text-muted small me-auto" id="proxyImportSummary">按 IP 匹配本地 DB；存在则同步修改指纹浏览器代理并刷新创建时间，不存在则先创建到指纹浏览器；新代理默认协议 SOCKS5。</span>
+                <span class="text-muted small me-auto" id="proxyImportSummary">按 IP 匹配本地 DB；存在则同步修改指纹浏览器代理并刷新创建时间，不存在则先创建到指纹浏览器。</span>
+                <label class="small mb-0">协议</label>
+                <select class="form-select form-select-sm" id="proxyImportProtocol" style="width:auto;">
+                  <option value="SOCKS5">SOCKS5</option>
+                  <option value="HTTP">HTTP</option>
+                  <option value="HTTPS">HTTPS</option>
+                </select>
                 <button class="btn btn-success btn-sm" id="btnImportProxies">批量导入/更新</button>
               </div>
             </div>
@@ -337,45 +344,35 @@
       </div>
     </div>
 
-    <!-- Account Remark Modal -->
-    <div class="modal fade" id="accountRemarkModal" tabindex="-1">
-      <div class="modal-dialog">
+    <!-- Account Edit Modal -->
+    <div class="modal fade" id="accountEditModal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title" id="accountRemarkModalTitle">修改账号备注</h5>
+            <h5 class="modal-title" id="accountEditModalTitle">修改账号</h5>
             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
           </div>
           <div class="modal-body">
-            <div class="text-muted small mb-2" id="accountRemarkMeta">-</div>
-            <label class="form-label">备注</label>
-            <textarea class="form-control form-control-sm" id="accountRemarkInput" rows="4" placeholder="请输入本地备注"></textarea>
-            <div class="form-text">仅更新本地备注，不会同步到指纹浏览器。</div>
+            <div class="text-muted small mb-3" id="accountEditMeta">-</div>
+            <div class="row g-3">
+              <div class="col-md-6">
+                <label class="form-label">密码</label>
+                <input class="form-control form-control-sm mono" id="accountEditPasswordInput" type="text" placeholder="请输入密码" autocomplete="off" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label">EFA</label>
+                <input class="form-control form-control-sm mono" id="accountEditEfaInput" type="text" placeholder="请输入 EFA" autocomplete="off" />
+              </div>
+              <div class="col-12">
+                <label class="form-label">备注</label>
+                <textarea class="form-control form-control-sm" id="accountEditRemarkInput" rows="4" placeholder="请输入本地备注"></textarea>
+              </div>
+            </div>
+            <div class="form-text mt-2">密码和 EFA 会同步到指纹浏览器；备注仅更新本地数据库。</div>
           </div>
           <div class="modal-footer">
             <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-            <button class="btn btn-primary" id="btnSaveAccountRemark">保存</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Account Password Modal -->
-    <div class="modal fade" id="accountPasswordModal" tabindex="-1">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title" id="accountPasswordModalTitle">修改账号密码</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-          </div>
-          <div class="modal-body">
-            <div class="text-muted small mb-2" id="accountPasswordMeta">-</div>
-            <label class="form-label">新密码</label>
-            <input class="form-control form-control-sm mono" id="accountPasswordInput" type="text" placeholder="请输入新密码" autocomplete="off" />
-            <div class="form-text">会先同步更新指纹浏览器账号密码，成功后再更新本地数据库。</div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-            <button class="btn btn-primary" id="btnSaveAccountPassword">保存</button>
+            <button class="btn btn-primary" id="btnSaveAccountEdit">保存</button>
           </div>
         </div>
       </div>
@@ -519,8 +516,7 @@
       const proxyTasksModal = new bootstrap.Modal("#proxyTasksModal");
       const proxyBindingWindowsModal = new bootstrap.Modal("#proxyBindingWindowsModal");
       const accountsModal = new bootstrap.Modal("#accountsModal");
-      const accountRemarkModal = new bootstrap.Modal("#accountRemarkModal");
-      const accountPasswordModal = new bootstrap.Modal("#accountPasswordModal");
+      const accountEditModal = new bootstrap.Modal("#accountEditModal");
       const proxyRemarkModal = new bootstrap.Modal("#proxyRemarkModal");
       const moveWindowModal = new bootstrap.Modal("#moveWindowModal");
       const deleteWindowModal = new bootstrap.Modal("#deleteWindowModal");
@@ -2400,18 +2396,15 @@
       const btnDeleteSelectedAccounts = document.getElementById("btnDeleteSelectedAccounts");
       const accountSelectionSummary = document.getElementById("accountSelectionSummary");
       const accountsImportText = document.getElementById("accountsImportText");
-      const accountRemarkModalTitle = document.getElementById("accountRemarkModalTitle");
-      const accountRemarkMeta = document.getElementById("accountRemarkMeta");
-      const accountRemarkInput = document.getElementById("accountRemarkInput");
-      const btnSaveAccountRemark = document.getElementById("btnSaveAccountRemark");
-      const accountPasswordModalTitle = document.getElementById("accountPasswordModalTitle");
-      const accountPasswordMeta = document.getElementById("accountPasswordMeta");
-      const accountPasswordInput = document.getElementById("accountPasswordInput");
-      const btnSaveAccountPassword = document.getElementById("btnSaveAccountPassword");
+      const accountEditModalTitle = document.getElementById("accountEditModalTitle");
+      const accountEditMeta = document.getElementById("accountEditMeta");
+      const accountEditPasswordInput = document.getElementById("accountEditPasswordInput");
+      const accountEditEfaInput = document.getElementById("accountEditEfaInput");
+      const accountEditRemarkInput = document.getElementById("accountEditRemarkInput");
+      const btnSaveAccountEdit = document.getElementById("btnSaveAccountEdit");
 
       let accountsState = { spacePk: null, accounts: [], loading: false };
-      let accountRemarkState = { spacePk: 0, accountId: 0 };
-      let accountPasswordState = { spacePk: 0, accountId: 0 };
+      let accountEditState = { spacePk: 0, accountId: 0, password: "", efa: "", remark: "", passwordDirty: false, efaDirty: false };
       const accountsCache = new Map(); // spacePk -> accounts[]
       const selectedAccountIds = new Set(); // account_id(string) -> selected
 
@@ -2530,8 +2523,8 @@
                   <th>序号</th>
                   <th>账号</th>
                   <th>网址</th>
-                  <th>密码</th>
-                  <th>EFA</th>
+                  <th class="account-secret-col">密码</th>
+                  <th class="account-efa-col">EFA</th>
                   <th>备注</th>
                   <th>绑定窗口(#)</th>
                   <th>修改</th>
@@ -2560,29 +2553,26 @@
                     <td class="mono">${escapeHtml(`${String(a.id || "-")}.`)}</td>
                     <td class="mono">${escapeHtml(a.platform_username || "-")}</td>
                     <td class="mono">${renderLink(a.platform_url)}</td>
-                    <td class="mono">${escapeHtml(a.platform_password || "-")}</td>
-                    <td class="mono">${escapeHtml(a.platform_efa || "-")}</td>
+                    <td class="mono account-secret-col">
+                      <div class="truncate-1" title="${escapeHtml(a.platform_password || "")}">${escapeHtml(a.platform_password || "-")}</div>
+                    </td>
+                    <td class="mono account-efa-col">
+                      <div class="truncate-1" title="${escapeHtml(a.platform_efa || "")}">${escapeHtml(a.platform_efa || "-")}</div>
+                    </td>
                     <td class="mono" style="max-width: 260px;">
                       <div class="truncate-1" title="${escapeHtml(a.platform_remarks || "")}">${escapeHtml(a.platform_remarks || "-")}</div>
                     </td>
                     <td class="mono">${escapeHtml(a.binding_windows || "-")}</td>
                     <td>
-                      <div class="btn-group btn-group-sm" role="group">
-                        <button class="btn btn-outline-primary" type="button"
-                          data-action="update_account_password"
-                          data-space_pk="${escapeHtml(String(a.space_pk ?? ""))}"
-                          data-account_id="${escapeHtml(String(a.account_id ?? ""))}"
-                          data-platform_username="${escapeHtml(a.platform_username || "")}"
-                          data-platform_url="${escapeHtml(a.platform_url || "")}"
-                          data-platform_password="${escapeHtml(a.platform_password || "")}">密码</button>
-                        <button class="btn btn-outline-secondary" type="button"
-                          data-action="update_account_remark"
-                          data-space_pk="${escapeHtml(String(a.space_pk ?? ""))}"
-                          data-account_id="${escapeHtml(String(a.account_id ?? ""))}"
-                          data-platform_username="${escapeHtml(a.platform_username || "")}"
-                          data-platform_url="${escapeHtml(a.platform_url || "")}"
-                          data-platform_remarks="${escapeHtml(a.platform_remarks || "")}">备注</button>
-                      </div>
+                      <button class="btn btn-outline-primary btn-sm" type="button"
+                        data-action="update_account"
+                        data-space_pk="${escapeHtml(String(a.space_pk ?? ""))}"
+                        data-account_id="${escapeHtml(String(a.account_id ?? ""))}"
+                        data-platform_username="${escapeHtml(a.platform_username || "")}"
+                        data-platform_url="${escapeHtml(a.platform_url || "")}"
+                        data-platform_password="${escapeHtml(a.platform_password || "")}"
+                        data-platform_efa="${escapeHtml(a.platform_efa || "")}"
+                        data-platform_remarks="${escapeHtml(a.platform_remarks || "")}">修改</button>
                     </td>
                     <td>
                       <button class="btn btn-outline-danger btn-sm" type="button"
@@ -2900,30 +2890,13 @@
           if (!r.ok) throw new Error(d.detail || "修改备注失败");
           toast(d.message || "备注已更新", "success");
           await refreshAccounts(accountsState.spacePk);
+          return true;
         } catch (e) {
           toast(e.message || "修改备注失败", "error");
+          return false;
         } finally {
           setBtnBusy(btn, false);
         }
-      }
-
-      function openAccountRemarkModal({ spacePk, accountId, username, url, remark }) {
-        accountRemarkState.spacePk = parseInt(String(spacePk || "0"), 10) || 0;
-        accountRemarkState.accountId = parseInt(String(accountId || "0"), 10) || 0;
-        if (!accountRemarkState.spacePk || !accountRemarkState.accountId) return;
-        if (accountRemarkModalTitle) {
-          accountRemarkModalTitle.textContent = `修改账号备注 · #${accountRemarkState.accountId}`;
-        }
-        if (accountRemarkMeta) {
-          accountRemarkMeta.textContent = `账号：${String(username || "-").trim() || "-"} | URL：${String(url || "-").trim() || "-"}`;
-        }
-        if (accountRemarkInput) {
-          accountRemarkInput.value = String(remark || "");
-          setTimeout(() => {
-            try { accountRemarkInput.focus(); } catch (_e) {}
-          }, 0);
-        }
-        accountRemarkModal.show();
       }
 
       async function updateAccountPassword(spacePk, accountId, password, fromEl) {
@@ -2943,30 +2916,105 @@
           toast(d.message || "密码已更新，并已同步到指纹浏览器", "success");
           await refreshAccounts(accountsState.spacePk);
           fillAccountSelects(spk);
+          return true;
         } catch (e) {
           toast(e.message || "修改密码失败", "error");
+          return false;
         } finally {
           setBtnBusy(btn, false);
         }
       }
 
-      function openAccountPasswordModal({ spacePk, accountId, username, url, password }) {
-        accountPasswordState.spacePk = parseInt(String(spacePk || "0"), 10) || 0;
-        accountPasswordState.accountId = parseInt(String(accountId || "0"), 10) || 0;
-        if (!accountPasswordState.spacePk || !accountPasswordState.accountId) return;
-        if (accountPasswordModalTitle) {
-          accountPasswordModalTitle.textContent = `修改账号密码 · #${accountPasswordState.accountId}`;
+      async function updateAccountEfa(spacePk, accountId, efa, fromEl) {
+        const spk = parseInt(String(spacePk || "0"), 10) || 0;
+        const aid = parseInt(String(accountId || "0"), 10) || 0;
+        if (!spk || !aid) return;
+        const btn = fromEl;
+        try {
+          setBtnBusy(btn, true, { loadingText: "修改中" });
+          const r = await adminFetch(`/api/admin/spaces/${spk}/accounts/${aid}/efa`, {
+            method: "POST",
+            body: JSON.stringify({ platform_efa: String(efa || "").trim() }),
+          });
+          if (!r) return;
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.detail || "修改 EFA 失败");
+          toast(d.message || "EFA 已更新，并已同步到指纹浏览器", "success");
+          await refreshAccounts(accountsState.spacePk);
+          fillAccountSelects(spk);
+          return true;
+        } catch (e) {
+          toast(e.message || "修改 EFA 失败", "error");
+          return false;
+        } finally {
+          setBtnBusy(btn, false);
         }
-        if (accountPasswordMeta) {
-          accountPasswordMeta.textContent = `账号：${String(username || "-").trim() || "-"} | URL：${String(url || "-").trim() || "-"}`;
+      }
+
+      function openAccountEditModal({ spacePk, accountId, username, url, password, efa, remark }) {
+        accountEditState = {
+          spacePk: parseInt(String(spacePk || "0"), 10) || 0,
+          accountId: parseInt(String(accountId || "0"), 10) || 0,
+          password: String(password || ""),
+          efa: String(efa || ""),
+          remark: String(remark || ""),
+          passwordDirty: false,
+          efaDirty: false,
+        };
+        if (!accountEditState.spacePk || !accountEditState.accountId) return;
+        if (accountEditModalTitle) {
+          accountEditModalTitle.textContent = `修改账号 · #${accountEditState.accountId}`;
         }
-        if (accountPasswordInput) {
-          accountPasswordInput.value = String(password || "");
-          setTimeout(() => {
-            try { accountPasswordInput.focus(); accountPasswordInput.select(); } catch (_e) {}
-          }, 0);
+        if (accountEditMeta) {
+          accountEditMeta.textContent = `账号：${String(username || "-").trim() || "-"} | URL：${String(url || "-").trim() || "-"}`;
         }
-        accountPasswordModal.show();
+        if (accountEditPasswordInput) accountEditPasswordInput.value = accountEditState.password;
+        if (accountEditEfaInput) accountEditEfaInput.value = accountEditState.efa;
+        if (accountEditRemarkInput) accountEditRemarkInput.value = accountEditState.remark;
+        setTimeout(() => {
+          try { accountEditRemarkInput?.focus?.(); } catch (_e) {}
+        }, 0);
+        accountEditModal.show();
+      }
+
+      async function saveAccountEdit() {
+        const spacePk = parseInt(String(accountEditState.spacePk || "0"), 10) || 0;
+        const accountId = parseInt(String(accountEditState.accountId || "0"), 10) || 0;
+        if (!spacePk || !accountId) return;
+
+        const password = accountEditPasswordInput ? String(accountEditPasswordInput.value || "") : "";
+        const efa = accountEditEfaInput ? String(accountEditEfaInput.value || "") : "";
+        const remark = accountEditRemarkInput ? String(accountEditRemarkInput.value || "").trim() : "";
+        const oldPassword = String(accountEditState.password || "");
+        const oldEfa = String(accountEditState.efa || "");
+        const oldRemark = String(accountEditState.remark || "").trim();
+        const passwordChanged = !!accountEditState.passwordDirty && password !== oldPassword;
+        const efaChanged = !!accountEditState.efaDirty && efa !== oldEfa;
+        const remarkChanged = remark !== oldRemark;
+
+        if (!passwordChanged && !efaChanged && !remarkChanged) {
+          accountEditModal.hide();
+          return;
+        }
+
+        const btn = btnSaveAccountEdit;
+        try {
+          setBtnBusy(btn, true, { loadingText: "保存中" });
+          if (passwordChanged) {
+            if (await updateAccountPassword(spacePk, accountId, password, null) === false) return;
+          }
+          if (efaChanged) {
+            if (await updateAccountEfa(spacePk, accountId, efa, null) === false) return;
+          }
+          if (remarkChanged) {
+            if (await updateAccountRemark(spacePk, accountId, remark, null) === false) return;
+          }
+          await refreshAccounts(accountsState.spacePk);
+          fillAccountSelects(spacePk);
+          accountEditModal.hide();
+        } finally {
+          setBtnBusy(btn, false);
+        }
       }
 
       if (btnRefreshAccounts) {
@@ -3031,43 +3079,30 @@
             await deleteAccount(spacePk, accountId, bindingCount, btn);
             return;
           }
-          if (action === "update_account_password") {
+          if (action === "update_account") {
             const spacePk = parseInt(btn.getAttribute("data-space_pk") || "", 10);
             const accountId = parseInt(btn.getAttribute("data-account_id") || "", 10);
             const username = btn.getAttribute("data-platform_username") || "";
             const url = btn.getAttribute("data-platform_url") || "";
             const password = btn.getAttribute("data-platform_password") || "";
-            openAccountPasswordModal({ spacePk, accountId, username, url, password });
+            const efa = btn.getAttribute("data-platform_efa") || "";
+            const remark = btn.getAttribute("data-platform_remarks") || "";
+            openAccountEditModal({ spacePk, accountId, username, url, password, efa, remark });
             return;
           }
-          if (action === "update_account_remark") {
-            const spacePk = parseInt(btn.getAttribute("data-space_pk") || "", 10);
-            const accountId = parseInt(btn.getAttribute("data-account_id") || "", 10);
-            const username = btn.getAttribute("data-platform_username") || "";
-            const url = btn.getAttribute("data-platform_url") || "";
-            const remark = btn.getAttribute("data-platform_remarks") || "";
-            openAccountRemarkModal({ spacePk, accountId, username, url, remark });
-          }
         });
       }
-      if (btnSaveAccountRemark) {
-        btnSaveAccountRemark.addEventListener("click", async () => {
-          const spacePk = parseInt(String(accountRemarkState.spacePk || "0"), 10) || 0;
-          const accountId = parseInt(String(accountRemarkState.accountId || "0"), 10) || 0;
-          const remark = accountRemarkInput ? String(accountRemarkInput.value || "").trim() : "";
-          if (!spacePk || !accountId) return;
-          await updateAccountRemark(spacePk, accountId, remark, btnSaveAccountRemark);
-          accountRemarkModal.hide();
+      if (btnSaveAccountEdit) {
+        btnSaveAccountEdit.addEventListener("click", saveAccountEdit);
+      }
+      if (accountEditPasswordInput) {
+        accountEditPasswordInput.addEventListener("input", () => {
+          accountEditState.passwordDirty = true;
         });
       }
-      if (btnSaveAccountPassword) {
-        btnSaveAccountPassword.addEventListener("click", async () => {
-          const spacePk = parseInt(String(accountPasswordState.spacePk || "0"), 10) || 0;
-          const accountId = parseInt(String(accountPasswordState.accountId || "0"), 10) || 0;
-          const password = accountPasswordInput ? String(accountPasswordInput.value || "").trim() : "";
-          if (!spacePk || !accountId) return;
-          await updateAccountPassword(spacePk, accountId, password, btnSaveAccountPassword);
-          accountPasswordModal.hide();
+      if (accountEditEfaInput) {
+        accountEditEfaInput.addEventListener("input", () => {
+          accountEditState.efaDirty = true;
         });
       }
 
@@ -4172,13 +4207,14 @@
         if (!content) return toast("请先粘贴代理数据", "error");
         const lines = content.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
         if (!lines.length) return toast("请先粘贴代理数据", "error");
-        if (!confirm(`确定导入/更新 ${lines.length} 行代理吗？\n\n格式：IP地址:端口:账号:密码\n检测渠道将统一使用 IPRust.io\n新代理默认协议：SOCKS5`)) return;
+        const protocol = String(document.getElementById("proxyImportProtocol")?.value || "SOCKS5").toUpperCase();
+        if (!confirm(`确定导入/更新 ${lines.length} 行代理吗？\n\n格式：IP地址:端口:账号:密码\n检测渠道将统一使用 IPRust.io\n协议：${protocol}`)) return;
         try {
           setProxiesLoading(true);
           if (proxyImportSummary) proxyImportSummary.textContent = `正在导入/更新 ${lines.length} 行代理...`;
           const r = await adminFetch(`/api/admin/spaces/${spk}/proxies/import`, {
             method: "POST",
-            body: JSON.stringify({ content }),
+            body: JSON.stringify({ content, protocol }),
           });
           if (!r) return;
           const d = await r.json();

@@ -21,6 +21,8 @@ import os
 import random
 import shutil
 import subprocess
+import tempfile
+import struct
 from math import gcd
 import re
 import socket
@@ -31,7 +33,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse, urlunparse
 
 import httpx
@@ -154,7 +156,7 @@ def _veo_local_image_min_download_bps() -> float:
 
 def _veo_local_video_min_download_bps() -> float:
     """输入视频本地化下载最低平均速度；<=0 表示不做慢速检测。"""
-    return _veo_float_env("VEO_LOCAL_VIDEO_MIN_DOWNLOAD_BPS", 64 * 1024, min_value=0.0, max_value=1024 * 1024 * 1024)
+    return _veo_float_env("VEO_LOCAL_VIDEO_MIN_DOWNLOAD_BPS", 16 * 1024, min_value=0.0, max_value=1024 * 1024 * 1024)
 
 
 def _veo_local_download_speed_grace_seconds(kind: str) -> float:
@@ -1407,6 +1409,165 @@ async def _veo_external_upscale_2k_to_4k(
     )
     return out
 
+
+def _veo_video_watermark_remove_enabled(payload: Dict[str, Any]) -> bool:
+    p = payload or {}
+    for key in (
+        "remove_watermark",
+        "veo_remove_watermark",
+        "video_remove_watermark",
+        "remove_video_watermark",
+    ):
+        if key in p:
+            return not _veo_payload_flag_is_false(p.get(key))
+    return _veo_env_enabled("VEO_REMOVE_VIDEO_WATERMARK", True)
+
+
+def _veo_video_watermark_remove_required(payload: Dict[str, Any]) -> bool:
+    p = payload or {}
+    for key in ("remove_watermark_required", "veo_remove_watermark_required", "video_remove_watermark_required"):
+        if key in p:
+            return not _veo_payload_flag_is_false(p.get(key))
+    return _veo_env_enabled("VEO_REMOVE_VIDEO_WATERMARK_REQUIRED", False)
+
+
+def _veo_pick_result_video_url(result: Dict[str, Any]) -> str:
+    if not isinstance(result, dict):
+        return ""
+    for key in ("video_url", "share_url", "url", "download_url", "videoUrl"):
+        raw = str(result.get(key) or "").strip()
+        if raw and not raw.startswith("data:") and re.match(r"^https?://", raw, flags=re.I):
+            return raw
+    result_urls = result.get("result_urls")
+    if isinstance(result_urls, (list, tuple)):
+        for item in result_urls:
+            raw = str(item or "").strip()
+            if raw and not raw.startswith("data:") and re.match(r"^https?://", raw, flags=re.I):
+                return raw
+    outputs = result.get("outputs")
+    if isinstance(outputs, (list, tuple)):
+        for item in outputs:
+            raw = _veo_pick_result_video_url(item) if isinstance(item, dict) else str(item or "").strip()
+            if raw and re.match(r"^https?://", raw, flags=re.I):
+                return raw
+    return ""
+
+
+def _veo_set_result_video_url(result: Dict[str, Any], url: str, *, original_url: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(result or {})
+    clean_url = str(url or "").strip()
+    if not clean_url:
+        return out
+    for key in ("video_url", "share_url", "url"):
+        if key in out or key == "video_url":
+            out[key] = clean_url
+    result_urls = out.get("result_urls")
+    if isinstance(result_urls, list) and result_urls:
+        out["result_urls"] = [clean_url if str(item or "").strip() == original_url else item for item in result_urls]
+        if clean_url not in out["result_urls"]:
+            out["result_urls"].insert(0, clean_url)
+    else:
+        out["result_urls"] = [clean_url]
+    out["watermark_removed"] = True
+    out["watermark_removed_url"] = clean_url
+    out["original_watermarked_video_url"] = original_url
+    out["watermark_remove_meta"] = meta
+    return out
+
+
+async def _veo_remove_result_video_watermark(
+    result: Dict[str, Any],
+    *,
+    payload: Dict[str, Any],
+    project_id: str,
+    model_key: str = "",
+    progress_cb: ProgressCB,
+    log_file: Path,
+) -> Dict[str, Any]:
+    if not _veo_video_watermark_remove_enabled(payload):
+        return result
+    if not isinstance(result, dict):
+        return result
+    source_url = _veo_pick_result_video_url(result)
+    if not source_url:
+        return result
+
+    required = _veo_video_watermark_remove_required(payload)
+    download_url = _veo_rewrite_flow_content_url(source_url)
+    service_url = str(
+        payload.get("video_watermark_service_url")
+        or os.environ.get("VEO_REMOVE_VIDEO_WATERMARK_SERVICE_URL")
+        or "http://192.168.1.14:8791/process-video"
+    ).strip()
+    process_timeout = _veo_float_env(
+        "VEO_REMOVE_VIDEO_WATERMARK_PROCESS_TIMEOUT_SECONDS",
+        1800.0,
+        min_value=30.0,
+        max_value=7200.0,
+    )
+    append_log(
+        log_file,
+        "[veo][video-wm] start "
+        f"source={safe_trim(source_url, 260)!r} "
+        f"download={safe_trim(download_url, 260)!r} "
+        f"service={safe_trim(service_url, 260)!r} process_timeout={process_timeout}s",
+    )
+    try:
+        await progress_cb(98, {"stage": "remove_video_watermark_remote_start", "video_url": download_url, "service_url": service_url})
+    except Exception:
+        pass
+    try:
+        try:
+            await progress_cb(99, {"stage": "remove_video_watermark_remote_process", "service_url": service_url})
+        except Exception:
+            pass
+        form_data = {
+            "video_url": download_url,
+        }
+        watermark_type = str(payload.get("watermark_type") or payload.get("video_watermark_type") or "").strip()
+        if watermark_type:
+            form_data["watermark_type"] = watermark_type
+        async with httpx.AsyncClient(timeout=httpx.Timeout(process_timeout, connect=20.0, read=process_timeout)) as client:
+            response = await client.post(service_url, data=form_data)
+            response.raise_for_status()
+            service_result = response.json()
+        if not isinstance(service_result, dict) or service_result.get("ok") is False:
+            raise RuntimeError(f"watermark service returned failure: {safe_trim(str(service_result), 500)}")
+        clean_url = str(
+            service_result.get("video_url")
+            or service_result.get("watermark_removed_url")
+            or ""
+        ).strip()
+        if not clean_url:
+            raise RuntimeError(f"watermark service returned no video_url: {safe_trim(str(service_result), 500)}")
+        meta = service_result.get("meta") if isinstance(service_result.get("meta"), dict) else {}
+        meta = dict(meta)
+        meta["service_url"] = service_url
+        meta["service_response"] = {k: v for k, v in service_result.items() if k != "meta"}
+        append_log(
+            log_file,
+            "[veo][video-wm] remote processed "
+            f"frames={meta.get('frame_count') or meta.get('frames')} "
+            f"roi={meta.get('roi')} margin=({meta.get('roi_margin_right')},{meta.get('roi_margin_bottom')}) "
+            f"kind={meta.get('watermark_kind')} score={meta.get('detection_score')}",
+        )
+        if service_result.get("storage_object_key"):
+            meta["storage_object_key"] = service_result.get("storage_object_key")
+        append_log(log_file, f"[veo][video-wm] removed source={safe_trim(source_url, 220)!r} -> {safe_trim(clean_url, 260)!r}")
+        try:
+            await progress_cb(100, {"stage": "remove_video_watermark_done", "video_url": clean_url})
+        except Exception:
+            pass
+        return _veo_set_result_video_url(result, clean_url, original_url=source_url, meta=meta)
+    except Exception as e:
+        append_log(log_file, f"[veo][video-wm] remove failed: {e}")
+        if required:
+            raise NonPenalizedTaskError(f"VEO 视频去水印失败：{safe_trim(str(e), 500)}", status_code=502) from e
+        out = dict(result)
+        out["watermark_removed"] = False
+        out["watermark_remove_error"] = safe_trim(str(e), 500)
+        return out
+
 # ---------------------------------------------------------------------------
 # 辅助函数
 # ---------------------------------------------------------------------------
@@ -1428,6 +1589,7 @@ _VEO_CONTENT_VIOLATION_REASON_MESSAGES = {
     "MEDIA_GENERATION_STATUS_FAILED": "视频生成失败，内容审核未通过[MEDIA_GENERATION_STATUS_FAILED]",
     # flow/uploadImage 在参考图疑似包含未成年人/儿童照片时返回此 reason。
     "PUBLIC_ERROR_MINOR_UPLOAD": "上传参考图失败，参考图中包含未成年人/儿童照片[PUBLIC_ERROR_MINOR_UPLOAD]",
+    "PUBLIC_ERROR_SEXUAL": "上传参考图失败，参考图包含性相关违规内容[PUBLIC_ERROR_SEXUAL]",
     "PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED": "上传参考图失败，参考图中包含公众人物/知名人物[PUBLIC_ERROR_PROMINENT_PEOPLE_FILTER_FAILED]",
     "VEO_REFERENCE_VIDEO_DURATION_VIOLATION": "参考视频时长不能超过30秒",
 }
@@ -3622,7 +3784,7 @@ class VeoAccessKeepaliveRefresher:
 
         double_token_ok = self._schedule_worker(
             row,
-            delay_seconds=token_refresh_delay_seconds+30.0,
+            delay_seconds=token_refresh_delay_seconds+60.0,
             job_kind="double_token_refresh",
         )
 
@@ -5602,6 +5764,7 @@ async def veo_workflow(
                     session_token=ext_session_token,
                     short_access_token=ext_at,
                     short_expires=ext_exp,
+                    force_fetch=True,
                 )
                 ext_session_token = str((ext_tok_info or {}).get("session_token") or (ext_tok_info or {}).get("access_token") or "").strip() or None
                 ext_exp = str((ext_tok_info or {}).get("expires") or "").strip() or None
@@ -5623,6 +5786,28 @@ async def veo_workflow(
             ext_session_token = None
             ext_at = None
         if not ext_session_token:
+            async def _refresh_missing_session_token_in_background() -> None:
+                try:
+                    append_log(log_file, "[veo][extension] missing session_token; trigger background extension token fetch once")
+                    await veo_fetch_access_tokens_via_extension(
+                        sess=sess,
+                        target_url=project_page,
+                        space_id=space_id,
+                        window_key=window_key,
+                        connect_wait_seconds=float(payload.get("extension_connect_wait_seconds") or 8.0),
+                        token_timeout_seconds=float(payload.get("extension_token_timeout_seconds") or 45.0),
+                        log_file=log_file,
+                        access_token=ext_session_token,
+                        access_expires=ext_exp,
+                        session_token=ext_session_token,
+                        short_access_token=ext_at,
+                        short_expires=ext_exp,
+                        force_fetch=True,
+                    )
+                except Exception as retry_e:
+                    append_log(log_file, f"[veo][extension] background fetch session_token via extension failed: {retry_e}")
+
+            asyncio.create_task(_refresh_missing_session_token_in_background())
             raise NonPenalizedTaskError(
                 "missing usable session_token: please ensure the fingerprint window is logged in",
                 status_code=401,
@@ -5936,7 +6121,6 @@ async def veo_workflow(
                 progress_cb=progress_cb,
                 log_file=log_file,
             )
-        _ext_result = _veo_rewrite_flow_content_urls(_ext_result)
         return _ext_result, project_page
 
     raise NonPenalizedTaskError(

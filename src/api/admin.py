@@ -159,6 +159,220 @@ async def _ensure_manual_open_has_target_page(pw_ctx: Any, target_url: str) -> s
     return str(getattr(page, "url", "") or target)
 
 
+async def _open_manual_target_pages(pw_ctx: Any, target_url: str, target_urls: Optional[List[str]] = None) -> List[str]:
+    targets = [str(x or "").strip() for x in (target_urls or []) if str(x or "").strip()]
+    if not targets:
+        single_url = await _ensure_manual_open_has_target_page(pw_ctx, target_url)
+        return [single_url] if single_url else []
+
+    await pw_ctx.ensure_open(args=[], force_open=False, headless=bool(getattr(pw_ctx, "headless", False)), require_page=False)
+    ctx = getattr(pw_ctx, "context", None)
+    if ctx is None:
+        raise RuntimeError("CDP 已连接但未获取到浏览器上下文")
+
+    page_urls: List[str] = []
+    last_opened_page = None
+    for target in targets:
+        page = await ctx.new_page()
+        await page.goto(target, wait_until="domcontentloaded", timeout=60_000)
+        last_opened_page = page
+        page_urls.append(str(getattr(page, "url", "") or target))
+    try:
+        if last_opened_page is not None and not bool(getattr(last_opened_page, "is_closed", lambda: False)()):
+            await last_opened_page.bring_to_front()
+    except Exception:
+        pass
+    return page_urls
+
+
+async def _admin_find_google_2fa_change_page(pw_ctx: Any, *, timeout_ms: int = 1200) -> Any:
+    ctx = getattr(pw_ctx, "context", None)
+    if ctx is None:
+        return None
+    change_text = re.compile(r"^\s*Change\s+authenticator\s+app\s*$", re.I)
+    for page in reversed(list(getattr(ctx, "pages", []) or [])):
+        try:
+            if bool(getattr(page, "is_closed", lambda: False)()):
+                continue
+            loc = page.get_by_text(change_text).first
+            if await loc.is_visible(timeout=timeout_ms):
+                try:
+                    await page.bring_to_front()
+                except Exception:
+                    pass
+                return page
+        except Exception:
+            continue
+    return None
+
+
+async def _admin_google_2fa_change_authenticator_until_code_input(pw_ctx: Any, page: Any = None) -> Dict[str, Any]:
+    """Open Google's change-authenticator flow, extract the setup key, and fill the TOTP code.
+
+    Stops before clicking Verify so the admin can inspect the page.
+    """
+    from ..services.sora_plus_register_executor import _generate_totp_code  # type: ignore
+
+    ctx = getattr(pw_ctx, "context", None)
+    if ctx is None:
+        raise RuntimeError("CDP 已连接但未获取到浏览器上下文")
+
+    pages = [
+        p
+        for p in list(getattr(ctx, "pages", []) or [])
+        if not bool(getattr(p, "is_closed", lambda: False)())
+    ]
+    if not pages:
+        raise RuntimeError("未找到可操作的浏览器页面")
+
+    if page is None:
+        for p in reversed(pages):
+            try:
+                if "myaccount.google.com" in str(getattr(p, "url", "") or ""):
+                    page = p
+                    break
+            except Exception:
+                continue
+        page = page or pages[-1]
+    try:
+        await page.bring_to_front()
+    except Exception:
+        pass
+
+    change_text = re.compile(r"^\s*Change\s+authenticator\s+app\s*$", re.I)
+    change_candidates = (
+        page.get_by_text(change_text).first,
+        page.locator('button, a, [role="button"], [role="link"]').filter(has_text=change_text).first,
+    )
+    change_clicked = False
+    last_err: Optional[Exception] = None
+    for loc in change_candidates:
+        try:
+            await loc.wait_for(state="visible", timeout=20_000)
+            await loc.click(timeout=10_000)
+            change_clicked = True
+            break
+        except Exception as e:
+            last_err = e
+            continue
+    if not change_clicked:
+        raise RuntimeError(f"未找到或无法点击 Change authenticator app，last_err={last_err}")
+
+    setup_hint = page.get_by_text(re.compile(r"In\s+the\s+Google\s+Authenticator\s+app\s+tap\s+the", re.I)).first
+    try:
+        await setup_hint.wait_for(state="visible", timeout=30_000)
+    except Exception as e:
+        raise RuntimeError(f"点击 Change authenticator app 后未出现设置说明：{e}") from e
+
+    cant_scan_text = re.compile(r"Can['’]t\s+scan\s+it\?", re.I)
+    cant_scan_candidates = (
+        page.get_by_text(cant_scan_text).first,
+        page.locator('button, a, [role="button"], [role="link"]').filter(has_text=cant_scan_text).first,
+    )
+    cant_scan_clicked = False
+    last_err = None
+    for loc in cant_scan_candidates:
+        try:
+            await loc.wait_for(state="visible", timeout=30_000)
+            await loc.click(timeout=10_000)
+            cant_scan_clicked = True
+            break
+        except Exception as e:
+            last_err = e
+            continue
+    if not cant_scan_clicked:
+        raise RuntimeError(f"未找到或无法点击 Can't scan it?，last_err={last_err}")
+
+    setup_key_pattern = re.compile(r"\b(?:[a-z2-7]{4}\s+){7}[a-z2-7]{4}\b", re.I)
+    setup_key_with_spaces = ""
+    for _ in range(30):
+        try:
+            body_text = str(await page.locator("body").inner_text(timeout=2_000) or "")
+            m = setup_key_pattern.search(body_text)
+            if m:
+                setup_key_with_spaces = m.group(0)
+                break
+        except Exception:
+            pass
+        await asyncio.sleep(1)
+    if not setup_key_with_spaces:
+        raise RuntimeError("未在页面中找到 32 位 Google Authenticator setup key")
+
+    setup_key = re.sub(r"\s+", "", setup_key_with_spaces).upper()
+    totp_code = ""
+
+    next_text = re.compile(r"^\s*Next\s*$", re.I)
+    next_candidates = (
+        page.get_by_text(next_text).last,
+        page.locator('button, [role="button"]').filter(has_text=next_text).last,
+    )
+    next_clicked = False
+    last_err = None
+    for loc in next_candidates:
+        try:
+            await loc.wait_for(state="visible", timeout=15_000)
+            await loc.click(timeout=10_000)
+            next_clicked = True
+            break
+        except Exception as e:
+            last_err = e
+            continue
+    if not next_clicked:
+        raise RuntimeError(f"未找到或无法点击 Next，last_err={last_err}")
+
+    code_input_selectors = (
+        'input[aria-label*="Enter Code"]',
+        'input[placeholder*="Enter Code"]',
+        'input[autocomplete="one-time-code"]',
+        'input[type="tel"]',
+        'input[type="text"]',
+    )
+    code_filled = False
+    last_err = None
+    for sel in code_input_selectors:
+        try:
+            loc = page.locator(sel).first
+            await loc.wait_for(state="visible", timeout=20_000)
+            totp_code = _generate_totp_code(setup_key)
+            if not re.fullmatch(r"\d{6}", str(totp_code or "")):
+                raise RuntimeError(f"生成的 TOTP code 非 6 位数字：{totp_code!r}")
+            await loc.fill(totp_code, timeout=10_000)
+            code_filled = True
+            break
+        except Exception as e:
+            last_err = e
+            continue
+    if not code_filled:
+        raise RuntimeError(f"未找到或无法填写 Enter Code 输入框，last_err={last_err}")
+
+    verify_text = re.compile(r"^\s*Verify\s*$", re.I)
+    verify_candidates = (
+        page.get_by_text(verify_text).last,
+        page.locator('button, [role="button"]').filter(has_text=verify_text).last,
+    )
+    verify_clicked = False
+    last_err = None
+    for loc in verify_candidates:
+        try:
+            await loc.wait_for(state="visible", timeout=15_000)
+            await loc.click(timeout=10_000)
+            verify_clicked = True
+            break
+        except Exception as e:
+            last_err = e
+            continue
+    if not verify_clicked:
+        raise RuntimeError(f"未找到或无法点击 Verify，last_err={last_err}")
+
+    return {
+        "setup_key": setup_key,
+        "setup_key_with_spaces": setup_key_with_spaces,
+        "totp_code": totp_code,
+        "filled": True,
+        "verify_clicked": True,
+    }
+
+
 def _remote_response_code(rsp: Optional[Dict[str, Any]], default: int = -1) -> int:
     """安全解析指纹浏览器 API 的 code。
 
@@ -589,6 +803,85 @@ class UpdateAccountPasswordRequest(BaseModel):
     platform_password: Optional[str] = Field(default="", description="????")
 
 
+class UpdateAccountEfaRequest(BaseModel):
+    platform_efa: Optional[str] = Field(default="", description="EFA")
+
+
+async def _update_space_account_efa_impl(space_pk: int, account_id: int, efa: str) -> Dict[str, Any]:
+    """Sync account EFA to the fingerprint browser first, then update the local DB."""
+    if not db:
+        raise HTTPException(status_code=500, detail="db not initialized")
+    if int(account_id) <= 0:
+        raise HTTPException(status_code=400, detail="invalid account_id")
+
+    space = await db.get_space(space_pk)
+    if not space:
+        raise HTTPException(status_code=404, detail="space not found")
+    browser = await db.get_browser(space.browser_id)
+
+    row = await db.get_platform_account(space_pk=space_pk, account_id=int(account_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="account not found")
+
+    account_space_pk = int(getattr(row, "space_pk", 0) or space_pk)
+    if account_space_pk != int(space_pk):
+        target_space = await db.get_space(account_space_pk)
+        if target_space:
+            target_browser = await db.get_browser(target_space.browser_id)
+            if target_browser:
+                space = target_space
+                browser = target_browser
+
+    if not browser:
+        browser = await db.get_browser(space.browser_id)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+
+    clean_efa = str(efa or "").strip()
+    remote_payload = {
+        "id": int(account_id),
+        "platformUrl": str(getattr(row, "platform_url", "") or "").strip(),
+        "platformUserName": str(getattr(row, "platform_username", "") or "").strip(),
+        "platformPassword": str(getattr(row, "platform_password", "") or "").strip(),
+        "platformEfa": clean_efa,
+        "platformRemarks": str(getattr(row, "platform_remarks", "") or "").strip(),
+    }
+
+    client = FPBrowserClient()
+    try:
+        rsp = await client.update_account(
+            vendor=browser.vendor,
+            base_url=browser.lan_addr,
+            access_key=browser.access_key,
+            space_id=space.space_id,
+            account=remote_payload,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=f"远端账号 EFA 更新失败，本地未更新：{str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"远端账号 EFA 更新失败，本地未更新：{str(e)}")
+    if _remote_response_code(rsp) != 0:
+        msg = _remote_response_msg(rsp) or "账号 EFA 更新失败"
+        raise HTTPException(status_code=400, detail=f"远端账号 EFA 更新失败，本地未更新：{msg}")
+
+    affected = await db.update_platform_account_efa(
+        space_pk=account_space_pk,
+        account_id=int(account_id),
+        efa=clean_efa,
+    )
+    if affected <= 0:
+        raise HTTPException(status_code=404, detail="account not found")
+    return {
+        "success": True,
+        "message": "EFA 已更新，并已同步到指纹浏览器",
+        "affected": int(affected),
+        "remote_updated": True,
+        "space_pk": int(account_space_pk),
+        "account_id": int(account_id),
+        "platform_efa": clean_efa,
+    }
+
+
 class SyncAccountsRequest(BaseModel):
     keep_local_deleted: bool = Field(default=True, description="同步时保留本地已删除账号状态")
 
@@ -672,7 +965,7 @@ class PaypalWindowActionRequest(BaseModel):
 
 class AIAgentChatMessage(BaseModel):
     role: str = Field(default="user", max_length=32)
-    content: str = Field(default="", max_length=200000)
+    content: str = Field(default="", max_length=2000000)
 
     @field_validator("role")
     @classmethod
@@ -747,7 +1040,10 @@ def _parse_batch_account_lines(content: str) -> List[Dict[str, Any]]:
     return out
 
 
-PROXY_IMPORT_CHECK_CHANNEL = "IPRust.io"
+# RoxyBrowser /proxy/create 的 checkChannel 要传渠道的 value(URL),不是 label。
+# 之前填 "IPRust.io"(label)→ RoxyBrowser 报 "checkChannel参数值错误"(code 101),导致任何导入都建不成。
+# value 来自 /proxy/detect_channel(IPRust.io 对应 http://iprust.io/ip.json)。
+PROXY_IMPORT_CHECK_CHANNEL = "http://iprust.io/ip.json"
 PROXY_IMPORT_DEFAULT_PROTOCOL = "SOCKS5"
 
 
@@ -2500,6 +2796,17 @@ async def update_space_account_password(
     return {"success": True, "message": "密码已更新，并已同步到指纹浏览器", "affected": int(affected), "remote_updated": True}
 
 
+@router.post("/api/admin/spaces/{space_pk}/accounts/{account_id}/efa")
+async def update_space_account_efa(
+    space_pk: int,
+    account_id: int,
+    req: UpdateAccountEfaRequest,
+    token: str = Depends(verify_admin_token),
+):
+    """修改平台账号 EFA：先同步到指纹浏览器，成功后更新本地 DB。"""
+    return await _update_space_account_efa_impl(space_pk, account_id, str(req.platform_efa or ""))
+
+
 def _build_mdf_proxy_info(proxy_id: int) -> Dict[str, Any]:
     """按本地窗口 proxy_id 构造 /browser/mdf 的 proxyInfo。"""
     pid = int(proxy_id or 0)
@@ -3795,7 +4102,7 @@ async def get_ai_agent_config(token: str = Depends(verify_admin_token)):
         "base_url_locked": True,
         "models": models,
         "default_model": default_model,
-        # 不把服务端/数据库 key 明文下发到前端；请求里不传 api_key 时后端会自动使用数据库/环境变量配置。
+        "api_key": db_key,
         "has_default_api_key": bool(db_key or env_or_file_key),
         "has_db_api_key": bool(db_key),
         "db_updated_at": row.get("updated_at"),
@@ -3818,6 +4125,7 @@ async def update_ai_agent_config(req: AIAgentConfigUpdateRequest, token: str = D
     return {
         "success": True,
         "default_model": normalize_ai_agent_model(row.get("default_model")),
+        "api_key": str(row.get("api_key") or "").strip(),
         "has_db_api_key": bool(str(row.get("api_key") or "").strip()),
         "updated_at": row.get("updated_at"),
     }
@@ -4315,6 +4623,63 @@ async def refresh_mapping_subscription_info(mapping_id: int, headless: bool = Fa
             "subscription_end": None,
         }
 
+    if handler == "dreamina_workflow":
+        default_target_url = str(ctx_row.get("default_target_url") or "").strip()
+        target_url = default_target_url or "https://dreamina.capcut.com/ai-tool/video/generate"
+        try:
+            from ..services.jimeng_task_executor import get_or_create_dreamina_session  # type: ignore
+            from ..services.browser_extension_interaction import ensure_extension_connected_via_window, submit_extension_task  # type: ignore
+
+            dreamina_ctx = get_or_create_dreamina_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
+            dreamina_ctx.browser_headless = headless
+            client = await ensure_extension_connected_via_window(
+                sess=dreamina_ctx,
+                target_url=target_url,
+                space_id=space_id,
+                window_key=window_key,
+                wait_seconds=10.0,
+                log_file=getattr(dreamina_ctx, "_log_file", None),
+                auto_triger_connection=True,
+            )
+            if client is None:
+                raise RuntimeError(f"浏览器插件未连接：window_key={window_key!r}")
+
+            async def _noop_progress(_progress: int, _data: Dict[str, Any]) -> None:
+                return None
+
+            info = await submit_extension_task(
+                space_id=space_id,
+                window_key=window_key,
+                provider="dreamina",
+                payload={"action": "fetch_sessionid", "target_page": target_url, "workflow_kind": "fetch_sessionid"},
+                progress_cb=_noop_progress,
+                timeout_seconds=60.0,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"刷新会员信息失败：{e}")
+
+        access_token = str((info or {}).get("access_token") or "").strip() or None
+        expires = str((info or {}).get("expires") or "").strip() or None
+        store_country_code = str((info or {}).get("store_country_code") or "").strip().lower() or None
+        if not access_token:
+            raise HTTPException(status_code=400, detail="刷新会员信息失败：Cookies 中缺少 sessionid")
+        await db.update_task_type_window(
+            mapping_id=mapping_id,
+            sora_access_token=access_token,
+            sora_access_expires=expires,
+            sora_plan_title=store_country_code,
+        )
+        return {
+            "success": True,
+            "mapping_id": mapping_id,
+            "plan_title": store_country_code,
+            "subscription_end": None,
+            "access_token": access_token,
+            "expires": expires,
+            "store_country_code": store_country_code,
+            "source": "window_cookie",
+        }
+
     if handler == "gpt_workflow":
         from ..services.gpt_task_executor import DEFAULT_GPT_TARGET, gpt_fetch_membership_in_window  # type: ignore
 
@@ -4673,16 +5038,24 @@ async def convert_sora_session_token_to_access_token(
 
         access_token = str((info or {}).get("access_token") or "").strip() or None
         expires = str((info or {}).get("expires") or "").strip() or None
+        store_country_code = str((info or {}).get("store_country_code") or "").strip().lower() or None
         if not access_token:
             raise HTTPException(status_code=400, detail="自动获取失败：Cookies 中缺少 sessionid")
 
-        await db.update_task_type_window(mapping_id=mapping_id, sora_access_token=access_token, sora_access_expires=expires)
+        await db.update_task_type_window(
+            mapping_id=mapping_id,
+            sora_access_token=access_token,
+            sora_access_expires=expires,
+            sora_plan_title=store_country_code,
+        )
         return {
             "success": True,
             "mapping_id": mapping_id,
             "access_token": access_token,
             "expires": expires,
             "cookie_name": "sessionid",
+            "plan_title": store_country_code,
+            "store_country_code": store_country_code,
             "source": "window_cookie",
         }
 
@@ -4763,6 +5136,8 @@ async def manual_open_mapping_window(
     browser_only: bool = Query(
         False, description="仅打开/唤起指纹浏览器窗口；不连接 CDP、不判断/打开目标页"
     ),
+    target_url: Optional[str] = Query(None, description="Optional URL to navigate after opening the window"),
+    target_urls: Optional[List[str]] = Query(None, description="Optional URLs to open in separate pages after opening the window"),
     token: str = Depends(verify_admin_token),
 ):
     """手动打开指纹浏览器窗口并禁止空闲自动关闭。
@@ -4786,8 +5161,14 @@ async def manual_open_mapping_window(
 
     handler = str(ctx_row.get("create_task_handler") or "").strip().lower()
     effective_pure = _effective_browser_pure_mode(ctx_row, pure_mode)
-    target_url = "" if browser_only else _admin_manual_open_target_url(ctx_row)
+    target_urls = [str(x or "").strip() for x in (target_urls or []) if str(x or "").strip()]
+    target_url = "" if browser_only else (str(target_url or "").strip() or _admin_manual_open_target_url(ctx_row))
+    if browser_only:
+        target_urls = []
+    elif target_urls:
+        target_url = target_urls[0]
     final_url = ""
+    page_urls: List[str] = []
 
     if handler == "veo_workflow":
         from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
@@ -4810,7 +5191,8 @@ async def manual_open_mapping_window(
                 pure_mode=effective_pure,
             )
             if not browser_only:
-                final_url = await _ensure_manual_open_has_target_page(veo_ctx.pw_ctx, target_url)
+                page_urls = await _open_manual_target_pages(veo_ctx.pw_ctx, target_url, target_urls)
+                final_url = page_urls[0] if page_urls else ""
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
         finally:
@@ -4837,7 +5219,8 @@ async def manual_open_mapping_window(
                 pure_mode=effective_pure,
             )
             if not browser_only:
-                final_url = await _ensure_manual_open_has_target_page(grok_ctx.pw_ctx, target_url)
+                page_urls = await _open_manual_target_pages(grok_ctx.pw_ctx, target_url, target_urls)
+                final_url = page_urls[0] if page_urls else ""
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
         finally:
@@ -4868,7 +5251,8 @@ async def manual_open_mapping_window(
                 pure_mode=effective_pure,
             )
             if not browser_only:
-                final_url = await _ensure_manual_open_has_target_page(sora_ctx.pw_ctx, target_url)
+                page_urls = await _open_manual_target_pages(sora_ctx.pw_ctx, target_url, target_urls)
+                final_url = page_urls[0] if page_urls else ""
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"打开窗口失败：{e}")
         finally:
@@ -4877,7 +5261,7 @@ async def manual_open_mapping_window(
             except Exception:
                 pass
 
-    return {"success": True, "mapping_id": mapping_id, "idle_close_disabled": True, "target_url": target_url, "page_url": final_url}
+    return {"success": True, "mapping_id": mapping_id, "idle_close_disabled": True, "target_url": target_url, "target_urls": target_urls, "page_url": final_url, "page_urls": page_urls}
 
 
 def _build_transfer_lines_from_mapping(ctx_row: Dict[str, Any], req: TransferDataToExtensionRequest) -> List[str]:
@@ -5015,6 +5399,7 @@ async def manual_close_mapping_window(mapping_id: int, token: str = Depends(veri
 async def clear_mapping_browser_cache(
     mapping_id: int,
     local_only: bool = Query(False, description="为 True 时仅清空本地缓存，不调用 clear_server_cache"),
+    local_partial: bool = Query(True, description="为 True 时 clear_local_cache 请求体添加 type=partial"),
     token: str = Depends(verify_admin_token),
 ):
     """调用 Roxy 清空窗口本地缓存；默认再清空窗口服务器缓存（dirId=window_key）。local_only=true 时仅本地。"""
@@ -5044,6 +5429,7 @@ async def clear_mapping_browser_cache(
             base_url=base_url,
             access_key=access_key,
             window_keys=keys,
+            partial=local_partial,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=f"清空本地缓存失败：{e}")
@@ -5060,6 +5446,7 @@ async def clear_mapping_browser_cache(
             "mapping_id": mapping_id,
             "local": local_rsp,
             "local_only": True,
+            "local_partial": bool(local_partial),
         }
 
     try:
@@ -5100,6 +5487,7 @@ async def clear_mapping_browser_cache(
         "local": local_rsp,
         "server": server_rsp,
         "local_only": False,
+        "local_partial": bool(local_partial),
         "cleared_mapping_session_fields": True,
     }
 
@@ -5142,132 +5530,96 @@ async def open_account_mapping_window(
         return
 
     try:
-        if handler == "sora_gen_video":
-            from ..services.sora_plus_register_executor import sora_plus_register
-
-            result = await sora_plus_register(
-                {"headless": headless, "pure_mode": effective_pure},
-                _progress_cb,
-                db=db,
-                window_pk=window_pk,
-                browser_vendor=vendor,
-                browser_base_url=base_url,
-                browser_access_key=access_key,
-                space_id=space_id,
-                window_key=window_key,
-                timeout_seconds=timeout_seconds,
-            )
-        elif handler == "veo_workflow":
-            from ..services.veo_workflow_executor import veo_admin_unified_open_or_connect
+        supported_handlers = {"sora_gen_video", "veo_workflow", "dreamina_workflow", "grok_workflow", "gpt_workflow"}
+        if handler in supported_handlers:
+            from ..services.veo_workflow_executor import get_or_create_veo_session, veo_admin_unified_open_or_connect
 
             try:
                 gl_ms = int(float(ctx_row.get("task_timeout_seconds") or 120) * 1000)
             except Exception:
                 gl_ms = 120_000
             gl_ms = max(45_000, min(gl_ms, 240_000))
-            result = await veo_admin_unified_open_or_connect(
-                _progress_cb,
-                db=db,
-                window_pk=window_pk,
-                browser_vendor=vendor,
-                browser_base_url=base_url,
-                browser_access_key=access_key,
+            google_2fa_url = "https://myaccount.google.com/two-step-verification/authenticator?utm_source=google-account&utm_medium=web&utm_campaign=authenticator-screen&continue=https://myaccount.google.com/security"
+            veo_ctx = get_or_create_veo_session(
+                vendor=vendor,
+                base_url=base_url,
+                access_key=access_key,
                 space_id=space_id,
                 window_key=window_key,
-                timeout_seconds=timeout_seconds,
-                headless=headless,
-                default_target_url=str(ctx_row.get("default_target_url") or "").strip(),
-                google_login_timeout_ms=gl_ms,
-                pure_mode=effective_pure,
             )
-        elif handler == "dreamina_workflow":
-            from ..services.jimeng_task_executor import dreamina_admin_open_connect_page  # type: ignore
-
+            veo_ctx.browser_headless = headless
+            veo_ctx.browser_pure_mode = effective_pure
+            veo_ctx.idle_close_disabled = True
             try:
-                gl_ms = int(float(ctx_row.get("task_timeout_seconds") or 120) * 1000)
-            except Exception:
-                gl_ms = 120_000
-            gl_ms = max(45_000, min(gl_ms, 240_000))
-            result = await dreamina_admin_open_connect_page(
-                _progress_cb,
-                db=db,
-                window_pk=window_pk,
-                browser_vendor=vendor,
-                browser_base_url=base_url,
-                browser_access_key=access_key,
-                space_id=space_id,
-                window_key=window_key,
-                headless=headless,
-                default_target_url=str(ctx_row.get("default_target_url") or "").strip(),
-                pure_mode=effective_pure,
-                timeout_seconds=timeout_seconds,
-                google_login_timeout_ms=gl_ms,
-            )
-        elif handler == "grok_workflow":
-            from ..services.grok_workflow_executor import grok_admin_open_connect_page  # type: ignore
-
-            result = await grok_admin_open_connect_page(
-                browser_vendor=vendor,
-                browser_base_url=base_url,
-                browser_access_key=access_key,
-                space_id=space_id,
-                window_key=window_key,
-                headless=headless,
-                default_target_url=str(ctx_row.get("default_target_url") or "").strip(),
-                pure_mode=effective_pure,
-                timeout_seconds=timeout_seconds,
-            )
-        elif handler == "gpt_workflow":
-            from ..services.gpt_task_executor import DEFAULT_GPT_TARGET  # type: ignore
-            from ..services.veo_workflow_executor import get_or_create_veo_session  # type: ignore
-            from ..services.browser_extension_interaction import ensure_extension_connected_via_window, submit_extension_task  # type: ignore
-
-            target_url = str(ctx_row.get("default_target_url") or "").strip() or DEFAULT_GPT_TARGET
-            google_account = str(ctx_row.get("platform_username") or ctx_row.get("platform_account") or "").strip()
-            google_password = str(ctx_row.get("platform_password") or "")
-            google_efa = str(ctx_row.get("platform_efa") or "").strip()
-            if not google_account or not google_password:
-                raise HTTPException(status_code=400, detail="未找到google账号")
-            gpt_ctx = get_or_create_veo_session(vendor=vendor, base_url=base_url, access_key=access_key, space_id=space_id, window_key=window_key)
-            gpt_ctx.browser_headless = headless
-            gpt_ctx.browser_pure_mode = effective_pure
-            gpt_ctx.idle_close_disabled = True
-            try:
-                gpt_ctx._cancel_idle_close()
+                veo_ctx._cancel_idle_close()
             except Exception:
                 pass
-            client = await ensure_extension_connected_via_window(
-                sess=gpt_ctx,
-                target_url="https://accounts.google.com/",
-                space_id=space_id,
-                window_key=window_key,
-                wait_seconds=10.0,
-                log_file=getattr(gpt_ctx, "_log_file", None),
-                force_open=False,
-                headless=headless,
-                pure_mode=effective_pure,
-                auto_triger_connection=True,
-                google_account=google_account,
-                google_password=google_password,
-                google_efa=google_efa,
-            )
-            if client is None:
-                raise RuntimeError(f"?????????window_key={window_key!r}")
-            result = await submit_extension_task(
-                space_id=space_id,
-                window_key=window_key,
-                provider="gpt",
-                payload={
-                    "action": "google_auto_login",
-                    "workflow_kind": "google_auto_login",
-                    "target_url": target_url,
-                    "google_account": google_account,
-                    "google_password": google_password,
-                    "google_efa": google_efa,
-                },
-                progress_cb=_progress_cb,
-                timeout_seconds=timeout_seconds,
-            )
+            google_2fa_page = None
+            close_google_2fa_page_after_success = False
+            try:
+                await veo_ctx.ensure_open(args=[], force_open=False, headless=headless, pure_mode=effective_pure)
+                google_2fa_page = await _admin_find_google_2fa_change_page(veo_ctx.pw_ctx)
+                if google_2fa_page is None:
+                    close_google_2fa_page_after_success = True
+                    await _open_manual_target_pages(veo_ctx.pw_ctx, google_2fa_url, [google_2fa_url])
+                    try:
+                        ctx = getattr(veo_ctx.pw_ctx, "context", None)
+                        open_pages = [
+                            p
+                            for p in list(getattr(ctx, "pages", []) or [])
+                            if not bool(getattr(p, "is_closed", lambda: False)())
+                        ]
+                        google_2fa_page = open_pages[-1] if open_pages else None
+                    except Exception:
+                        google_2fa_page = None
+            except Exception as e:
+                raise RuntimeError(f"打开 Google 2FA 页面失败：{e}") from e
+            if google_2fa_page is None:
+                result = await veo_admin_unified_open_or_connect(
+                    _progress_cb,
+                    db=db,
+                    window_pk=window_pk,
+                    browser_vendor=vendor,
+                    browser_base_url=base_url,
+                    browser_access_key=access_key,
+                    space_id=space_id,
+                    window_key=window_key,
+                    timeout_seconds=timeout_seconds,
+                    headless=headless,
+                    default_target_url=google_2fa_url,
+                    google_login_timeout_ms=gl_ms,
+                    pure_mode=effective_pure,
+                )
+                await asyncio.sleep(10)
+                google_2fa_page = await _admin_find_google_2fa_change_page(veo_ctx.pw_ctx, timeout_ms=5000)
+            else:
+                result = {
+                    "ok": True,
+                    "branch": "reuse_existing_google_2fa_page",
+                    "target_url": str(getattr(google_2fa_page, "url", "") or google_2fa_url),
+                }
+            efa_change_result = await _admin_google_2fa_change_authenticator_until_code_input(veo_ctx.pw_ctx, google_2fa_page)
+            new_efa = str((efa_change_result or {}).get("setup_key") or "").strip()
+            account_space_pk = int(ctx_row.get("space_pk") or 0)
+            account_id = int(ctx_row.get("platform_account_id") or 0)
+            if not account_space_pk or account_id <= 0:
+                raise RuntimeError("Google Authenticator 已验证，但绑定缺少 space_pk/platform_account_id，无法同步新 EFA")
+            efa_update_result = await _update_space_account_efa_impl(account_space_pk, account_id, new_efa)
+            efa_change_result["efa_update"] = efa_update_result
+            remark_affected = await db.update_window_remark(space_pk=account_space_pk, window_key=window_key, remark="0")
+            efa_change_result["window_remark_update"] = {
+                "affected": remark_affected,
+                "window_remark": "0",
+            }
+            if close_google_2fa_page_after_success and google_2fa_page is not None:
+                try:
+                    await google_2fa_page.close()
+                    efa_change_result["closed_google_2fa_tab"] = True
+                except Exception as e:
+                    efa_change_result["closed_google_2fa_tab"] = False
+                    efa_change_result["close_google_2fa_tab_error"] = str(e)
+            if isinstance(result, dict):
+                result["efa_change"] = efa_change_result
         else:
             raise HTTPException(
                 status_code=400,

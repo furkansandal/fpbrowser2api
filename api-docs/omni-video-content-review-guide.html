@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>视频生成 · 内容审查避坑指南</title>
+  <link rel="stylesheet" href="doc.css">
+</head>
+<body>
+  <header>
+    <a href="../index.html">返回接口目录</a>
+    <h1>视频生成 · 内容审查避坑指南</h1>
+    <p>适用于 omni-fast / veo 系列视频模型。本指南帮你避开 Google 内容审查，提高出片成功率。</p>
+    <nav class="doc-nav" aria-label="相关模型文档">
+      <a href="veo-3-1.html">VEO 3.1</a>
+      <a href="veo-omni-flash.html">VEO Omni Flash</a>
+      <a href="veo-omni-flash-video-edit.html">Video Edit</a>
+    </nav>
+  </header>
+  <main>
+    <article>
+      <section class="guide-lead">
+        <p>如果遇到 <strong>This request didn't pass content review</strong>，这通常是确定性拒绝。继续重试或换账号不会解决问题，需要改提示词或更换参考图。</p>
+      </section>
+
+      <h2>一、先看这条报错</h2>
+      <p>如果你收到：</p>
+<pre><code>This request didn't pass content review (e.g. an identifiable real person, unsafe content, or protected IP). Retrying or switching accounts won't help. Try a non-photorealistic style, a non-identifiable or fictional subject (back/side/distant view), or rights-cleared content, then resubmit.</code></pre>
+      <p>中文意思：<strong>请求没通过内容审查</strong>（可能涉及：可识别真人 / 不安全内容 / 受保护版权）。</p>
+      <p><strong>关键：</strong>这是 Google 的<strong>确定性拒绝</strong>。</p>
+      <ul>
+        <li>重试没用</li>
+        <li>换账号没用</li>
+        <li><strong>只能改提示词或换参考图</strong></li>
+      </ul>
+      <p>别浪费时间反复提交同一个请求，立刻按下面的方法改。</p>
+
+      <h2>二、六大高危雷区（命中必拒）</h2>
+      <h3>1. 可识别的真人 / 名人，最常踩</h3>
+      <ul>
+        <li>写实真人正脸、特写人像</li>
+        <li>任何<strong>名人、明星、政治人物、网红</strong>的名字或长相</li>
+        <li>上传<strong>真人照片</strong>当参考图（尤其正脸特写）</li>
+        <li><code>photorealistic</code>（超写实）+ 真人 = 高危组合</li>
+      </ul>
+
+      <h3>2. 未成年人（零容忍）</h3>
+      <ul>
+        <li>画面出现<strong>儿童 / 婴儿 / 青少年 / 学生</strong></li>
+        <li>哪怕本意无害，未成年人 + 任何危险或暧昧情境都会被拒</li>
+      </ul>
+
+      <h3>3. 性 / 裸露 / 暧昧</h3>
+      <ul>
+        <li>裸露、性感、情色、内衣、暧昧亲密、床戏、诱惑等</li>
+      </ul>
+
+      <h3>4. 暴力 / 危险 / 血腥</h3>
+      <ul>
+        <li>暴力、血腥、武器、打斗、战争、爆炸</li>
+        <li>自杀、自残、事故、伤口、尸体、虐待</li>
+        <li>危险动作 / 危险情境</li>
+      </ul>
+
+      <h3>5. 受保护版权（IP / 品牌）</h3>
+      <ul>
+        <li><strong>动漫游戏角色：</strong>皮卡丘、马里奥、奥特曼、米老鼠、艾莎、蜘蛛侠、哆啦A梦、火影等</li>
+        <li><strong>品牌商标：</strong>Nike、苹果、迪士尼、可口可乐、LV 等任何 logo</li>
+        <li><strong>影视形象：</strong>具名电影/电视剧角色、海报、截图</li>
+      </ul>
+
+      <h3>6. 其他敏感主题（容易被忽略）</h3>
+      <ul>
+        <li><strong>医疗病症：</strong>皮肤病、痤疮、湿疹、体味、伤口、疾病，这类真实案例容易踩过</li>
+        <li><strong>政治 / 宗教：</strong>领导人、宗教冲突、种族议题</li>
+        <li><strong>毒品 / 违法：</strong>毒品、吸毒等</li>
+        <li><strong>仇恨 / 歧视</strong>言论</li>
+      </ul>
+
+      <h2>三、安全改写对照表</h2>
+      <table>
+        <tr><th>高危写法</th><th>安全改写</th></tr>
+        <tr><td>超写实真人 + 正脸特写</td><td>改 <code>3D动画 / 插画 / 卡通</code> 风格；或侧面、背面、远景</td></tr>
+        <tr><td>上传真人照片生成</td><td>不要正脸；用远景/侧背面；或转 <code>动漫/卡通</code> 风格</td></tr>
+        <tr><td>奥特曼大战怪兽</td><td>“一个通用的巨人英雄”（不点名具体 IP）</td></tr>
+        <tr><td>情侣处理痤疮/皮肤病</td><td>去掉病名，改成中性的“情侣约会”</td></tr>
+        <tr><td>小孩在火边玩耍</td><td>改成“成年人”，或移除危险元素</td></tr>
+        <tr><td>含名人姓名</td><td>改成“一位虚构的人物”</td></tr>
+      </table>
+
+      <h2>四、万能保险公式</h2>
+      <p>不确定会不会被拒时，套这个组合最稳：</p>
+<pre><code>非写实风格(non-photorealistic / 3D cartoon / illustration / anime)
++ 虚构、不具名的主体(fictional, non-identifiable subject)
++ 脸部不可识别(背面 / 侧面 / 远景)
++ 内容健康、无版权</code></pre>
+
+      <h2>五、快速自检清单（提交前过一遍）</h2>
+      <ul class="checklist">
+        <li>有没有<strong>真人/名人</strong>？转非写实风格或脸部不可识别</li>
+        <li>有没有<strong>儿童/青少年</strong>？移除或改成年人</li>
+        <li>有没有<strong>性/暴力/危险/血腥</strong>？删除相关描述</li>
+        <li>有没有<strong>动漫角色/品牌/影视 IP</strong>？换原创通用描述</li>
+        <li>有没有<strong>病症/政治/毒品</strong>等敏感词？中性化</li>
+        <li>参考图是不是<strong>真人照片</strong>？换非写实图或远景</li>
+      </ul>
+      <p>全部过关再提交，一次成功率最高。</p>
+
+      <p class="guide-note">遇到“temporarily unavailable / 暂时不可用”属于另一类（后端临时波动），可稍后重试；而“didn't pass content review / 没通过内容审查”是确定性拒绝，必须改内容。</p>
+    </article>
+  </main>
+</body>
+</html>

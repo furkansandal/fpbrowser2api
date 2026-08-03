@@ -190,6 +190,21 @@ def _dreamina_header_loc_for_country(country_code: Any) -> str:
     return code;
 
 
+def dreamina_store_country_code_from_mapping(row: Any) -> str:
+    """Return Dreamina store-country-code saved with membership info."""
+    if row is None:
+        return ""
+    if isinstance(row, dict):
+        value = row.get("store_country_code")
+        if value is None:
+            value = row.get("sora_plan_title")
+    else:
+        value = getattr(row, "store_country_code", None)
+        if value is None:
+            value = getattr(row, "sora_plan_title", None)
+    return _one_str(value).lower()
+
+
 def _dreamina_parse_proxy_url(proxy_url: str) -> Dict[str, str]:
     raw = _one_str(proxy_url)
     if not raw:
@@ -2841,17 +2856,7 @@ async def refresh_dreamina_balance(
         return None
 
     d_target = str(picked.default_target_url or "").strip() or "https://dreamina.capcut.com/"
-    country_code = ""
-    try:
-        country_code = await db.get_window_bound_ip_last_country(window_pk=int(getattr(picked, "window_pk", 0) or 0))
-        if not country_code:
-            country_code = await db.get_window_bound_ip_last_country(
-                space_id=str(getattr(picked, "space_id", "") or ""),
-                window_key=str(getattr(picked, "window_key", "") or ""),
-            )
-    except Exception as e:
-        logger.warning("refresh_dreamina_balance read country failed: mapping=%s err=%s", picked.mapping_id, e)
-        country_code = ""
+    country_code = dreamina_store_country_code_from_mapping(picked)
     d_info: Optional[Dict[str, Any]] = None
     try:
         d_info = await dreamina_fetch_credits_in_window(
@@ -2935,6 +2940,7 @@ class _DreaminaRefreshWindow:
     space_id: str
     sora_access_token: Optional[str] = None
     sora_access_expires: Optional[str] = None
+    sora_plan_title: Optional[str] = None
     default_target_url: Optional[str] = None
     window_ip: Optional[str] = None
     headless: bool = False
@@ -3015,6 +3021,7 @@ class DreaminaBalanceRefresher:
             space_id=str(row.get("space_id") or ""),
             sora_access_token=(str(row.get("sora_access_token") or "").strip() or None),
             sora_access_expires=(str(row.get("sora_access_expires") or "").strip() or None),
+            sora_plan_title=(str(row.get("sora_plan_title") or "").strip() or None),
             default_target_url=row.get("default_target_url"),
             window_ip=row.get("window_ip"),
             headless=_dreamina_db_bool(row.get("headless"), default=False),
@@ -3906,9 +3913,17 @@ async def dreamina_workflow(
     db: Any = None,
     task_type_window_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    del task_type_window_id, access_expires
+    del access_expires
 
     p = dict(payload or {})
+    if not dreamina_store_country_code_from_mapping(p) and db is not None and task_type_window_id:
+        try:
+            row = await db.get_task_type_window_context(int(task_type_window_id))
+            store_country_code = dreamina_store_country_code_from_mapping(row)
+            if store_country_code:
+                p["store_country_code"] = store_country_code
+        except Exception as e:
+            append_log(MONITOR_LOG_FILE, f"[dreamina-store-country] read mapping membership country failed: {safe_trim(str(e), 200)}")
     is_image_upload_save = _dreamina_is_single_image_upload_payload(p)
     # 兼容上游历史拼写错误：有些 payload 写成了 ``promp``。
     # 归一化后必须显式写回 p，避免交给浏览器插件的 ext_payload 里缺少 prompt。
@@ -4005,12 +4020,7 @@ async def dreamina_workflow(
     # /assets/veo_image_cache 后换成插件可从局域网访问的地址；余额刷新仍保留
     # refresh_quota__dreamina_credits 的 Python 读取方式。
     if True:
-        store_country_code = ""
-        try:
-            if db is not None:
-                store_country_code = await db.get_window_bound_ip_last_country(space_id=space_id, window_key=window_key)
-        except Exception as e:
-            append_log(log_file, f"[dreamina-store-country] read bound ip last_country failed: {safe_trim(str(e), 200)}")
+        store_country_code = dreamina_store_country_code_from_mapping(p)
         if store_country_code:
             sess.store_country_code = store_country_code
         resolution_for_ext = _dreamina_resolve_resolution(p)
@@ -4077,222 +4087,3 @@ async def dreamina_workflow(
             progress_cb=progress_cb,
             timeout_seconds=max(60.0, float(timeout_seconds or 600.0)) + 120.0,
         )
-    async with sess.create_lock:
-        try:
-            sess.idle_close_disabled = True
-            sess._cancel_idle_close()
-            async with sess._bring_drafts_lock:
-                await sess.ensure_open(args=sess.browser_open_args, force_open=sess.browser_force_open, headless=headless, acquire_bring_lock=False, pure_mode=pure_mode)
-                await sess._bring_target_page_to_front(refresh_target=False, drafts_url=target_page, close_other_pages=False, acquire_bring_lock=False)
-                # --- reload 后深度拟人行为：给 reCAPTCHA 足够的行为信号积累 ---
-                try:
-                    _ha_page = getattr(sess.pw_ctx, "page", None)
-                    if _ha_page and not _ha_page.is_closed():
-                        from .window_human_activity import perform_deep_human_activity
-                        _deep_result = await perform_deep_human_activity(
-                            _ha_page, min_seconds=5.0, max_seconds=15.0,
-                        )
-                        append_log(log_file, f"[veo] post-inject deep human activity done: {_deep_result}")
-                except Exception as _e_post_ha:
-                    append_log(log_file, f"[veo] post-inject human activity error: {_e_post_ha}")
-
-                page = sess.pw_ctx.page
-                if page is None:
-                    raise NonPenalizedTaskError("Dreamina 页面未打开", status_code=502)
-
-                store_country_code = ""
-                try:
-                    if db is not None:
-                        store_country_code = await db.get_window_bound_ip_last_country(space_id=space_id, window_key=window_key)
-                except Exception as e:
-                    append_log(log_file, f"[dreamina-store-country] read bound ip last_country failed: {safe_trim(str(e), 200)}")
-                sess.store_country_code = store_country_code
-                await progress_cb(2, {
-                    "stage": "store_country_code",
-                    "store_country_code": store_country_code,
-                })
-
-                if is_image_upload_save:
-                    try:
-                        return await _dreamina_single_image_upload_save_workflow(
-                            page,
-                            p,
-                            target_page=target_page,
-                            log_file=log_file,
-                            db=db,
-                            progress_cb=progress_cb,
-                            api_base=sess.dreamina_api_base,
-                            imagex_base=sess.dreamina_imagex_base,
-                            header_loc=sess.dreamina_header_loc,
-                        )
-                    finally:
-                        try:
-                            await sess.pw_ctx.disconnect_playwright_only()
-                        except Exception:
-                            pass
-
-                model_key = _dreamina_resolve_model(p, has_image=bool(image_refs))
-                resolution = _dreamina_resolve_resolution(p)
-                width, height = _dreamina_resolution_size(resolution, aspect_ratio)
-
-                external_prompt_ref_count = len(prompt_image_tokens)
-                upload_uris: List[str] = []
-                if image_refs:
-                    append_log(log_file, f"[dreamina-api-upload] external_refs={safe_trim(_compact_json(image_refs), 1200)}")
-                    if external_prompt_ref_count and external_prompt_ref_count != len(image_refs):
-                        raise NonPenalizedTaskError('多余的那几个非数字"@xxx"找不到', status_code=422, content_violation=True)
-                    await progress_cb(3, {"stage": "upload_images_api", "count": len(image_refs)})
-                    upload_uris = await _dreamina_upload_image_refs_via_page_fetch(
-                        page,
-                        image_refs,
-                        log_file=log_file,
-                        api_base=sess.dreamina_api_base,
-                        imagex_base=sess.dreamina_imagex_base,
-                        header_loc=sess.dreamina_header_loc,
-                    )
-                    if len(upload_uris) < len(image_refs):
-                        raise NonPenalizedTaskError("Dreamina reference image upload failed: returned too few URIs", status_code=502)
-                    for ref, uri in zip(image_refs, upload_uris):
-                        ref["uri"] = uri
-                    await progress_cb(5, {"stage": "upload_images_done", "count": len(upload_uris)})
-
-                has_prompt_refs = bool(prompt_subject_refs or prompt_image_tokens)
-                if has_prompt_refs:
-                    prompt_for_body, material_list, meta_list, material_kinds = _dreamina_bind_prompt_materials(
-                        prompt_parts,
-                        prompt_subject_refs,
-                        image_refs,
-                    )
-                    append_log(log_file, f"[dreamina-material-bind] kinds={material_kinds} prompt={safe_trim(prompt_for_body, 300)} material_count={len(material_list)} meta_count={len(meta_list)}")
-                elif image_refs:
-                    prompt_for_body = prompt
-                    material_list = []
-                    for ref in image_refs:
-                        uri = _one_str(ref.get("uri"))
-                        material_list.append({
-                            "type": "", "id": str(uuid.uuid4()), "material_type": "image",
-                            "image_info": {**_dreamina_image_info(uri, int(ref.get("width") or width), int(ref.get("height") or height)), "aigc_image": {"type": "", "id": str(uuid.uuid4())}, "title": "test"},
-                        })
-                    meta_list = _dreamina_build_meta_list(prompt, len(image_refs))
-                else:
-                    prompt_for_body = prompt
-                    material_list = []
-                    meta_list = []
-
-                api_mode = "first_last_frames" if reference_mode == "First and last frames" else "omni_reference"
-                submit_id, generate_body, function_mode = _dreamina_seedance_generate_body(
-                    prompt=prompt_for_body,
-                    model=model_key,
-                    ratio=aspect_ratio,
-                    resolution=resolution,
-                    duration=duration,
-                    mode=api_mode,
-                    material_list=material_list,
-                    meta_list=meta_list,
-                    width=width,
-                    height=height,
-                )
-                generate_url = (
-                    f"{sess.dreamina_api_base}{_DREAMINA_GENERATE_PATH}"
-                    f"?aid={_DREAMINA_AID}&device_platform=web&region={_DREAMINA_REGION}"
-                    f"&da_version={_DREAMINA_DRAFT_VERSION}&os=windows&web_component_open_flag=0&commerce_with_input_video=1"
-                    f"&web_version={_DREAMINA_WEB_VERSION}&aigc_features={_DREAMINA_AIGC_FEATURES}"
-                )
-                await progress_cb(6, {"stage": "submit_api", "model_name": model_key, "function_mode": function_mode})
-                try:
-                    submit_tx = await page_fetch_json(
-                        page,
-                        url=generate_url,
-                        method="POST",
-                        headers=build_jimeng_page_fetch_headers_body(
-                            uri=_DREAMINA_GENERATE_PATH,
-                            appid=_DREAMINA_AID,
-                            appvr=_APPVR,
-                            pf="7",
-                            lan="en",
-                            loc=sess.dreamina_header_loc,
-                            headers={"Referer": target_page},
-                        ),
-                        json_data=generate_body,
-                        log_file=log_file,
-                    )
-                    await sess._bring_target_page_to_front(refresh_target=True, drafts_url=target_page, close_other_pages=False, acquire_bring_lock=False)
-                finally:
-                    try:
-                        await sess.pw_ctx.disconnect_playwright_only()
-                    except Exception:
-                        pass
-            submit_obj = submit_tx.get("_json") or {}
-            append_log(log_file, f"[dreamina-api-submit] response={safe_trim(_compact_json(submit_obj), 1000)}")
-            if _one_str(submit_obj.get("ret")) not in ("", "0"):
-                raise NonPenalizedTaskError(f"Dreamina submit failed: {safe_trim(_compact_json(submit_obj), 600)}", status_code=502)
-            aigc = ((submit_obj.get("data") or {}) if isinstance(submit_obj, dict) else {}).get("aigc_data") or submit_obj.get("aigc_data") or {}
-            task_id = _one_str(aigc.get("history_record_id") or (aigc.get("task") or {}).get("task_id"))
-            if not task_id:
-                raise NonPenalizedTaskError("Dreamina submit succeeded but history_record_id was not found", status_code=502)
-            submit_result = {"response": submit_obj, "submit_id": submit_id, "task_id": task_id, "generate_id": aigc.get("generate_id")}
-
-            task_id = _one_str(submit_result.get("task_id"))
-            submit_id = _one_str(submit_result.get("submit_id"))
-            await progress_cb(10, {"stage": "submitted", "task_id": task_id, "submit_id": submit_id})
-            
-            await asyncio.sleep(30);
-            poll_result = await _dreamina_poll_history_until_result(
-                sess,
-                submit_id=submit_id,
-                task_id=task_id,
-                target_page=target_page,
-                log_file=log_file,
-                progress_cb=progress_cb,
-                max_wait_seconds=max(60.0, float(timeout_seconds or 600.0)),
-            )
-            video_url = _one_str(poll_result.get("video_url"))
-            thumb_url = _one_str(poll_result.get("thumb_url"))
-            elapsed_ms = int(max(0.0, (time.time() - started) * 1000.0))
-            #任务成功了，删除掉历史记录，使用task_id
-            try:
-                await progress_cb(98, {"stage": "remove_history", "task_id": task_id, "submit_id": submit_id})
-                await _dreamina_remove_history_record(
-                    sess,
-                    task_id=task_id,
-                    target_page=target_page,
-                    log_file=log_file,
-                )
-            except Exception as e:
-                append_log(log_file, f"[dreamina-remove-history] failed task_id={task_id}: {e}")
-            await progress_cb(100, {
-                "stage": "done",
-                "task_id": task_id,
-                "submit_id": submit_id,
-                "elapsed_ms": elapsed_ms,
-                "video_url": video_url,
-                "thumb_url": thumb_url,
-            })
-
-            return {
-                "type": "dreamina_workflow_video",
-                "message": "Dreamina 视频完成",
-                "share_url": video_url,
-                "thumb_url": thumb_url,
-                "video_type": "i2v" if (image_refs or prompt_subject_refs) else "t2v",
-                "model_key": model_key,
-                "workflow_kind": "video",
-                "video_mode": video_mode,
-                "function_mode": "first_last_frames" if reference_mode == "First and last frames" else "omni_reference",
-                "reference_mode": reference_mode,
-                "model_name": ui_model,
-                "aspect_ratio": aspect_ratio,
-                "duration": duration,
-                "task_id": task_id,
-                "history_id": task_id,
-                "submit_id": submit_id,
-                "generate_id": submit_result.get("generate_id"),
-                "image_count": len(image_refs) + len(prompt_subject_refs),
-                "item_id": poll_result.get("item_id"),
-                "elapsed_ms": elapsed_ms,
-            }
-        finally:
-            try:
-                await sess.disconnect_playwright_under_bring_lock()
-            except Exception:
-                pass

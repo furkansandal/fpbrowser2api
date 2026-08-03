@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>video-standard-720p · 视频异步 API 接入文档</title>
+  <style>
+    :root{--text:#162033;--muted:#64748b;--line:#e6edf5;--brand:#635bff;--code:#0f172a}*{box-sizing:border-box}body{margin:0;font:14px/1.7 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",Arial,sans-serif;background:#f6f8fc;color:var(--text)}header{padding:28px 24px;background:#fff;border-bottom:1px solid var(--line)}main{max-width:1080px;margin:0 auto;padding:28px 24px 56px}.back{color:var(--brand);text-decoration:none;font-weight:700}h1{font-size:30px;margin:14px 0 8px}h2{font-size:22px;margin:30px 0 12px}.muted{color:var(--muted)}.pill{display:inline-flex;margin:8px 8px 0 0;padding:6px 10px;border-radius:999px;background:#eef2ff;color:#3730a3;font-weight:700;font-size:12px}article{background:#fff;border:1px solid var(--line);border-radius:18px;padding:30px;box-shadow:0 16px 44px rgba(15,23,42,.08)}pre{background:var(--code);color:#e2e8f0;border-radius:14px;overflow:auto;padding:18px}code:not(pre code){background:#eef2ff;color:#3730a3;padding:2px 6px;border-radius:7px}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--line);border-radius:14px;overflow:hidden}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f8fafc}tr:last-child td{border-bottom:0}
+  </style>
+</head>
+<body>
+  <header><a class="back" href="../index.html">返回接口目录</a><h1>video-standard-720p · 视频异步 API 接入文档</h1><p class="muted">标准版 720p 视频生成接口。公开模型名为 <code>video-standard-720p</code>，当前仅支持 15 秒任务，支持文生视频及图片、视频、音频参考素材。</p><span class="pill">POST /v1/videos</span><span class="pill">GET /v1/videos/{task_id}</span><span class="pill">Model: video-standard-720p</span></header>
+  <main><article>
+    <h2>1. 创建视频任务</h2>
+<pre><code>curl -X POST https://xxx.xxx.xxx/v1/videos \
+  -H "Authorization: Bearer sk-xxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "video-standard-720p",
+    "prompt": "cinematic product commercial, smooth camera movement, high quality 720p",
+    "duration": 15,
+    "aspect_ratio": "16:9",
+    "image_url": "https://your-cdn.com/main-reference.jpg",
+    "extra_images": [
+      "https://your-cdn.com/ref-1.jpg",
+      "https://your-cdn.com/ref-2.jpg"
+    ],
+    "extra_videos": [
+      "https://your-cdn.com/ref-video.mp4"
+    ],
+    "extra_audios": [
+      "https://your-cdn.com/ref-audio.mp3"
+    ]
+  }'</code></pre>
+
+    <h2>2. 轮询进度</h2>
+<pre><code>curl https://xxx.xxx.xxx/v1/videos/task_385412 \
+  -H "Authorization: Bearer sk-xxxxxxxx"</code></pre>
+
+    <h2>3. 创建返回示例</h2>
+<pre><code>{
+  "id": "task_385412",
+  "task_id": "task_385412",
+  "object": "video.generation",
+  "model": "video-standard-720p",
+  "status": "in_progress",
+  "progress": 0,
+  "created_at": 1714200000,
+  "duration": "15s"
+}</code></pre>
+
+    <h2>4. 查询返回示例</h2>
+    <p class="muted">状态查询返回值参考 <code>handleGetVideoStandard720pStatusRequest</code> 的 <code>newapi</code> 模式。</p>
+    <p>处理中：</p>
+<pre><code>{
+  "id": "task_385412",
+  "task_id": "task_385412",
+  "object": "video.generation",
+  "model": "video-standard-720p",
+  "status": "in_progress",
+  "progress": 45,
+  "created_at": 1714200000,
+  "finished_at": null,
+  "video_url": null,
+  "url": null,
+  "error": null,
+  "output": [],
+  "result": {
+    "task_id": "task_385412",
+    "video_url": null,
+    "url": null,
+    "type": "video"
+  }
+}</code></pre>
+    <p>完成：</p>
+<pre><code>{
+  "id": "task_385412",
+  "task_id": "task_385412",
+  "object": "video.generation",
+  "model": "video-standard-720p",
+  "status": "completed",
+  "progress": 100,
+  "created_at": 1714200000,
+  "finished_at": 1714200180,
+  "video_url": "https://xxx.xxx.xxx/generated/video.mp4",
+  "url": "https://xxx.xxx.xxx/generated/video.mp4",
+  "error": null,
+  "output": [
+    {
+      "type": "video",
+      "url": "https://xxx.xxx.xxx/generated/video.mp4"
+    }
+  ],
+  "result": {
+    "task_id": "task_385412",
+    "video_url": "https://xxx.xxx.xxx/generated/video.mp4",
+    "url": "https://xxx.xxx.xxx/generated/video.mp4",
+    "type": "video"
+  }
+}</code></pre>
+    <p>失败：</p>
+<pre><code>{
+  "id": "task_385412",
+  "task_id": "task_385412",
+  "object": "video.generation",
+  "model": "video-standard-720p",
+  "status": "failed",
+  "progress": 0,
+  "created_at": 1714200000,
+  "finished_at": null,
+  "video_url": null,
+  "url": null,
+  "error": {
+    "message": "任务失败原因"
+  },
+  "output": [],
+  "result": {
+    "task_id": "task_385412",
+    "video_url": null,
+    "url": null,
+    "type": "video"
+  }
+}</code></pre>
+
+    <h2>5. 查询返回字段</h2>
+    <table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody>
+      <tr><td><code>id</code> / <code>task_id</code></td><td>任务 ID，用于继续查询。</td></tr>
+      <tr><td><code>object</code></td><td>通常为 <code>video.generation</code>。</td></tr>
+      <tr><td><code>model</code></td><td>公开模型名，固定为 <code>video-standard-720p</code>。</td></tr>
+      <tr><td><code>status</code></td><td><code>queued</code> / <code>in_progress</code> / <code>completed</code> / <code>failed</code>。</td></tr>
+      <tr><td><code>progress</code></td><td>任务进度，0-100；完成时通常为 100。</td></tr>
+      <tr><td><code>created_at</code></td><td>创建时间戳，单位为秒。</td></tr>
+      <tr><td><code>finished_at</code></td><td>完成时间戳，单位为秒；未完成时为 <code>null</code>。</td></tr>
+      <tr><td><code>video_url</code> / <code>url</code></td><td>视频完成后的主结果地址；未完成或失败时为 <code>null</code>。</td></tr>
+      <tr><td><code>error</code></td><td>失败信息；正常情况下为 <code>null</code>。</td></tr>
+      <tr><td><code>output</code></td><td>结果数组；完成时通常为 <code>[{"type":"video","url":"..." }]</code>。</td></tr>
+      <tr><td><code>result</code></td><td>合并后的任务结果对象，包含 <code>task_id</code>、<code>video_url</code>、<code>url</code>、<code>type</code>，也可能透传上游返回字段。</td></tr>
+    </tbody></table>
+
+    <h2>6. 错误返回</h2>
+<pre><code>{
+  "error": {
+    "message": "video-standard-720p upstream query failed",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": "upstream_error"
+  }
+}</code></pre>
+
+    <h2>7. 接口参数（PAYLOAD）</h2>
+    <table><thead><tr><th>参数名</th><th>类型</th><th>必填</th><th>说明</th></tr></thead><tbody>
+      <tr><td><code>model</code></td><td>string</td><td>必填</td><td>固定 <code>video-standard-720p</code>。</td></tr>
+      <tr><td><code>prompt</code></td><td>string</td><td>必填</td><td>视频内容描述。为空会返回 <code>prompt_required</code>。</td></tr>
+      <tr><td><code>duration</code> / <code>seconds</code></td><td>integer / string</td><td>必填</td><td>仅支持 15 秒，可传 <code>15</code> 或 <code>15s</code>。其他值会返回 <code>invalid_duration</code>。</td></tr>
+      <tr><td><code>aspect_ratio</code> / <code>aspectRatio</code></td><td>string</td><td>可选</td><td>默认 <code>16:9</code>。也支持 <code>9:16</code>、<code>1:1</code> 等比例；<code>1280x720</code> 会转为 <code>16:9</code>，<code>720x1280</code> 会转为 <code>9:16</code>。</td></tr>
+      <tr><td><code>image_url</code></td><td>string</td><td>可选</td><td>主参考图 URL。也兼容 <code>imageUrl</code>、<code>first_image_url</code>、<code>firstImageUrl</code>、<code>input_reference</code>、<code>inputReference</code>。</td></tr>
+      <tr><td><code>extra_images</code></td><td>array / string</td><td>可选</td><td>参考图 URL 数组。也兼容 <code>extraImages</code>、<code>image_urls</code>、<code>imageUrls</code>、<code>images</code>、<code>reference_images</code>、<code>referenceImages</code>。字符串支持 JSON 数组或逗号分隔 URL。</td></tr>
+      <tr><td><code>extra_videos</code></td><td>array / string</td><td>可选</td><td>参考视频 URL 数组。也兼容 <code>extraVideos</code>、<code>video_urls</code>、<code>videoUrls</code>、<code>videos</code>。</td></tr>
+      <tr><td><code>extra_audios</code></td><td>array / string</td><td>可选</td><td>参考音频 URL 数组。也兼容 <code>extraAudios</code>、<code>audio_urls</code>、<code>audioUrls</code>、<code>audios</code>。</td></tr>
+      <tr><td><code>reference_mode</code> / <code>referenceMode</code></td><td>string</td><td>可选</td><td>参考素材模式；传入时会透传给上游。</td></tr>
+    </tbody></table>
+
+    <h2>8. 状态说明</h2>
+    <table><thead><tr><th>status</th><th>含义</th><th>处理方式</th></tr></thead><tbody>
+      <tr><td><code>queued</code></td><td>排队中</td><td>继续轮询。</td></tr>
+      <tr><td><code>in_progress</code></td><td>生成中</td><td>继续轮询。上游 <code>running</code> / <code>processing</code> / <code>generating</code> 会归一化为此状态。</td></tr>
+      <tr><td><code>completed</code></td><td>已完成</td><td>读取 <code>video_url</code>、<code>url</code> 或 <code>output[0].url</code>。</td></tr>
+      <tr><td><code>failed</code></td><td>失败</td><td>查看 <code>error.message</code>。</td></tr>
+    </tbody></table>
+  </article></main>
+</body>
+</html>
