@@ -176,6 +176,7 @@ async function headersFor(uri, extra = {}, loc = "US", hasBody = true) {
   const dt = Math.floor(Date.now() / 1000);
   const path = new URL(uri, "https://x").pathname;
   const sign = md5Hex(`9e2c|${path.slice(-7)}|7|${APPVR}|${dt}||11ac`);
+  const storeCountry = await getCookie("store-country-code", target);
   return {
     Accept: "application/json, text/plain, */*",
     ...(hasBody ? { "Content-Type": "application/json" } : {}),
@@ -233,6 +234,7 @@ async function fetchSessionId(target) {
       ? new Date(c.expirationDate * 1000).toISOString()
       : null,
     cookie_name: "sessionid",
+    store_country_code: storeCountry?.value || "",
   };
 }
 

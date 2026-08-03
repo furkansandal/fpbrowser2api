@@ -1,7 +1,163 @@
-function $(id) { return document.getElementById(id); }
+﻿function $(id) { return document.getElementById(id); }
+
+function T(key, values) { return window.__fpbT ? window.__fpbT(key, values) : key; }
 
 function send(type, payload = {}) {
   return chrome.runtime.sendMessage({ type, ...payload });
+}
+
+const ANALYSIS_TARGET_TAB_STORAGE_KEY = "analysis_target_tab_id";
+const ANALYSIS_TARGET_UPDATED_STORAGE_KEY = "analysis_target_updated_at";
+const ANALYSIS_WINDOW_STATE_STORAGE_KEY = "analysis_window_state";
+
+async function getActiveHttpTab() {
+  try {
+    const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] });
+    const focused = (windows || []).find(win => win.focused);
+    const ordered = focused ? [focused].concat((windows || []).filter(win => win !== focused)) : (windows || []);
+    for (const win of ordered) {
+      const tab = (win.tabs || []).find(t => t.active && t.id && /^https?:\/\//i.test(String(t.url || "")));
+      if (tab) return tab;
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function getStoredAnalysisTargetTab() {
+  try {
+    const got = await chrome.storage.local.get([ANALYSIS_TARGET_TAB_STORAGE_KEY]);
+    const tabId = Number(got[ANALYSIS_TARGET_TAB_STORAGE_KEY] || 0) || 0;
+    if (!tabId) return null;
+    const tab = await chrome.tabs.get(tabId);
+    return tab && tab.id && /^https?:\/\//i.test(String(tab.url || "")) ? tab : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function renderTargetPageInfo(tab, sourceText) {
+  const titleEl = $("targetPageTitle");
+  const urlEl = $("targetPageUrl");
+  const sourceEl = $("targetPageSource");
+  const box = $("targetPageBox");
+  if (!titleEl || !urlEl || !sourceEl) return;
+  if (!tab) {
+    titleEl.textContent = T("noTargetPage");
+    urlEl.textContent = "";
+    sourceEl.textContent = T("notBound");
+    if (box) box.title = "";
+    return;
+  }
+  const title = tab.title || T("unnamedPage");
+  const url = String(tab.url || "");
+  titleEl.textContent = title;
+  urlEl.textContent = url;
+  sourceEl.textContent = sourceText || T("bound");
+  if (box) box.title = title + "\n" + url;
+}
+
+async function refreshTargetPageInfo() {
+  const captureResp = await send("popup.networkCapture.status").catch(() => null);
+  const captureTabId = Number(captureResp && captureResp.result && captureResp.result.tab_id || 0) || 0;
+  if (captureTabId) {
+    try {
+      const tab = await chrome.tabs.get(captureTabId);
+      if (tab && /^https?:\/\//i.test(String(tab.url || ""))) {
+        renderTargetPageInfo(tab, T("captureTarget"));
+        return tab;
+      }
+    } catch (_) {}
+  }
+  const stored = await getStoredAnalysisTargetTab();
+  if (stored) {
+    renderTargetPageInfo(stored, T("analysisTarget"));
+    return stored;
+  }
+  const active = await getActiveHttpTab();
+  renderTargetPageInfo(active, active ? T("currentPage") : T("notBound"));
+  return active;
+}
+
+async function findAnalysisTab() {
+  const analysisUrl = chrome.runtime.getURL("analysis.html");
+  const tabs = await chrome.tabs.query({});
+  return (tabs || []).find(tab => tab && tab.id && String(tab.url || "").startsWith(analysisUrl)) || null;
+}
+
+async function saveAnalysisTargetTab(targetTab) {
+  if (!targetTab || !targetTab.id) return;
+  await chrome.storage.local.set({
+    [ANALYSIS_TARGET_TAB_STORAGE_KEY]: targetTab.id,
+    [ANALYSIS_TARGET_UPDATED_STORAGE_KEY]: Date.now()
+  });
+}
+
+async function getCachedAnalysisWindowState() {
+  try {
+    const got = await chrome.storage.local.get([ANALYSIS_WINDOW_STATE_STORAGE_KEY]);
+    const value = got[ANALYSIS_WINDOW_STATE_STORAGE_KEY];
+    return value && typeof value === "object" ? value : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function clampWindowBounds(bounds, screenWidth, screenHeight) {
+  const width = Math.max(640, Math.min(screenWidth, Math.round(Number(bounds.width) || 0)));
+  const height = Math.max(480, Math.min(screenHeight, Math.round(Number(bounds.height) || 0)));
+  const left = Math.max(0, Math.min(screenWidth - width, Math.round(Number(bounds.left) || 0)));
+  const top = Math.max(0, Math.min(screenHeight - height, Math.round(Number(bounds.top) || 0)));
+  return { width, height, left, top };
+}
+
+async function openAnalysisWindow() {
+  const targetTab = await getActiveHttpTab();
+  if (targetTab && targetTab.id) await saveAnalysisTargetTab(targetTab);
+
+  const existingAnalysisTab = await findAnalysisTab();
+  if (existingAnalysisTab && existingAnalysisTab.id) {
+    if (existingAnalysisTab.windowId != null) {
+      await chrome.windows.update(existingAnalysisTab.windowId, { focused: true }).catch(() => {});
+    }
+    await chrome.tabs.update(existingAnalysisTab.id, { active: true }).catch(() => {});
+    return;
+  }
+
+  const url = new URL(chrome.runtime.getURL("analysis.html"));
+  if (targetTab && targetTab.id) url.searchParams.set("targetTabId", String(targetTab.id));
+
+  try {
+    const currentWindow = await chrome.windows.getCurrent();
+    const screenWidth = window.screen && window.screen.availWidth ? window.screen.availWidth : 1440;
+    const screenHeight = window.screen && window.screen.availHeight ? window.screen.availHeight : 900;
+    const baseWidth = Math.min(1416, Math.max(1080, Math.floor(screenWidth * 0.552)));
+    const width = Math.min(screenWidth, Math.floor(baseWidth * 1.2));
+    const height = Math.min(900, Math.max(700, Math.floor(screenHeight * 0.88)));
+    const left = Math.max(0, Math.min(
+      screenWidth - width,
+      Number(currentWindow.left || 0) + Math.max(40, Number(currentWindow.width || screenWidth) - width - 24)
+    ));
+    const top = Math.max(0, Math.min(
+      screenHeight - height,
+      Number(currentWindow.top || 0) + 24
+    ));
+    const cached = await getCachedAnalysisWindowState();
+    const createOptions = {
+      url: url.toString(),
+      type: "popup",
+      focused: true
+    };
+    if (cached && (cached.state === "maximized" || cached.state === "fullscreen")) {
+      createOptions.state = cached.state;
+    } else if (cached && Number(cached.width) && Number(cached.height)) {
+      Object.assign(createOptions, clampWindowBounds(cached, screenWidth, screenHeight));
+    } else {
+      Object.assign(createOptions, { width, height, left, top });
+    }
+    await chrome.windows.create(createOptions);
+  } catch (_) {
+    chrome.tabs.create({ url: url.toString() });
+  }
 }
 
 function esc(s) {
@@ -16,10 +172,10 @@ function renderStatus(st) {
   else dot.classList.add("bad");
 
   $("connText").textContent = st.connected && st.helloOk
-    ? "已连接并注册"
-    : (st.connected ? "WebSocket 已连接，等待注册" : `未连接：${st.wsState || "unknown"}`);
+    ? T("connectedRegistered")
+    : (st.connected ? T("wsConnectedWaiting") : T("disconnected", { state: st.wsState || "unknown" }));
 
-  const active = st.activeTask ? `${st.activeTask.provider || ""} / ${st.activeTask.task_id || ""}` : "无";
+  const active = st.activeTask ? `${st.activeTask.provider || ""} / ${st.activeTask.task_id || ""}` : T("none");
   const statusHtml = `
     <div>${esc(st.spaceId)} / ${esc(st.windowKey)} · ${esc(st.clientId || "-")}</div>
     <div>task: ${esc(active)}${st.lastError ? ` · error: ${esc(st.lastError)}` : ""}</div>
@@ -51,10 +207,12 @@ function getTransferLines(data) {
 }
 
 async function setActiveTab(tab) {
-  const name = tab === "transfer" ? "transfer" : "debug";
+  const allowed = ["debug", "transfer", "analysis"];
+  const name = allowed.includes(tab) ? tab : "debug";
   document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === name));
   $("debugPanel")?.classList.toggle("active", name === "debug");
   $("transferPanel")?.classList.toggle("active", name === "transfer");
+  $("analysisPanel")?.classList.toggle("active", name === "analysis");
   try { await send("popup.setActiveTab", { tab: name }); } catch (_) {}
 }
 
@@ -68,20 +226,20 @@ function renderTransferData(data) {
   if (meta) {
     const bits = [];
     if (data?.title) bits.push(data.title);
-    if (data?.source) bits.push(`来源: ${data.source}`);
-    if (data?.received_at) bits.push(`接收: ${data.received_at}`);
+    if (data?.source) bits.push(`${T("source")}: ${data.source}`);
+    if (data?.received_at) bits.push(`${T("received")}: ${data.received_at}`);
     const metaText = bits.join(" · ");
     if (meta.textContent !== metaText) meta.textContent = metaText;
   }
   if (!lines.length) {
-    const html = `<div class="empty">暂无接收数据</div>`;
+    const html = `<div class="empty">${esc(T("noReceivedData"))}</div>`;
     if (root.innerHTML !== html) root.innerHTML = html;
     return;
   }
   const html = lines.map((line, idx) => `
     <div class="transfer-line">
       <div class="transfer-text">${linkifyEscapedLine(line)}</div>
-      <button class="copy-line-btn" data-copy-line="${idx}" type="button">复制</button>
+      <button class="copy-line-btn" data-copy-line="${idx}" type="button">${esc(T("copy"))}</button>
     </div>
   `).join("");
   if (root.innerHTML !== html) root.innerHTML = html;
@@ -92,7 +250,7 @@ function renderLogs(logs) {
   // 日志区也避免在用户选择文字时全量刷新。
   if (isUserInteractingWith(root)) return;
   if (!logs || !logs.length) {
-    const html = "<div class='hint'>暂无日志</div>";
+    const html = `<div class='hint'>${esc(T("noLogs"))}</div>`;
     if (root.innerHTML !== html) root.innerHTML = html;
     return;
   }
@@ -105,6 +263,54 @@ function renderLogs(logs) {
     </div>`;
   }).join("");
   if (root.innerHTML !== html) root.innerHTML = html;
+}
+
+function renderCapturePreview(events, totalCount = null) {
+  const root = $("capturePreviewList");
+  const countEl = $("capturePreviewCount");
+  if (!root) return;
+  const list = Array.isArray(events) ? events : [];
+  if (countEl) countEl.textContent = T("countItems", { count: Number(totalCount ?? list.length) || 0 });
+  if (isUserInteractingWith(root)) return;
+  if (!list.length) {
+    const html = `<div class="empty">${esc(T("noRequests"))}</div>`;
+    if (root.innerHTML !== html) root.innerHTML = html;
+    return;
+  }
+  const rows = list.slice(-120).reverse();
+  const html = rows.map(e => {
+    const method = String(e.method || "GET").toUpperCase();
+    const status = Number(e.status || 0) || 0;
+    const ok = status >= 200 && status < 400;
+    const statusText = status ? String(status) : "-";
+    const url = e.path || e.url || "";
+    const duration = e.duration_ms != null ? `${e.duration_ms} ms` : "-";
+    return `<div class="capture-preview-item">
+      <div><span class="capture-preview-method">${esc(method)}</span><span class="capture-preview-status${ok || !status ? "" : " err"}">${esc(statusText)}</span></div>
+      <div class="capture-preview-url" title="${esc(e.url || url)}">${esc(url)}</div>
+      <div class="capture-preview-meta">${esc(duration)} · ${esc(e.source || "")}</div>
+    </div>`;
+  }).join("");
+  if (root.innerHTML !== html) root.innerHTML = html;
+}
+
+async function refreshCapturePreview() {
+  const root = $("capturePreviewList");
+  if (!root) return;
+  try {
+    const resp = await send("popup.networkCapture.snapshot", { since_seq: 0, limit: 120 });
+    if (!resp?.ok) return;
+    const result = resp.result || {};
+    renderCapturePreview(result.events || [], result.count ?? result.total ?? (result.events || []).length);
+  } catch (_) {}
+}
+
+async function clearNetworkLogList() {
+  await captureAction("clear");
+  renderCapturePreview([], 0);
+  await refreshCaptureStatus().catch(() => {});
+  await updateToggleBtn().catch(() => {});
+  await refreshCapturePreview().catch(() => {});
 }
 
 function setInputValueIfIdle(id, value) {
@@ -141,7 +347,7 @@ async function refresh() {
   try {
     const resp = await send("popup.getState");
     if (!resp || !resp.ok) {
-      $("connText").textContent = "读取 background 状态失败";
+      $("connText").textContent = T("operationFailed");
       return;
     }
     const cfg = resp.config || {};
@@ -160,8 +366,16 @@ async function refresh() {
     renderTransferData(resp.transferData || null);
     const active = resp.activeTab || "debug";
     document.querySelectorAll(".tab-btn").forEach(btn => btn.classList.toggle("active", btn.dataset.tab === active));
-    $("debugPanel")?.classList.toggle("active", active !== "transfer");
+    $("debugPanel")?.classList.toggle("active", active === "debug");
     $("transferPanel")?.classList.toggle("active", active === "transfer");
+    $("analysisPanel")?.classList.toggle("active", active === "analysis");
+    // Update capture status display if analysis panel is visible
+    if (active === "analysis") {
+      refreshTargetPageInfo().catch(() => {});
+      refreshCaptureStatus().catch(() => {});
+      updateToggleBtn().catch(() => {});
+      refreshCapturePreview().catch(() => {});
+    }
   } finally {
     refreshInFlight = false;
   }
@@ -208,7 +422,7 @@ async function clearCurrentPageLocalStorage() {
   const oldText = btn ? btn.textContent : "";
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "打码中...";
+    btn.textContent = T("masking");
   }
   try {
     const resp = await send("popup.clearCurrentPageLocalStorage");
@@ -217,18 +431,18 @@ async function clearCurrentPageLocalStorage() {
       const before = resp.result?.before;
       const after = resp.result?.after;
       btn.textContent = Number.isFinite(before) && Number.isFinite(after)
-        ? `打码中...`
-        : "已打码";
+        ? T("masking")
+        : T("masked");
     }
     setTimeout(refresh, 300);
   } catch (e) {
-    if (btn) btn.textContent = "失败";
+    if (btn) btn.textContent = T("failed");
     console.error(e);
   } finally {
     setTimeout(() => {
       if (btn) {
         btn.disabled = false;
-        btn.textContent = oldText || "打码";
+        btn.textContent = oldText || T("mask");
       }
     }, 1200);
   }
@@ -240,20 +454,20 @@ async function runVeoGenerateTest() {
   const oldText = btn ? btn.textContent : "";
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "测试中...";
+    btn.textContent = T("testing");
   }
   try {
     const resp = await send("popup.veoGenerateTest", { kind });
     if (!resp || !resp.ok) throw new Error(resp?.error || "VEO generate test failed");
     setTimeout(refresh, 300);
   } catch (e) {
-    if (btn) btn.textContent = "失败";
+    if (btn) btn.textContent = T("failed");
     console.error(e);
   } finally {
     setTimeout(() => {
       if (btn) {
         btn.disabled = false;
-        btn.textContent = oldText || "生成测试";
+        btn.textContent = oldText || T("generateTest");
       }
     }, 1200);
   }
@@ -264,7 +478,7 @@ async function runGoogleAutoLogin() {
   const oldText = btn ? btn.textContent : "";
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "登录中...";
+    btn.textContent = T("loggingIn");
   }
   try {
     const resp = await send("popup.googleAutoLogin", {
@@ -275,18 +489,37 @@ async function runGoogleAutoLogin() {
       }
     });
     if (!resp || !resp.ok) throw new Error(resp?.error || "google auto login failed");
-    if (btn) btn.textContent = resp.result?.done ? "已完成" : "已执行";
+    if (btn) btn.textContent = resp.result?.done ? T("completed") : T("executed");
     setTimeout(refresh, 300);
   } catch (e) {
-    if (btn) btn.textContent = "失败";
+    if (btn) btn.textContent = T("failed");
     console.error(e);
   } finally {
     setTimeout(() => {
       if (btn) {
         btn.disabled = false;
-        btn.textContent = oldText || "自动登录";
+        btn.textContent = oldText || T("autoLogin");
       }
     }, 1500);
+  }
+}
+
+async function refreshCaptureStatus() {
+  const resp = await send("popup.networkCapture.status");
+  if (!resp?.ok) return;
+  const st = resp.result || {};
+  const el = $("captureStatusText");
+  if (!el) return;
+  const count = st.count ?? st.eventCount ?? 0;
+  el.className = "capture-status";
+  if (st.running) {
+    el.classList.add("running");
+    el.textContent = T("runningCapture", { count });
+  } else if (st.paused) {
+    el.classList.add("paused");
+    el.textContent = T("pausedCapture", { count });
+  } else {
+    el.textContent = count ? T("stoppedCapture", { count }) : T("notStarted");
   }
 }
 
@@ -330,8 +563,8 @@ $("transferData")?.addEventListener("click", async (e) => {
   const resp = await send("popup.getState");
   const lines = getTransferLines(resp?.transferData || null);
   await copyText(lines[Number(btn.dataset.copyLine)] || "");
-  btn.textContent = "已复制";
-  setTimeout(() => { btn.textContent = "复制"; }, 900);
+  btn.textContent = T("copied");
+  setTimeout(() => { btn.textContent = T("copy"); }, 900);
 });
 
 $("saveBtn").addEventListener("click", save);
@@ -345,5 +578,113 @@ $("clearTransferBtn")?.addEventListener("click", clearTransfer);
 $("copyAllTransferBtn")?.addEventListener("click", copyAllTransfer);
 $("closePanelBtn")?.addEventListener("click", () => window.close());
 
+// Analysis tab — capture controls
+function logAnalysis(level, msg) {
+  const container = $("analysisLog");
+  if (!container) return;
+  container.style.display = "block";
+  const now = new Date().toTimeString().slice(0, 8);
+  const entry = document.createElement("div");
+  entry.className = `analysis-log-entry ${level}`;
+  entry.innerHTML = `<span class="al-ts">${now}</span> <span class="al-lvl">[${level}]</span> ${esc(msg)}`;
+  container.prepend(entry);
+  // keep at most 60 entries
+  while (container.children.length > 60) container.removeChild(container.lastChild);
+}
+
+async function captureAction(action) {
+  logAnalysis("info", "send " + action + "...");
+  try {
+    const payload = {};
+    if (action === "start") {
+      const targetTab = await getActiveHttpTab();
+      if (!targetTab || !targetTab.id) throw new Error("No current http/https target page");
+      payload.tabId = targetTab.id;
+      await saveAnalysisTargetTab(targetTab).catch(() => {});
+      renderTargetPageInfo(targetTab, "Capture target");
+    }
+    const resp = await send("popup.networkCapture." + action, payload);
+    logAnalysis(resp?.ok ? "ok" : "error", resp?.ok ? JSON.stringify(resp) : (resp?.error || JSON.stringify(resp)));
+    if (resp?.ok) {
+      refreshCaptureStatus().catch(() => {});
+      refreshTargetPageInfo().catch(() => {});
+    }
+  } catch (e) {
+    logAnalysis("error", String(e));
+  }
+}
+$("captureToggleBtn")?.addEventListener("click", async () => {
+  const resp = await send("popup.networkCapture.status");
+  const st = resp?.result || {};
+  if (!st.running && !st.paused) {
+    await captureAction("start");
+  } else if (st.paused) {
+    await captureAction("resume");
+  } else {
+    await captureAction("pause");
+  }
+  await refreshCaptureStatus();
+  await updateToggleBtn();
+});
+$("captureStopBtn")?.addEventListener("click", async () => {
+  await captureAction("stop");
+  await refreshCaptureStatus();
+  await updateToggleBtn();
+});
+$("captureClearBtn")?.addEventListener("click", async () => {
+  await clearNetworkLogList();
+});
+$("captureRefreshBtn")?.addEventListener("click", async () => {
+  const btn = $("captureRefreshBtn");
+  const oldText = btn ? btn.textContent : "";
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = T("refreshing");
+  }
+  try {
+    await refreshCapturePreview();
+    await refreshCaptureStatus();
+    await updateToggleBtn();
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = oldText || T("refresh");
+    }
+  }
+});
+$("openAnalysisBtn")?.addEventListener("click", () => {
+  openAnalysisWindow().catch(() => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("analysis.html") });
+  });
+});
+
+async function updateToggleBtn() {
+  const resp = await send("popup.networkCapture.status");
+  const st = resp?.result || {};
+  const btn = $("captureToggleBtn");
+  if (!btn) return;
+  if (st.paused) btn.textContent = T("resume");
+  else if (st.running) btn.textContent = T("pause");
+  else btn.textContent = T("start");
+}
+
 refresh();
+window.addEventListener("fpb-language-changed", () => {
+  refresh().catch(() => {});
+  refreshTargetPageInfo().catch(() => {});
+  refreshCaptureStatus().catch(() => {});
+  updateToggleBtn().catch(() => {});
+  refreshCapturePreview().catch(() => {});
+});
 setInterval(refresh, 2000);
+
+// Real-time capture count update when analysis panel is active
+setInterval(async () => {
+  const analysisPanel = $("analysisPanel");
+  if (analysisPanel?.classList.contains("active")) {
+    await refreshCaptureStatus().catch(() => {});
+    await updateToggleBtn().catch(() => {});
+    await refreshCapturePreview().catch(() => {});
+    await refreshTargetPageInfo().catch(() => {});
+  }
+}, 1000);

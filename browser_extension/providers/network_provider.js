@@ -1,4 +1,4 @@
-// Network capture provider for FPBrowser2API extension.
+﻿// Network capture provider for FPBrowser2API extension.
 // Captures fetch/XMLHttpRequest/sendBeacon traffic from the page context and keeps
 // a DevTools-like in-memory log in the extension service worker.
 
@@ -26,6 +26,10 @@ let capture = {
 
 let webRequestInstalled = false;
 const webRequests = new Map();
+
+let debuggerEventsInstalled = false;
+let debuggerAttachedTabId = null;
+const cdpRequests = new Map();
 
 function nowIso() {
   return new Date().toISOString();
@@ -105,9 +109,23 @@ function trimWebRequests() {
   }
 }
 
+function trimCdpRequests() {
+  const cutoff = Date.now() - 2 * 60 * 1000;
+  for (const [rid, meta] of cdpRequests.entries()) {
+    if (Number(meta.last_seen_ms || meta.start_ms || 0) < cutoff) cdpRequests.delete(rid);
+  }
+  if (cdpRequests.size > 2000) {
+    const rows = Array.from(cdpRequests.entries()).sort((a, b) => Number(a[1].last_seen_ms || 0) - Number(b[1].last_seen_ms || 0));
+    for (const [rid] of rows.slice(0, Math.max(0, rows.length - 1500))) cdpRequests.delete(rid);
+  }
+}
+
+const SKIP_WEB_REQUEST_TYPES = new Set(["main_frame", "sub_frame", "stylesheet", "script", "image", "font", "media", "object", "object_subrequest"]);
+
 function shouldTrackWebRequest(details) {
   if (!capture.running || capture.paused || !capture.includeWebRequestMeta) return false;
   if (capture.tabId !== null && Number(details.tabId) !== Number(capture.tabId)) return false;
+  if (details.type && SKIP_WEB_REQUEST_TYPES.has(String(details.type).toLowerCase())) return false;
   return methodAllowed(details.method);
 }
 
@@ -130,11 +148,69 @@ function ensureWebMeta(details) {
   return meta;
 }
 
+const IMAGE_DATA_URL_RE = /\bdata:image\/[a-z0-9.+-]+;base64,([A-Za-z0-9+/=\s]{1000,})/gi;
+const BARE_BASE64_RE = /^[A-Za-z0-9+/]{1000,}={0,2}$/;
+const IMAGE_MIME_RE = /^image\/[a-z0-9.+-]+$/i;
+function isImageBase64Field(key) {
+  const k = String(key || "").toLowerCase();
+  return k === "b64_json" ||
+    k === "image_b64" ||
+    k === "image_base64" ||
+    k === "base64_image" ||
+    k === "image_data" ||
+    k === "base64data" ||
+    k === "base64_data" ||
+    k === "encodedimage" ||
+    k === "encoded_image" ||
+    k.endsWith("_image_b64") ||
+    k.endsWith("_image_base64") ||
+    k.endsWith("_base64data") ||
+    k.endsWith("_base64_data");
+}
+function redactBareImageBase64(value) {
+  const compact = String(value || "").replace(/\s+/g, "");
+  return BARE_BASE64_RE.test(compact) ? `[base64 ~${compact.length} chars]` : value;
+}
+function redactImageBase64Value(value, key = "") {
+  if (typeof value === "string") {
+    const withDataUrls = value.replace(IMAGE_DATA_URL_RE, (m, b64) => m.slice(0, m.length - b64.length) + `[base64 ~${b64.replace(/\s+/g, "").length} chars]`);
+    if (withDataUrls === value && isImageBase64Field(key)) return redactBareImageBase64(value);
+    return withDataUrls;
+  }
+  if (Array.isArray(value)) {
+    const out = value.map(v => redactImageBase64Value(v, key));
+    for (let i = 0; i < out.length - 1; i += 1) {
+      if (typeof out[i] === "string" && IMAGE_MIME_RE.test(out[i]) && typeof out[i + 1] === "string") {
+        out[i + 1] = redactBareImageBase64(out[i + 1]);
+      }
+    }
+    return out;
+  }
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = redactImageBase64Value(v, k);
+    return out;
+  }
+  return value;
+}
+function redactImageBase64(text) {
+  const s = String(text || "");
+  const replaced = s.replace(IMAGE_DATA_URL_RE, (m, b64) => m.slice(0, m.length - b64.length) + `[base64 ~${b64.replace(/\s+/g, "").length} chars]`);
+  if (replaced !== s) return replaced;
+  try {
+    const parsed = JSON.parse(s);
+    const redacted = redactImageBase64Value(parsed);
+    return JSON.stringify(redacted);
+  } catch (_) {
+    return s;
+  }
+}
+
 function decodeRequestBody(requestBody) {
   if (!requestBody) return "";
   try {
     if (requestBody.formData && typeof requestBody.formData === "object") {
-      return clipString(JSON.stringify(requestBody.formData));
+      return clipString(redactImageBase64(JSON.stringify(requestBody.formData)));
     }
     if (Array.isArray(requestBody.raw) && requestBody.raw.length) {
       const parts = [];
@@ -144,13 +220,106 @@ function decodeRequestBody(requestBody) {
           catch (_) { parts.push(`[binary ${item.bytes.byteLength || 0} bytes]`); }
         }
       }
-      return clipString(parts.join(""));
+      return clipString(redactImageBase64(parts.join("")));
     }
     if (requestBody.error) return `[requestBody error] ${requestBody.error}`;
   } catch (e) {
     return `[requestBody decode failed] ${String(e && e.message || e)}`;
   }
   return "";
+}
+
+function debuggerTarget(tabId = capture.tabId) {
+  if (tabId === null || tabId === undefined) return null;
+  return { tabId: Number(tabId) };
+}
+
+function sendDebuggerCommand(tabId, method, params = {}) {
+  const target = debuggerTarget(tabId);
+  if (!target || !chrome.debugger) return Promise.reject(new Error("debugger API unavailable"));
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.debugger.sendCommand(target, method, params, (result) => {
+        const err = chrome.runtime && chrome.runtime.lastError;
+        if (err) reject(new Error(err.message || String(err)));
+        else resolve(result || {});
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function decodeCdpBody(bodyText, base64Encoded) {
+  if (!base64Encoded) return String(bodyText || "");
+  try {
+    const bin = atob(String(bodyText || ""));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  } catch (_) {
+    return String(bodyText || "");
+  }
+}
+
+function shouldTrackCdpMeta(meta) {
+  if (!capture.running || capture.paused) return false;
+  if (!meta || !meta.url) return false;
+  if (capture.tabId !== null && debuggerAttachedTabId !== null && Number(debuggerAttachedTabId) !== Number(capture.tabId)) return false;
+  if (meta.type && SKIP_WEB_REQUEST_TYPES.has(String(meta.type).toLowerCase())) return false;
+  return methodAllowed(meta.method);
+}
+
+function findBestCdpMeta(event) {
+  if (!event || !event.url) return null;
+  const method = String(event.method || "GET").toUpperCase();
+  const startMs = Number(event.start_epoch_ms || 0) || 0;
+  const endMs = Number(event.end_epoch_ms || Date.now()) || Date.now();
+  let best = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const meta of cdpRequests.values()) {
+    if (String(meta.method || "").toUpperCase() !== method) continue;
+    if (String(meta.url || "") !== String(event.url || "")) continue;
+    const ms = Number(meta.start_ms || 0);
+    if (startMs && (ms < startMs - 5000 || ms > endMs + 5000)) continue;
+    const score = Math.abs(ms - (startMs || endMs));
+    if (score < bestScore) {
+      bestScore = score;
+      best = meta;
+    }
+  }
+  return best;
+}
+
+function cdpMetaToEvent(meta, webMeta = null) {
+  const startMs = Number((webMeta && webMeta.start_ms) || meta.start_ms || 0) || Date.now();
+  const endMs = Number((webMeta && webMeta.completed_ms) || meta.end_ms || Date.now()) || Date.now();
+  return {
+    id: `debugger-${meta.request_id || Date.now()}`,
+    source: "debugger",
+    method: String(meta.method || (webMeta && webMeta.method) || "GET").toUpperCase(),
+    url: meta.url || (webMeta && webMeta.url) || "",
+    path: pathOf(meta.url || (webMeta && webMeta.url) || ""),
+    status: Number(meta.status || (webMeta && webMeta.status) || 0) || 0,
+    ok: Number(meta.status || (webMeta && webMeta.status) || 0) >= 200 && Number(meta.status || (webMeta && webMeta.status) || 0) < 400,
+    duration_ms: Math.max(0, endMs - startMs),
+    started_at: new Date(startMs).toISOString(),
+    completed_at: new Date(endMs).toISOString(),
+    start_epoch_ms: startMs,
+    end_epoch_ms: endMs,
+    request_headers: meta.request_headers || (webMeta && webMeta.request_headers) || {},
+    request_payload: clipString(meta.request_body || (webMeta && webMeta.request_body) || ""),
+    response_headers: meta.response_headers || (webMeta && webMeta.response_headers) || {},
+    response_body: clipString(meta.response_body || ""),
+    response_type: String(meta.mime_type || ""),
+    error: meta.error || "",
+    initiator_stack: meta.initiator_stack || "",
+    web_request_id: webMeta && webMeta.request_id || "",
+    tab_id: (webMeta && webMeta.tab_id) || capture.tabId,
+    frame_url: "",
+    session_id: capture.sessionId,
+    resource_type: meta.type || (webMeta && webMeta.type) || "fetch/xhr",
+  };
 }
 
 function installWebRequestListeners() {
@@ -203,6 +372,49 @@ function installWebRequestListeners() {
     meta.from_cache = !!details.fromCache;
     meta.ip = details.ip || "";
     meta.completed_ms = Number(details.timeStamp || Date.now());
+    // Fallback: if the page-inject layer never emitted this request, synthesize it
+    // after a short delay (page emit typically arrives within 200ms of completion).
+    setTimeout(() => {
+      if (meta.page_emitted) return;
+      if (!capture.running || capture.paused) return;
+      if (capture.tabId !== null && Number(meta.tab_id) !== Number(capture.tabId)) return;
+      const startMs = Number(meta.start_ms || 0);
+      const endMs = Number(meta.completed_ms || Date.now());
+      const ev = {
+        id: `webrequest-${meta.request_id}`,
+        source: "webRequest",
+        method: String(meta.method || "GET").toUpperCase(),
+        url: meta.url || "",
+        path: pathOf(meta.url || ""),
+        status: meta.status || 0,
+        ok: meta.status >= 200 && meta.status < 400,
+        duration_ms: Math.max(0, endMs - startMs),
+        started_at: new Date(startMs).toISOString(),
+        completed_at: new Date(endMs).toISOString(),
+        start_epoch_ms: startMs,
+        end_epoch_ms: endMs,
+        request_headers: meta.request_headers || {},
+        request_payload: clipString(meta.request_body || ""),
+        response_headers: meta.response_headers || {},
+        response_body: meta.cdp_response_body || "[not available via webRequest API]",
+        response_type: meta.cdp_mime_type || "",
+        error: meta.error || "",
+        initiator_stack: (() => {
+          const cdp = findBestCdpMeta({ method: meta.method, url: meta.url, start_epoch_ms: startMs, end_epoch_ms: endMs });
+          return (cdp && cdp.initiator_stack) || "";
+        })(),
+        web_request_id: meta.request_id || "",
+        from_cache: !!meta.from_cache,
+        ip: meta.ip || "",
+        tab_id: meta.tab_id,
+        frame_url: "",
+        session_id: capture.sessionId,
+        resource_type: meta.type || "fetch/xhr",
+      };
+      if (meta.cdp_response_body) meta.cdp_body_used_by_fallback = true;
+      const pushed = pushEvent(ev, { tab: { id: meta.tab_id } });
+      if (pushed && pushed.seq) meta.fallback_seq = pushed.seq;
+    }, 500);
   }, filter);
 
   chrome.webRequest.onErrorOccurred.addListener((details) => {
@@ -210,7 +422,219 @@ function installWebRequestListeners() {
     const meta = ensureWebMeta(details);
     meta.error = details.error || "network error";
     meta.completed_ms = Number(details.timeStamp || Date.now());
+    setTimeout(() => {
+      if (meta.page_emitted) return;
+      if (!capture.running || capture.paused) return;
+      if (capture.tabId !== null && Number(meta.tab_id) !== Number(capture.tabId)) return;
+      const startMs = Number(meta.start_ms || 0);
+      const endMs = Number(meta.completed_ms || Date.now());
+      const ev = {
+        id: `webrequest-err-${meta.request_id}`,
+        source: "webRequest",
+        method: String(meta.method || "GET").toUpperCase(),
+        url: meta.url || "",
+        path: pathOf(meta.url || ""),
+        status: 0,
+        ok: false,
+        duration_ms: Math.max(0, endMs - startMs),
+        started_at: new Date(startMs).toISOString(),
+        completed_at: new Date(endMs).toISOString(),
+        start_epoch_ms: startMs,
+        end_epoch_ms: endMs,
+        request_headers: meta.request_headers || {},
+        request_payload: clipString(meta.request_body || ""),
+        response_headers: {},
+        response_body: "",
+        response_type: "",
+        error: meta.error || "network error",
+        initiator_stack: (() => {
+          const cdp = findBestCdpMeta({ method: meta.method, url: meta.url, start_epoch_ms: startMs, end_epoch_ms: endMs });
+          return (cdp && cdp.initiator_stack) || "";
+        })(),
+        web_request_id: meta.request_id || "",
+        from_cache: false,
+        ip: "",
+        tab_id: meta.tab_id,
+        frame_url: "",
+        session_id: capture.sessionId,
+        resource_type: meta.type || "fetch/xhr",
+      };
+      pushEvent(ev, { tab: { id: meta.tab_id } });
+    }, 500);
   }, filter);
+}
+
+function installDebuggerListeners() {
+  if (debuggerEventsInstalled || !chrome.debugger) return;
+  debuggerEventsInstalled = true;
+
+  chrome.debugger.onEvent.addListener((source, method, params) => {
+    handleDebuggerEvent(source, method, params || {}).catch((e) => {
+      capture.lastError = `debugger event failed: ${String(e && e.message || e)}`;
+    });
+  });
+
+  chrome.debugger.onDetach.addListener((source, reason) => {
+    if (!source || Number(source.tabId) !== Number(debuggerAttachedTabId)) return;
+    debuggerAttachedTabId = null;
+    cdpRequests.clear();
+    if (capture.running) capture.lastError = `debugger detached: ${reason || "unknown"}`;
+  });
+}
+
+async function attachDebugger(tabId) {
+  installDebuggerListeners();
+  if (!chrome.debugger) {
+    capture.lastError = "debugger API unavailable";
+    return false;
+  }
+  if (debuggerAttachedTabId !== null && Number(debuggerAttachedTabId) === Number(tabId)) return true;
+  if (debuggerAttachedTabId !== null) await detachDebugger();
+
+  const target = debuggerTarget(tabId);
+  try {
+    await new Promise((resolve, reject) => {
+      chrome.debugger.attach(target, "1.3", () => {
+        const err = chrome.runtime && chrome.runtime.lastError;
+        if (err) reject(new Error(err.message || String(err)));
+        else resolve();
+      });
+    });
+    debuggerAttachedTabId = Number(tabId);
+    await sendDebuggerCommand(tabId, "Network.enable", {
+      maxTotalBufferSize: 200 * 1024 * 1024,
+      maxResourceBufferSize: 20 * 1024 * 1024,
+    });
+    // Enable async call stack capture so V8 records cross-Promise/async initiator
+    // chains even without DevTools open. Without this, new Error().stack in the
+    // page context only produces a single frame.
+    await sendDebuggerCommand(tabId, "Runtime.setAsyncCallStackDepth", { maxDepth: 32 }).catch(() => {});
+    return true;
+  } catch (e) {
+    debuggerAttachedTabId = null;
+    capture.lastError = `debugger attach failed: ${String(e && e.message || e)}`;
+    return false;
+  }
+}
+
+async function detachDebugger() {
+  if (!chrome.debugger || debuggerAttachedTabId === null) return;
+  const tabId = debuggerAttachedTabId;
+  debuggerAttachedTabId = null;
+  try {
+    await new Promise((resolve) => {
+      chrome.debugger.detach({ tabId }, () => resolve());
+    });
+  } catch (_) {}
+  cdpRequests.clear();
+}
+
+function upsertCdpRequest(requestId) {
+  const rid = String(requestId || "");
+  if (!rid) return null;
+  let meta = cdpRequests.get(rid);
+  if (!meta) {
+    meta = {
+      request_id: rid,
+      method: "GET",
+      url: "",
+      start_ms: Date.now(),
+      last_seen_ms: Date.now(),
+    };
+    cdpRequests.set(rid, meta);
+  }
+  meta.last_seen_ms = Date.now();
+  return meta;
+}
+
+async function handleDebuggerEvent(source, method, params) {
+  if (!source || Number(source.tabId) !== Number(debuggerAttachedTabId)) return;
+  if (!capture.running || capture.paused) return;
+
+  if (method === "Network.requestWillBeSent") {
+    const req = params.request || {};
+    const meta = upsertCdpRequest(params.requestId);
+    if (!meta) return;
+    meta.method = String(req.method || meta.method || "GET").toUpperCase();
+    meta.url = String(req.url || meta.url || "");
+    meta.start_ms = Number(params.wallTime ? params.wallTime * 1000 : 0) || Date.now();
+    meta.request_headers = req.headers || {};
+    meta.request_body = redactImageBase64(req.postData || "");
+    meta.type = params.type || meta.type || "";
+    // Extract JS call stack from CDP initiator
+    const initiator = params.initiator || {};
+    if (initiator.stack && Array.isArray(initiator.stack.callFrames)) {
+      meta.initiator_stack = initiator.stack.callFrames
+        .map(f => `    at ${f.functionName || "(anonymous)"} (${f.url}:${f.lineNumber}:${f.columnNumber})`)
+        .join("\n");
+    } else if (initiator.url) {
+      meta.initiator_stack = `    at (${initiator.url}:${initiator.lineNumber || 0})`;
+    } else {
+      meta.initiator_stack = "";
+    }
+    trimCdpRequests();
+    return;
+  }
+
+  if (method === "Network.responseReceived") {
+    const resp = params.response || {};
+    const meta = upsertCdpRequest(params.requestId);
+    if (!meta) return;
+    meta.url = String(resp.url || meta.url || "");
+    meta.status = Number(resp.status || 0) || 0;
+    meta.response_headers = resp.headers || {};
+    meta.mime_type = resp.mimeType || "";
+    meta.type = params.type || meta.type || "";
+    return;
+  }
+
+  if (method === "Network.loadingFailed") {
+    const meta = upsertCdpRequest(params.requestId);
+    if (!meta) return;
+    meta.end_ms = Date.now();
+    meta.error = params.errorText || "network error";
+    return;
+  }
+
+  if (method !== "Network.loadingFinished") return;
+  const meta = upsertCdpRequest(params.requestId);
+  if (!meta || !shouldTrackCdpMeta(meta)) return;
+  meta.end_ms = Date.now();
+
+  try {
+    const body = await sendDebuggerCommand(source.tabId, "Network.getResponseBody", { requestId: meta.request_id });
+    meta.response_body = clipString(redactImageBase64(decodeCdpBody(body.body || "", !!body.base64Encoded)));
+  } catch (e) {
+    meta.response_body = "";
+  }
+
+  const webMeta = findBestWebMeta({
+    method: meta.method,
+    url: meta.url,
+    start_epoch_ms: meta.start_ms,
+    end_epoch_ms: meta.end_ms || Date.now(),
+  }, source.tabId);
+  if (webMeta) {
+    webMeta.cdp_response_body = meta.response_body;
+    webMeta.cdp_mime_type = meta.mime_type || "";
+    webMeta.response_headers = Object.keys(webMeta.response_headers || {}).length ? webMeta.response_headers : (meta.response_headers || {});
+  }
+
+  setTimeout(() => {
+    if (!capture.running || capture.paused) return;
+    if (!shouldTrackCdpMeta(meta)) return;
+    const latestWebMeta = webMeta || findBestWebMeta({
+      method: meta.method,
+      url: meta.url,
+      start_epoch_ms: meta.start_ms,
+      end_epoch_ms: meta.end_ms || Date.now(),
+    }, source.tabId);
+    if (latestWebMeta && latestWebMeta.page_layer_emitted) return;
+    if (latestWebMeta && latestWebMeta.cdp_body_used_by_fallback) return;
+    if (meta.debugger_emitted) return;
+    meta.debugger_emitted = true;
+    pushEvent(cdpMetaToEvent(meta, latestWebMeta), { tab: { id: source.tabId } });
+  }, 800);
 }
 
 function findBestWebMeta(event, tabId) {
@@ -239,11 +663,13 @@ function sanitizeEvent(raw, sender) {
   const event = raw && typeof raw === "object" ? { ...raw } : {};
   const tabId = sender && sender.tab && sender.tab.id !== undefined ? Number(sender.tab.id) : capture.tabId;
   const webMeta = findBestWebMeta(event, tabId);
+  const cdpMeta = findBestCdpMeta(event);
   const method = String(event.method || (webMeta && webMeta.method) || "GET").toUpperCase();
   const url = String(event.url || (webMeta && webMeta.url) || "");
-  const responseHeaders = event.response_headers && Object.keys(event.response_headers || {}).length ? event.response_headers : (webMeta && webMeta.response_headers) || {};
+  const responseHeaders = event.response_headers && Object.keys(event.response_headers || {}).length ? event.response_headers : (webMeta && webMeta.response_headers) || (cdpMeta && cdpMeta.response_headers) || {};
   const requestHeaders = event.request_headers && Object.keys(event.request_headers || {}).length ? event.request_headers : (webMeta && webMeta.request_headers) || {};
   const requestPayload = event.request_payload || (webMeta && webMeta.request_body) || "";
+  const responseBody = event.response_body || (webMeta && webMeta.cdp_response_body) || (cdpMeta && cdpMeta.response_body) || "";
   return {
     seq: ++capture.seq,
     id: String(event.id || `${Date.now()}-${capture.seq}`),
@@ -266,8 +692,8 @@ function sanitizeEvent(raw, sender) {
     request_headers: requestHeaders || {},
     request_payload: clipString(requestPayload),
     response_headers: responseHeaders || {},
-    response_body: clipString(event.response_body || ""),
-    response_type: String(event.response_type || ""),
+    response_body: clipString(responseBody),
+    response_type: String(event.response_type || (webMeta && webMeta.cdp_mime_type) || (cdpMeta && cdpMeta.mime_type) || ""),
     error: clipString(event.error || (webMeta && webMeta.error) || "", 4000),
     initiator_stack: clipString(event.initiator_stack || "", 20000),
     web_request_id: webMeta && webMeta.request_id || "",
@@ -282,6 +708,34 @@ function pushEvent(raw, sender) {
   if (!methodAllowed(ev.method)) return { ok: true, ignored: true, reason: "method_filtered" };
   if (capture.tabId !== null && ev.tab_id !== null && Number(ev.tab_id) !== Number(capture.tabId)) {
     return { ok: true, ignored: true, reason: "tab_filtered" };
+  }
+  // Mark the webRequest meta as emitted so the fallback timer won't duplicate it
+  if (ev.web_request_id) {
+    const wm = webRequests.get(ev.web_request_id);
+    if (wm) {
+      wm.page_emitted = true;
+      if (ev.source === "webRequest") wm.fallback_emitted = true;
+      else wm.page_layer_emitted = true;
+    }
+  } else if (ev.url) {
+    // Best-effort: mark by URL+method match for cases where web_request_id isn't set
+    for (const wm of webRequests.values()) {
+      if (String(wm.url || "") === ev.url && String(wm.method || "").toUpperCase() === ev.method) {
+        wm.page_emitted = true;
+        if (ev.source === "webRequest") wm.fallback_emitted = true;
+        else wm.page_layer_emitted = true;
+        break;
+      }
+    }
+  }
+  if ((raw.update_existing || raw.partial_update || raw.replace_existing) && ev.id) {
+    const idx = capture.events.findIndex(x => x && x.id === ev.id && Number(x.tab_id) === Number(ev.tab_id));
+    if (idx !== -1) {
+      ev.seq = capture.events[idx].seq;
+      capture.events[idx] = { ...capture.events[idx], ...ev };
+      capture.updatedAt = nowIso();
+      return { ok: true, seq: ev.seq, updated: true };
+    }
   }
   capture.events.push(ev);
   const max = Math.max(100, Number(capture.maxEntries || DEFAULT_MAX_ENTRIES));
@@ -389,6 +843,65 @@ function installMainWorldCapture(config) {
   window[CFG_KEY] = cfg;
 
   function iso() { return new Date().toISOString(); }
+  const imageDataUrlRe = /\bdata:image\/[a-z0-9.+-]+;base64,([A-Za-z0-9+/=\s]{1000,})/gi;
+  const bareBase64Re = /^[A-Za-z0-9+/]{1000,}={0,2}$/;
+  const imageMimeRe = /^image\/[a-z0-9.+-]+$/i;
+  function isImageBase64Field(key) {
+    const k = String(key || "").toLowerCase();
+    return k === "b64_json" ||
+      k === "image_b64" ||
+      k === "image_base64" ||
+      k === "base64_image" ||
+      k === "image_data" ||
+      k === "base64data" ||
+      k === "base64_data" ||
+      k === "encodedimage" ||
+      k === "encoded_image" ||
+      k.endsWith("_image_b64") ||
+      k.endsWith("_image_base64") ||
+      k.endsWith("_base64data") ||
+      k.endsWith("_base64_data");
+  }
+  function redactBareImageBase64(value) {
+    const compact = String(value || "").replace(/\s+/g, "");
+    return bareBase64Re.test(compact) ? "[base64 ~" + compact.length + " chars]" : value;
+  }
+  function redactImageBase64Value(value, key) {
+    if (typeof value === "string") {
+      const withDataUrls = value.replace(imageDataUrlRe, function(m, b64) {
+        return m.slice(0, m.length - b64.length) + "[base64 ~" + b64.replace(/\s+/g, "").length + " chars]";
+      });
+      if (withDataUrls === value && isImageBase64Field(key)) return redactBareImageBase64(value);
+      return withDataUrls;
+    }
+    if (Array.isArray(value)) {
+      const out = value.map(function(v) { return redactImageBase64Value(v, key); });
+      for (let i = 0; i < out.length - 1; i += 1) {
+        if (typeof out[i] === "string" && imageMimeRe.test(out[i]) && typeof out[i + 1] === "string") {
+          out[i + 1] = redactBareImageBase64(out[i + 1]);
+        }
+      }
+      return out;
+    }
+    if (value && typeof value === "object") {
+      const out = {};
+      Object.keys(value).forEach(function(k) { out[k] = redactImageBase64Value(value[k], k); });
+      return out;
+    }
+    return value;
+  }
+  function redactImageBase64(text) {
+    const s = String(text || "");
+    const replaced = s.replace(imageDataUrlRe, function(m, b64) {
+      return m.slice(0, m.length - b64.length) + "[base64 ~" + b64.replace(/\s+/g, "").length + " chars]";
+    });
+    if (replaced !== s) return replaced;
+    try {
+      return JSON.stringify(redactImageBase64Value(JSON.parse(s), ""));
+    } catch (_) {
+      return s;
+    }
+  }
   function clip(value, maxChars) {
     if (value === null || value === undefined) return "";
     let s = "";
@@ -436,7 +949,7 @@ function installMainWorldCapture(config) {
   async function bodyPreview(body) {
     try {
       if (body === null || body === undefined) return "";
-      if (typeof body === "string") return clip(body);
+      if (typeof body === "string") return clip(redactImageBase64(body));
       if (body instanceof URLSearchParams) return clip(body.toString());
       if (typeof FormData !== "undefined" && body instanceof FormData) {
         const rows = [];
@@ -444,14 +957,20 @@ function installMainWorldCapture(config) {
           if (typeof File !== "undefined" && v instanceof File) rows.push([k, `[File name=${v.name} type=${v.type} size=${v.size}]`]);
           else rows.push([k, String(v)]);
         });
-        return clip(JSON.stringify(rows));
+        return clip(redactImageBase64(JSON.stringify(rows)));
       }
       if (typeof Blob !== "undefined" && body instanceof Blob) {
         const txt = await body.slice(0, Number((window[CFG_KEY] || {}).maxBodyChars || 60000)).text();
-        return clip(txt);
+        return clip(redactImageBase64(txt));
       }
-      if (body instanceof ArrayBuffer) return clip(new TextDecoder("utf-8", { fatal: false }).decode(body));
-      if (ArrayBuffer.isView(body)) return clip(new TextDecoder("utf-8", { fatal: false }).decode(body));
+      if (body instanceof ArrayBuffer) {
+        if (body.byteLength > 500000) return `[ArrayBuffer ${body.byteLength} bytes, too large to preview]`;
+        return clip(redactImageBase64(new TextDecoder("utf-8", { fatal: false }).decode(body)));
+      }
+      if (ArrayBuffer.isView(body)) {
+        if (body.byteLength > 500000) return `[TypedArray ${body.byteLength} bytes, too large to preview]`;
+        return clip(redactImageBase64(new TextDecoder("utf-8", { fatal: false }).decode(body)));
+      }
       if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) return "[ReadableStream]";
       return clip(body);
     } catch (e) {
@@ -546,18 +1065,26 @@ function installMainWorldCapture(config) {
           eventBase.request_payload = clip(requestPayload);
           eventBase.response_headers = responseHeaders;
           eventBase.initiator_stack = initiator;
-          try {
-            resp.clone().text().then((txt) => {
-              eventBase.response_body = clip(txt);
-              emit(eventBase);
-            }).catch((e) => {
-              eventBase.response_body = "";
-              eventBase.error = `[response read failed] ${String(e && e.message || e)}`;
-              emit(eventBase);
-            });
-          } catch (e) {
-            eventBase.error = `[response clone failed] ${String(e && e.message || e)}`;
+          const ct = (responseHeaders["content-type"] || responseHeaders["Content-Type"] || "").toLowerCase();
+          const isEventStream = ct.includes("text/event-stream");
+          const bodyLocked = resp && resp.body && resp.body.locked;
+          if (isEventStream || bodyLocked) {
+            eventBase.response_body = isEventStream ? "[SSE stream]" : "[body already consumed by page]";
             emit(eventBase);
+          } else {
+            try {
+              resp.clone().text().then((txt) => {
+                eventBase.response_body = clip(redactImageBase64(txt));
+                emit(eventBase);
+              }).catch((e) => {
+                eventBase.response_body = "";
+                eventBase.error = `[response read failed] ${String(e && e.message || e)}`;
+                emit(eventBase);
+              });
+            } catch (e) {
+              eventBase.error = `[response clone failed] ${String(e && e.message || e)}`;
+              emit(eventBase);
+            }
           }
         });
         return resp;
@@ -580,10 +1107,13 @@ function installMainWorldCapture(config) {
   XMLHttpRequest.prototype.open = function fpbNetworkCaptureXhrOpen(method, url) {
     try {
       this.__fpbNetworkCapture = {
+        event_id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
         method: String(method || "GET").toUpperCase(),
         url: absUrl(url),
         request_headers: {},
-        initiator_stack: stack()
+        initiator_stack: stack(),
+        last_stream_emit_ms: 0,
+        last_stream_len: 0
       };
     } catch (_) {}
     return orig.xhrOpen.apply(this, arguments);
@@ -607,28 +1137,59 @@ function installMainWorldCapture(config) {
     const reqPayloadPromise = bodyPreview(body);
     const xhr = this;
     let emitted = false;
+    function responseTextPreview() {
+      try {
+        if (!xhr.responseType || xhr.responseType === "text") return clip(redactImageBase64(xhr.responseText || ""));
+        if (xhr.responseType === "json") return clip(xhr.response);
+        return `[${xhr.responseType || "binary"} response]`;
+      } catch (e) {
+        return `[response read failed] ${String(e && e.message || e)}`;
+      }
+    }
+    function fillCommonEvent(ev, requestPayload) {
+      ev.id = meta.event_id || ev.id;
+      ev.status = Number(xhr.status || 0) || 0;
+      ev.ok = ev.status >= 200 && ev.status < 400;
+      ev.request_headers = meta.request_headers || {};
+      ev.request_payload = clip(requestPayload);
+      try { ev.response_headers = parseRawHeaders(xhr.getAllResponseHeaders()); } catch (_) { ev.response_headers = {}; }
+      ev.response_type = xhr.responseType || "";
+      ev.response_body = responseTextPreview();
+      ev.initiator_stack = meta.initiator_stack || "";
+      return ev;
+    }
+    function emitStreamPartial() {
+      try {
+        if (xhr.readyState !== 3) return;
+        if (xhr.responseType && xhr.responseType !== "text") return;
+        const text = xhr.responseText || "";
+        if (!text) return;
+        const now = Date.now();
+        const len = text.length;
+        if (now - Number(meta.last_stream_emit_ms || 0) < 1000 && len - Number(meta.last_stream_len || 0) < 4096) return;
+        meta.last_stream_emit_ms = now;
+        meta.last_stream_len = len;
+        Promise.resolve(reqPayloadPromise).then((requestPayload) => {
+          const ev = fillCommonEvent(baseEvent("xhr", meta.method, meta.url, startedPerf, startedIso, startedEpoch), requestPayload);
+          ev.partial_update = true;
+          ev.stream_state = "loading";
+          emit(ev);
+        });
+      } catch (_) {}
+    }
     function done(kind) {
       if (emitted) return;
       emitted = true;
       Promise.resolve(reqPayloadPromise).then((requestPayload) => {
-        const ev = baseEvent("xhr", meta.method, meta.url, startedPerf, startedIso, startedEpoch);
-        ev.status = Number(xhr.status || 0) || 0;
-        ev.ok = ev.status >= 200 && ev.status < 400;
-        ev.request_headers = meta.request_headers || {};
-        ev.request_payload = clip(requestPayload);
-        try { ev.response_headers = parseRawHeaders(xhr.getAllResponseHeaders()); } catch (_) { ev.response_headers = {}; }
-        ev.response_type = xhr.responseType || "";
-        try {
-          if (!xhr.responseType || xhr.responseType === "text") ev.response_body = clip(xhr.responseText || "");
-          else if (xhr.responseType === "json") ev.response_body = clip(xhr.response);
-          else ev.response_body = `[${xhr.responseType || "binary"} response]`;
-        } catch (e) { ev.response_body = `[response read failed] ${String(e && e.message || e)}`; }
+        const ev = fillCommonEvent(baseEvent("xhr", meta.method, meta.url, startedPerf, startedIso, startedEpoch), requestPayload);
+        ev.update_existing = true;
+        ev.stream_state = "done";
         if (kind && kind !== "loadend") ev.error = kind;
-        ev.initiator_stack = meta.initiator_stack || "";
         emit(ev);
       });
     }
     try {
+      xhr.addEventListener("readystatechange", emitStreamPartial);
       xhr.addEventListener("loadend", () => done("loadend"), { once: true });
       xhr.addEventListener("error", () => done("error"), { once: true });
       xhr.addEventListener("timeout", () => done("timeout"), { once: true });
@@ -727,18 +1288,30 @@ async function updateInjectedConfig(patch) {
 async function startCapture(payload, runtime) {
   installWebRequestListeners();
   const targetUrl = normalizeUrl(payload.target_url || payload.targetUrl || "");
-  const tabId = await findOrOpenTargetTab(targetUrl, {
-    active: payload.active !== false,
-    navigate: payload.navigate !== false
-  });
+  let tabId = Number(payload.tab_id || payload.tabId || 0) || 0;
+  let targetTab = null;
+  if (tabId) {
+    targetTab = await chrome.tabs.get(tabId);
+    if (!targetTab || !/^https?:\/\//i.test(String(targetTab.url || ""))) {
+      throw new Error("tabId does not point to an injectable http/https page");
+    }
+    if (payload.active !== false) await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+  } else {
+    tabId = await findOrOpenTargetTab(targetUrl, {
+      active: payload.active !== false,
+      navigate: payload.navigate !== false
+    });
+    targetTab = await chrome.tabs.get(tabId).catch(() => null);
+  }
   await waitForTabReady(tabId, Number(payload.wait_tab_ms || 15000));
+  const resolvedTargetUrl = targetUrl || String(targetTab && targetTab.url || "");
 
   capture.sessionId = String(payload.session_id || `netcap-${Date.now()}`);
   capture.running = true;
   capture.paused = false;
   capture.tabId = tabId;
-  capture.targetUrl = targetUrl;
-  capture.targetOrigin = originOf(targetUrl);
+  capture.targetUrl = resolvedTargetUrl;
+  capture.targetOrigin = originOf(resolvedTargetUrl);
   capture.methods = normalizeMethods(payload.methods);
   capture.maxEntries = Math.max(100, Math.min(20000, Number(payload.max_entries || DEFAULT_MAX_ENTRIES)));
   capture.maxBodyChars = Math.max(1000, Math.min(1000000, Number(payload.max_body_chars || DEFAULT_MAX_BODY_CHARS)));
@@ -750,11 +1323,13 @@ async function startCapture(payload, runtime) {
     capture.events = [];
     capture.seq = 0;
     webRequests.clear();
+    cdpRequests.clear();
   }
 
-  await runtime.progress(5, { stage: "network_capture_injecting", tab_id: tabId, target_url: targetUrl });
+  await runtime?.progress(5, { stage: "network_capture_injecting", tab_id: tabId, target_url: resolvedTargetUrl });
+  await attachDebugger(tabId);
   await injectCapture(tabId);
-  await runtime.progress(100, { stage: "network_capture_started", tab_id: tabId });
+  await runtime?.progress(100, { stage: "network_capture_started", tab_id: tabId });
   return { ...getStatus(), message: "network capture started" };
 }
 
@@ -770,6 +1345,7 @@ async function stopCapture() {
   capture.paused = false;
   capture.updatedAt = nowIso();
   await updateInjectedConfig({ enabled: false, paused: false });
+  await detachDebugger();
   return { ...getStatus(), message: "network capture stopped" };
 }
 
@@ -778,6 +1354,7 @@ function clearCapture() {
   capture.seq = 0;
   capture.updatedAt = nowIso();
   webRequests.clear();
+  cdpRequests.clear();
   return { ...getStatus(), message: "network capture cleared" };
 }
 
@@ -787,6 +1364,54 @@ function snapshot(payload = {}) {
   let items = capture.events.filter(ev => Number(ev.seq || 0) > sinceSeq);
   if (items.length > limit) items = items.slice(items.length - limit);
   return { ...getStatus(), events: items };
+}
+
+function updateEvent(payload = {}) {
+  const seq = Number(payload.seq);
+  const idx = capture.events.findIndex(e => Number(e.seq) === seq);
+  if (idx === -1) return { ...getStatus(), updated: false };
+  const patch = payload.patch && typeof payload.patch === "object" ? payload.patch : {};
+  const allowed = [
+    "request_headers",
+    "request_payload",
+    "response_headers",
+    "response_type",
+    "response_body"
+  ];
+  const next = { ...capture.events[idx] };
+  for (const key of allowed) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) next[key] = patch[key];
+  }
+  next.edited_at = nowIso();
+  capture.events[idx] = next;
+  capture.updatedAt = nowIso();
+  return { ...getStatus(), updated: true, event: next };
+}
+
+export async function runDebuggerExpression(tabId, expression, options = {}) {
+  const targetTabId = Number(tabId);
+  if (!targetTabId) throw new Error("tabId required");
+  if (debuggerAttachedTabId === null || Number(debuggerAttachedTabId) !== targetTabId) {
+    throw new Error(`network debugger is not attached to tab ${targetTabId}`);
+  }
+  try {
+    await sendDebuggerCommand(targetTabId, "Page.setBypassCSP", { enabled: true });
+  } catch (_) {}
+  const result = await sendDebuggerCommand(targetTabId, "Runtime.evaluate", {
+    expression: String(expression || ""),
+    awaitPromise: options.awaitPromise !== false,
+    returnByValue: options.returnByValue !== false,
+    userGesture: options.userGesture !== false,
+    timeout: Number(options.timeout || 120000)
+  });
+  if (result && result.exceptionDetails) {
+    const details = result.exceptionDetails;
+    const text = details.text || (details.exception && details.exception.description) || "Runtime.evaluate exception";
+    return { ok: false, error: text, exceptionDetails: details };
+  }
+  return (result && result.result && Object.prototype.hasOwnProperty.call(result.result, "value"))
+    ? result.result.value
+    : { ok: false, error: "Runtime.evaluate 没有返回可序列化结果", raw: result };
 }
 
 export async function handleNetworkRuntimeMessage(message, sender) {
@@ -806,6 +1431,17 @@ export async function runNetworkTask(msg, runtime) {
   if (action === "clear" || action === "clear_capture") return clearCapture();
   if (action === "status") return getStatus();
   if (action === "snapshot" || action === "get_snapshot") return snapshot(payload);
+  if (action === "delete_event" || action === "deleteevent") {
+    const seq = Number(payload.seq);
+    const idx = capture.events.findIndex(e => e.seq === seq);
+    const deleted = idx !== -1;
+    if (deleted) {
+      capture.events.splice(idx, 1);
+      capture.updatedAt = nowIso();
+    }
+    return { ...getStatus(), deleted, seq };
+  }
+  if (action === "update_event" || action === "updateevent") return updateEvent(payload);
   throw new Error(`unsupported network action: ${action}`);
 }
 

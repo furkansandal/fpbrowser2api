@@ -1,7 +1,7 @@
 import { dismissVeoChangelogModalIfPresent, runVeoTask } from "./providers/veo_provider.js";
 import { runDreaminaTask } from "./providers/dreamina_provider.js";
 import { maybeHandleGptCloudflare, runGptTask } from "./providers/gpt_provider.js";
-import { runNetworkTask, handleNetworkRuntimeMessage } from "./providers/network_provider.js";
+import { runNetworkTask, handleNetworkRuntimeMessage, runDebuggerExpression } from "./providers/network_provider.js";
 
 let ws = null;
 let reconnectTimer = null;
@@ -11,9 +11,12 @@ let connectSeq = 0;
 const HEARTBEAT_INTERVAL_MS = 15000;
 const NEWAPI_CHARGE_BASE_URL = "https://www.newtoken.club";
 const NEWAPI_CHARGE_MODEL = "fpbrowser-use";
+const ANALYSIS_WINDOW_STATE_STORAGE_KEY = "analysis_window_state";
 // 临时关闭 NewAPI 扣费。需要恢复时改为 true 即可。
 const NEWAPI_CHARGE_ENABLED = false;
 const VEO_HUMAN_ACTIVITY_ACTIONS = new Set(["human_activity", "simulate_human_activity"]);
+const analysisAiControllers = new Map();
+const analysisWindowStateTimers = new Map();
 let status = {
   bridgeUrl: "",
   spaceId: "",
@@ -27,6 +30,45 @@ let status = {
   reconnectScheduled: false,
   activeTask: null
 };
+
+function isAnalysisPageUrl(url) {
+  return String(url || "").startsWith(chrome.runtime.getURL("analysis.html"));
+}
+
+async function windowHasAnalysisPage(windowId) {
+  try {
+    const tabs = await chrome.tabs.query({ windowId });
+    return (tabs || []).some(tab => isAnalysisPageUrl(tab && tab.url));
+  } catch (_) {
+    return false;
+  }
+}
+
+async function saveAnalysisWindowState(win) {
+  if (!win || !win.id) return;
+  if (!await windowHasAnalysisPage(win.id)) return;
+  const state = String(win.state || "normal");
+  const patch = {
+    state,
+    updated_at: new Date().toISOString()
+  };
+  if (Number.isFinite(win.left)) patch.left = win.left;
+  if (Number.isFinite(win.top)) patch.top = win.top;
+  if (Number.isFinite(win.width)) patch.width = win.width;
+  if (Number.isFinite(win.height)) patch.height = win.height;
+  try { await chrome.storage.local.set({ [ANALYSIS_WINDOW_STATE_STORAGE_KEY]: patch }); } catch (_) {}
+}
+
+function queueAnalysisWindowStateSave(win) {
+  if (!win || !win.id) return;
+  const oldTimer = analysisWindowStateTimers.get(win.id);
+  if (oldTimer) clearTimeout(oldTimer);
+  const timer = setTimeout(() => {
+    analysisWindowStateTimers.delete(win.id);
+    saveAnalysisWindowState(win).catch(() => {});
+  }, 250);
+  analysisWindowStateTimers.set(win.id, timer);
+}
 
 function beijingTimeString(date = new Date()) {
   const d = new Date(date.getTime() + 8 * 60 * 60 * 1000);
@@ -197,6 +239,145 @@ async function waitForBridgeReady(timeoutMs = 5000) {
     await sleep(120);
   }
   return status.wsState === "open" && status.helloOk;
+}
+
+function buildAnalysisGeneratedTestExpression(code, config) {
+  const codeText = String(code || "").trim();
+  const configJson = JSON.stringify(config || {});
+  const codeHead = JSON.stringify(codeText.slice(0, 500));
+  return `
+(async function() {
+  function toPlain(value) {
+    if (value == null) return value;
+    if (value instanceof Error) return { name: value.name, message: value.message, stack: value.stack };
+    try {
+      JSON.stringify(value);
+      return value;
+    } catch (_) {
+      return String(value);
+    }
+  }
+
+  try {
+    var config = ${configJson};
+    var module = { exports: {} };
+    var exports = module.exports;
+${codeText}
+    var runner = (typeof runGeneratedTest === "function" ? runGeneratedTest :
+      (typeof runTest === "function" ? runTest :
+      (typeof module.exports === "function" ? module.exports :
+      (module.exports && typeof module.exports.runGeneratedTest === "function" ? module.exports.runGeneratedTest :
+      (module.exports && typeof module.exports.runTest === "function" ? module.exports.runTest :
+      (exports && typeof exports.runGeneratedTest === "function" ? exports.runGeneratedTest :
+      (exports && typeof exports.runTest === "function" ? exports.runTest : null)))))));
+
+    if (typeof runner !== "function") {
+      return {
+        ok: false,
+        error: "生成代码没有暴露 runGeneratedTest(config) 或 runTest(config) 入口",
+        codeHead: ${codeHead}
+      };
+    }
+
+    var value = await runner(config);
+    if (value == null) {
+      return { ok: false, error: "测试入口执行完成，但返回值为空", result: value };
+    }
+    return { ok: true, result: toPlain(value) };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message || err), detail: toPlain(err) };
+  }
+})()
+`;
+}
+
+async function runAnalysisGeneratedTestWithDebugger(tabId, code, config) {
+  const target = { tabId: Number(tabId) };
+  const expression = buildAnalysisGeneratedTestExpression(code, config);
+  let attached = false;
+  try {
+    try {
+      await chrome.debugger.attach(target, "1.3");
+      attached = true;
+    } catch (e) {
+      const msg = String(e && e.message || e);
+      if (/another debugger is already attached/i.test(msg)) {
+        return await runDebuggerExpression(target.tabId, expression, {
+          awaitPromise: true,
+          returnByValue: true,
+          userGesture: true,
+          timeout: 120000
+        });
+      }
+      throw e;
+    }
+    try {
+      await chrome.debugger.sendCommand(target, "Page.setBypassCSP", { enabled: true });
+    } catch (_) {}
+    const result = await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+      userGesture: true,
+      timeout: 120000
+    });
+    if (result && result.exceptionDetails) {
+      const details = result.exceptionDetails;
+      const text = details.text || (details.exception && details.exception.description) || "Runtime.evaluate exception";
+      return { ok: false, error: text, exceptionDetails: details };
+    }
+    return (result && result.result && Object.prototype.hasOwnProperty.call(result.result, "value"))
+      ? result.result.value
+      : { ok: false, error: "Runtime.evaluate 没有返回可序列化结果", raw: result };
+  } finally {
+    if (attached) {
+      try { await chrome.debugger.detach(target); } catch (_) {}
+    }
+  }
+}
+
+async function runAnalysisExpressionWithDebugger(tabId, expression, options = {}) {
+  const target = { tabId: Number(tabId) };
+  let attached = false;
+  try {
+    try {
+      await chrome.debugger.attach(target, "1.3");
+      attached = true;
+    } catch (e) {
+      const msg = String(e && e.message || e);
+      if (/another debugger is already attached/i.test(msg)) {
+        return await runDebuggerExpression(target.tabId, expression, {
+          awaitPromise: options.awaitPromise !== false,
+          returnByValue: options.returnByValue !== false,
+          userGesture: options.userGesture !== false,
+          timeout: Number(options.timeout || 60000)
+        });
+      }
+      throw e;
+    }
+    try {
+      await chrome.debugger.sendCommand(target, "Page.setBypassCSP", { enabled: true });
+    } catch (_) {}
+    const result = await chrome.debugger.sendCommand(target, "Runtime.evaluate", {
+      expression: String(expression || ""),
+      awaitPromise: options.awaitPromise !== false,
+      returnByValue: options.returnByValue !== false,
+      userGesture: options.userGesture !== false,
+      timeout: Number(options.timeout || 60000)
+    });
+    if (result && result.exceptionDetails) {
+      const details = result.exceptionDetails;
+      const text = details.text || (details.exception && details.exception.description) || "Runtime.evaluate exception";
+      return { ok: false, error: text, exceptionDetails: details };
+    }
+    return (result && result.result && Object.prototype.hasOwnProperty.call(result.result, "value"))
+      ? result.result.value
+      : { ok: false, error: "Runtime.evaluate did not return a serializable value", raw: result };
+  } finally {
+    if (attached) {
+      try { await chrome.debugger.detach(target); } catch (_) {}
+    }
+  }
 }
 
 function scheduleReconnect() {
@@ -378,23 +559,29 @@ async function runTask(msg) {
   let result;
   const payload = msg.payload || {};
   if (payload.action === "google_auto_login" || payload.workflow_kind === "google_auto_login" || msg.provider === "google") {
-    await chargeNewapiUsage("google_auto_login", { task_id: taskId, provider: msg.provider || "google" });
-    await runtime.progress(5, { stage: "google_auto_login_start" });
-    result = await runGoogleAutoLogin({
-      googleAccount: payload.google_account || payload.googleAccount || "",
-      googlePassword: payload.google_password || payload.googlePassword || "",
-      googleEfa: payload.google_efa || payload.googleEfa || ""
-    });
-    const targetUrl = normalizeRedirectUrl(payload.target_url || payload.after_login_url || "");
-    if (targetUrl) {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      const tabId = tabs && tabs[0] && tabs[0].id;
-      if (tabId) {
-        await chrome.tabs.update(tabId, { url: targetUrl, active: true });
-        result = { ...(result || {}), redirected_to: targetUrl };
+    const loginTab = await getActiveTab();
+    const loginUrl = String(loginTab?.url || "");
+    if (loginTab?.id && isGoogleAutoLoginProtectedUrl(loginUrl)) {
+      result = { skipped: true, reason: "protected_google_page", url: loginUrl };
+      await runtime.progress(100, { stage: "google_auto_login_skipped", reason: "protected_google_page" });
+    } else {
+      await chargeNewapiUsage("google_auto_login", { task_id: taskId, provider: msg.provider || "google" });
+      await runtime.progress(5, { stage: "google_auto_login_start" });
+      result = await runGoogleAutoLogin({
+        googleAccount: payload.google_account || payload.googleAccount || "",
+        googlePassword: payload.google_password || payload.googlePassword || "",
+        googleEfa: payload.google_efa || payload.googleEfa || ""
+      }, loginTab?.id ? { tabId: loginTab.id, url: loginUrl } : {});
+      const targetUrl = normalizeRedirectUrl(payload.target_url || payload.after_login_url || "");
+      if (targetUrl) {
+        const tabId = loginTab?.id;
+        if (tabId) {
+          await chrome.tabs.update(tabId, { url: targetUrl, active: true });
+          result = { ...(result || {}), redirected_to: targetUrl };
+        }
       }
+      await runtime.progress(100, { stage: "google_auto_login_done", target_url: targetUrl || undefined });
     }
-    await runtime.progress(100, { stage: "google_auto_login_done", target_url: targetUrl || undefined });
   } else if (msg.provider === "veo") {
     const action = String(payload.action || payload.workflow_kind || "").trim().toLowerCase();
     if (!VEO_HUMAN_ACTIVITY_ACTIONS.has(action) && action !== "current_page" && action !== "get_current_page" && action !== "current_url" && action !== "get_current_url" && action !== "fetch_tokens" && action !== "fetch_access_tokens" && action !== "get_access_tokens" && action !== "create_flow_project" && action !== "flow_project_create" && action !== "create_project" && action !== "delete_flow_project" && action !== "flow_project_delete" && action !== "delete_project" && action !== "balance_refresh" && action !== "refresh_balance") {
@@ -556,6 +743,17 @@ function isGoogleAutoLoginWatchUrl(raw) {
   }
 }
 
+// AI Studio 页面会显示当前登录账号的邮箱，Google 自动登录不得在这里执行
+// DOM 检测、点击或导航。它仍保留在 Google URL 监控范围内，由各登录入口静默跳过。
+function isGoogleAutoLoginProtectedUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    return u.protocol === "https:" && u.hostname.toLowerCase() === "aistudio.google.com";
+  } catch (_) {
+    return false;
+  }
+}
+
 function isChatGptWatchUrl(raw) {
   try {
     const u = new URL(String(raw || ""));
@@ -583,6 +781,76 @@ async function getActiveTab() {
   return Array.isArray(tabs) && tabs[0] ? tabs[0] : null;
 }
 
+// clickGoogleProviderSignInButtonInTab 处理第三方 OAuth 起始页（如
+// labs.google/fx/api/auth/signin）：这类页面并非 accounts.google.com，而是显示一个
+// "Sign in with Google" 按钮，点击后才会把 form POST 到 .../auth/signin/google
+// 并跳转到 accounts.google.com。若不点它而直接导航到 accounts.google.com，会丢失
+// OAuth 的 callbackUrl 上下文。这里在页面内识别并点击该按钮。
+async function clickGoogleProviderSignInButtonInTab(tabId) {
+  const frames = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: async () => {
+      const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+      const visible = (el) => {
+        if (!el) return false;
+        const st = getComputedStyle(el);
+        if (st.visibility === "hidden" || st.display === "none" || Number(st.opacity || "1") === 0) return false;
+        const r = el.getBoundingClientRect();
+        return r.width > 1 && r.height > 1 && r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+      };
+      const clickHuman = async (el) => {
+        if (!el) return false;
+        try { el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" }); } catch (_) {}
+        await sleep(80);
+        const r = el.getBoundingClientRect();
+        const x = Math.max(1, Math.min(innerWidth - 2, r.left + r.width / 2));
+        const y = Math.max(1, Math.min(innerHeight - 2, r.top + r.height / 2));
+        const target = document.elementFromPoint(x, y) || el;
+        for (const t of ["pointerover", "mouseover", "pointermove", "mousemove", "pointerdown", "mousedown"]) {
+          target.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, buttons: t.endsWith("down") ? 1 : 0 }));
+        }
+        try { if (typeof target.focus === "function") target.focus({ preventScroll: true }); } catch (_) {}
+        for (const t of ["pointerup", "mouseup", "click"]) {
+          target.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, buttons: 0, detail: 1 }));
+        }
+        return true;
+      };
+      const matchesGoogleText = (raw) => {
+        const txt = String(raw || "").replace(/\s+/g, " ").trim().toLowerCase();
+        if (!txt || txt.length > 120) return false;
+        return /sign in with google|continue with google|log in with google|使用\s*google\s*登录|通过\s*google\s*登录|用\s*google\s*登录|使用\s*google\s*帐号登录|使用\s*google\s*账号登录|googleで(?:ログイン|サインイン)|google\s*で(?:ログイン|サインイン)|google(?:로|으로)\s*로그인|über\s*google\s*anmelden|mit\s*google\s*anmelden/i.test(txt);
+      };
+
+      // 1) 优先：action 指向 .../auth/signin/google 的表单里的提交按钮。
+      const providerForm = Array.from(document.querySelectorAll('form[action]'))
+        .filter(visible)
+        .find(f => /\/auth\/signin\/google\b/i.test(String(f.getAttribute("action") || f.action || "")));
+      if (providerForm) {
+        const btn = Array.from(providerForm.querySelectorAll("button[type='submit'], button, [role='button'], input[type='submit']"))
+          .find(visible);
+        if (btn) {
+          await clickHuman(btn);
+          return { clicked: true, source: "provider_form_submit", url: String(location.href || "") };
+        }
+      }
+
+      // 2) 退化：按可见文案匹配 "Sign in with Google" 按钮/链接。
+      const byText = Array.from(document.querySelectorAll("button, [role='button'], a, input[type='submit']"))
+        .filter(visible)
+        .find(el => matchesGoogleText(el.innerText || el.textContent || el.value || el.getAttribute("aria-label")));
+      if (byText) {
+        const clickable = byText.closest("button, [role='button'], a") || byText;
+        await clickHuman(clickable);
+        return { clicked: true, source: "provider_text_button", url: String(location.href || "") };
+      }
+
+      return { clicked: false, reason: "provider_button_not_found", url: String(location.href || "") };
+    }
+  });
+  return Array.isArray(frames) && frames[0] ? frames[0].result : { clicked: false, reason: "no_frame" };
+}
+
 async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
   const oldCfg = await getConfig();
   const creds = {
@@ -604,15 +872,48 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
   if (!tab) tab = await getActiveTab();
   if (!tab || !tab.id) throw new Error("no active tab found");
   const tabId = tab.id;
-  const curUrl = String(options.url || tab.url || "");
-  if (options.onlyIfGoogleLoginPage && !isGoogleLoginUrl(curUrl)) {
+  let curUrl = String(options.url || tab.url || "");
+  if (isGoogleAutoLoginProtectedUrl(curUrl)) {
+    return { skipped: true, reason: "protected_google_page", url: curUrl };
+  }
+  // onlyIfGoogleLoginPage 用于自动监听：只在真正的登录页上动作。但第三方 OAuth
+  // 起始页（如 labs.google/fx/api/auth/signin）并非 accounts.google.com，
+  // isGoogleLoginUrl 会判 false。这类页面同样是合法登录入口（调用方已用 watch URL +
+  // DOM 文案双重确认过），必须放行，否则监听路径在此直接 skip，走不到下面点击
+  // "Sign in with Google" 并跳转 accounts.google.com 的逻辑。真正的非登录页仍由
+  // 下方的 DOM 检测兜底拦下。
+  if (options.onlyIfGoogleLoginPage && !isGoogleLoginUrl(curUrl) && !isGoogleAutoLoginWatchUrl(curUrl)) {
     return { skipped: true, reason: "not_google_login_page", url: curUrl };
   }
   if (!isGoogleAccountsUrl(curUrl)) {
-    await chrome.tabs.update(tabId, { url: "https://accounts.google.com/", active: true });
+    // 第三方 OAuth 起始页（如 labs.google/fx/api/auth/signin）：先点它自己的
+    // "Sign in with Google" 按钮走正常 OAuth 流程；点不到再退回直接导航。
+    let clickedProvider = false;
+    try {
+      const providerClick = await clickGoogleProviderSignInButtonInTab(tabId);
+      clickedProvider = !!(providerClick && providerClick.clicked);
+      await pushLog("info", "Google provider sign-in button", providerClick || { clicked: false });
+    } catch (e) {
+      await pushLog("debug", "Google provider button click failed", { error: String(e && e.message || e) });
+    }
+    if (clickedProvider) {
+      await waitTabComplete(tabId, 45000);
+      await sleep(1200);
+      try {
+        const afterClick = await chrome.tabs.get(tabId);
+        curUrl = String(afterClick && afterClick.url || curUrl);
+      } catch (_) {}
+    }
+    if (!isGoogleAccountsUrl(curUrl)) {
+      await chrome.tabs.update(tabId, { url: "https://accounts.google.com/", active: true });
+    }
   }
   await waitTabComplete(tabId, 45000);
   await sleep(800);
+  try {
+    const refreshed = await chrome.tabs.get(tabId);
+    curUrl = String(refreshed && refreshed.url || curUrl);
+  } catch (_) {}
   if (options.onlyIfGoogleLoginPage && !isGoogleLoginUrl(curUrl)) {
     const detected = await detectGoogleLoginPageInTab(tabId).catch(() => null);
     if (!shouldGoogleAutoLoginActOnPageResult(detected)) {
@@ -778,9 +1079,71 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
           await clickHuman(clickable);
           return true;
         };
+        const clickNotNow = async () => {
+          const candidates = Array.from(document.querySelectorAll(
+            'button, [role="button"], a, [jsname], [data-is-touch-wrapper]'
+          )).filter(visible);
+          const hit = candidates.find(el => {
+            const txt = String(el.innerText || el.textContent || el.getAttribute("aria-label") || "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+            if (!txt || txt.length > 80) return false;
+            return txt === "not now";
+          });
+          if (!hit) return false;
+          const clickable = hit.closest('[role="button"], button, a') || hit;
+          await clickHuman(clickable);
+          return true;
+        };
+        const clickCancelIfRecoveryPage = async () => {
+          // 识别 "Make sure you can always sign in" 找回信息页，点击 Cancel 跳过
+          const bodyText = String(document.body && document.body.innerText || "");
+          if (!/make sure you can always sign in/i.test(bodyText)) return false;
+          const candidates = Array.from(document.querySelectorAll(
+            'button, [role="button"], a'
+          )).filter(visible);
+          const hit = candidates.find(el => {
+            const txt = String(el.innerText || el.textContent || el.getAttribute("aria-label") || "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+            return txt === "cancel";
+          });
+          if (!hit) return false;
+          const clickable = hit.closest('[role="button"], button, a') || hit;
+          await clickHuman(clickable);
+          return true;
+        };
+        const clickSkipIfAddressPage = async () => {
+          // 识别 "Set a home address" 地址设置页，点击 Skip 跳过
+          const bodyText = String(document.body && document.body.innerText || "");
+          if (!/set a home address/i.test(bodyText)) return false;
+          const candidates = Array.from(document.querySelectorAll(
+            'button, [role="button"], a'
+          )).filter(visible);
+          const hit = candidates.find(el => {
+            const txt = String(el.innerText || el.textContent || el.getAttribute("aria-label") || "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .toLowerCase();
+            return txt === "skip";
+          });
+          if (!hit) return false;
+          const clickable = hit.closest('[role="button"], button, a') || hit;
+          await clickHuman(clickable);
+          return true;
+        };
 
         const url = String(location.href || "");
-        if (!/accounts\.google\.com/i.test(url)) return { done: true, action: "left_google", url };
+        // gds.google.com/web/recoveryoptions 等 Google 账号附属页也需要处理，不能视为已离开
+        if (!/accounts\.google\.com/i.test(url) && !/gds\.google\.com/i.test(url)) return { done: true, action: "left_google", url };
+
+        // 优先处理弹窗/提示页面（必须在输入框检查之前）：
+        // 这些页面可能含 input[type='email'] 等，若不先拦截会误填账号。
+        if (await clickCancelIfRecoveryPage()) return { done: false, action: "clicked_cancel_recovery", url };
+        if (await clickSkipIfAddressPage()) return { done: false, action: "clicked_skip_address", url };
+        if (await clickNotNow()) return { done: false, action: "clicked_not_now", url };
 
         // 优先处理当前页明确存在的输入框。Google 密码页左侧会显示邮箱，
         // 若先扫账号文本会误点左侧账号区域，导致一直 clicked_account_picker。
@@ -822,6 +1185,9 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
       email: 3500,
       password: 2000,
       need_2fa: 2000,
+      clicked_not_now: 2500,
+      clicked_cancel_recovery: 2500,
+      clicked_skip_address: 2500,
       clicked_authenticator_option: 2500,
       clicked_account_picker: 2500,
       idle: 900
@@ -878,6 +1244,7 @@ const veoChangelogLastByTab = new Map();
 
 async function maybeRunGoogleAutoLoginForTab(tabId, url, reason = "tab_event") {
   if (!tabId || !isGoogleAutoLoginWatchUrl(url)) return { skipped: true, reason: "not_google_watch_page" };
+  if (isGoogleAutoLoginProtectedUrl(url)) return { skipped: true, reason: "protected_google_page", url };
 
   const cfg = await getConfig();
   if (!cfg.googleAutoLoginWatchEnabled) return { skipped: true, reason: "disabled" };
@@ -1218,8 +1585,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (type === "popup.googleAutoLogin") {
+      const tab = await getActiveTab();
+      const url = String(tab?.url || "");
+      if (tab?.id && isGoogleAutoLoginProtectedUrl(url)) {
+        sendResponse({
+          ok: true,
+          result: { skipped: true, reason: "protected_google_page", url }
+        });
+        return;
+      }
       await chargeNewapiUsage("popup_google_auto_login", { source: "popup.googleAutoLogin" });
-      const result = await runGoogleAutoLogin(message.creds || {}, { charged: true });
+      const result = await runGoogleAutoLogin(
+        message.creds || {},
+        tab?.id ? { charged: true, tabId: tab.id, url } : { charged: true }
+      );
       sendResponse({ ok: true, result });
       return;
     }
@@ -1245,7 +1624,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     if (type === "popup.setActiveTab") {
-      const tab = String(message.tab || "") === "transfer" ? "transfer" : "debug";
+      const allowed = ["debug", "transfer", "analysis"];
+      const tab = allowed.includes(String(message.tab || "")) ? String(message.tab) : "debug";
       await chrome.storage.local.set({ popup_active_tab: tab });
       sendResponse({ ok: true });
       return;
@@ -1258,6 +1638,231 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (type === "popup.clearLogs") {
       await chrome.storage.local.set({ debug_logs: [] });
       sendResponse({ ok: true });
+      return;
+    }
+    if (type === "popup.networkCapture.start") {
+      let tab = null;
+      const requestedTabId = Number(message.tabId || message.tab_id || 0) || 0;
+      if (requestedTabId) {
+        try { tab = await chrome.tabs.get(requestedTabId); } catch (_) { tab = null; }
+      }
+      if (!tab) {
+        const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        tab = tabs && tabs[0];
+      }
+      const url = String(tab && tab.url || "");
+      if (!/^https?:\/\//i.test(url)) {
+        sendResponse({
+          ok: false,
+          error: "连接失败：当前页面不是可注入的目标网页，请切换到 http/https 业务页面后再点击开始",
+          current_url: url
+        });
+        return;
+      }
+      const resp = await runNetworkTask({ payload: { action: "start", tabId: tab.id } }, null);
+      sendResponse({ ok: true, result: resp });
+      return;
+    }
+    if (type === "popup.networkCapture.pause") {
+      const resp = await runNetworkTask({ payload: { action: "pause" } }, null);
+      sendResponse({ ok: true, result: resp });
+      return;
+    }
+    if (type === "popup.networkCapture.resume") {
+      const resp = await runNetworkTask({ payload: { action: "resume" } }, null);
+      sendResponse({ ok: true, result: resp });
+      return;
+    }
+    if (type === "popup.networkCapture.stop") {
+      const resp = await runNetworkTask({ payload: { action: "stop" } }, null);
+      sendResponse({ ok: true, result: resp });
+      return;
+    }
+    if (type === "popup.networkCapture.clear") {
+      const resp = await runNetworkTask({ payload: { action: "clear" } }, null);
+      sendResponse({ ok: true, result: resp });
+      return;
+    }
+    if (type === "popup.networkCapture.status") {
+      const resp = await runNetworkTask({ payload: { action: "status" } }, null);
+      sendResponse({ ok: true, result: resp });
+      return;
+    }
+    if (type === "popup.networkCapture.snapshot") {
+      const since_seq = message.since_seq != null ? Number(message.since_seq) : undefined;
+      const limit = message.limit != null ? Number(message.limit) : undefined;
+      const payload = { action: "snapshot" };
+      if (since_seq != null) payload.since_seq = since_seq;
+      if (limit != null) payload.limit = limit;
+      const resp = await runNetworkTask({ payload }, null);
+      sendResponse({ ok: true, result: resp });
+      return;
+    }
+    if (type === "popup.networkCapture.deleteEvent") {
+      const resp = await runNetworkTask({ payload: { action: "delete_event", seq: message.seq } }, null);
+      sendResponse({ ok: true, result: resp });
+      return;
+    }
+    if (type === "popup.networkCapture.updateEvent") {
+      const resp = await runNetworkTask({ payload: { action: "update_event", seq: message.seq, patch: message.patch || {} } }, null);
+      sendResponse({ ok: true, result: resp });
+      return;
+    }
+    if (type === "popup.analysis.getConfig") {
+      const got = await chrome.storage.local.get(["analysis_api_key", "analysis_model"]);
+      sendResponse({ ok: true, result: {
+        apiKey: got.analysis_api_key || "",
+        model:  got.analysis_model  || ""
+      }});
+      return;
+    }
+    if (type === "popup.analysis.saveConfig") {
+      const c = message.config || {};
+      await chrome.storage.local.set({
+        analysis_api_key: String(c.apiKey || ""),
+        analysis_model:   String(c.model  || "")
+      });
+      sendResponse({ ok: true });
+      return;
+    }
+    if (type === "popup.analysis.listModels") {
+      const got = await chrome.storage.local.get(["analysis_api_key"]);
+      const cfg = await getConfig();
+      const token = String(got.analysis_api_key || cfg.bridgeToken || "").trim();
+      try {
+        const resp = await fetch(`${NEWAPI_CHARGE_BASE_URL}/v1/models`, {
+          headers: token ? { "Authorization": `Bearer ${token}` } : {}
+        });
+        const data = await resp.json();
+        sendResponse({ ok: true, result: data });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+      return;
+    }
+    if (type === "popup.analysis.fetchScriptFragment") {
+      // Fetch ~4 KB of a minified JS file around a given line:col position
+      const scriptUrl = String(message.url || "").trim();
+      const lineNum = Math.max(0, Number(message.line || 0));
+      const colNum = Math.max(0, Number(message.col || 0));
+      const contextBytes = Math.min(8192, Math.max(512, Number(message.contextBytes || 4096)));
+      if (!scriptUrl) { sendResponse({ ok: false, error: "url required" }); return; }
+      let text;
+      try {
+        const r = await fetch(scriptUrl, { cache: "force-cache" });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        text = await r.text();
+      } catch (e) {
+        sendResponse({ ok: false, error: `fetch failed: ${e.message}` });
+        return;
+      }
+      // Convert line:col to byte offset (lines are 0-indexed from CDP)
+      let offset = 0;
+      let currentLine = 0;
+      while (currentLine < lineNum && offset < text.length) {
+        const nl = text.indexOf("\n", offset);
+        if (nl === -1) { offset = text.length; break; }
+        offset = nl + 1;
+        currentLine++;
+      }
+      offset = Math.min(offset + colNum, text.length);
+      const half = Math.floor(contextBytes / 2);
+      const start = Math.max(0, offset - half);
+      const end = Math.min(text.length, offset + half);
+      sendResponse({
+        ok: true,
+        fragment: text.slice(start, end),
+        fragmentStart: start,
+        fragmentEnd: end,
+        totalLength: text.length,
+        cursorOffset: offset - start
+      });
+      return;
+    }
+    if (type === "popup.analysis.runGeneratedTest") {
+      const tabId = Number(message.tabId || 0);
+      const code = String(message.code || "");
+      const config = message.config || {};
+      if (!tabId) { sendResponse({ ok: false, error: "tabId required" }); return; }
+      if (!code.trim()) { sendResponse({ ok: false, error: "generated code required" }); return; }
+      try {
+        const result = await runAnalysisGeneratedTestWithDebugger(tabId, code, config);
+        sendResponse({ ok: true, result });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e && e.message || e) });
+      }
+      return;
+    }
+    if (type === "popup.analysis.evaluateTargetPage") {
+      const tabId = Number(message.tabId || 0);
+      const expression = String(message.expression || "");
+      const options = message.options || {};
+      if (!tabId) { sendResponse({ ok: false, error: "tabId required" }); return; }
+      if (!expression.trim()) { sendResponse({ ok: false, error: "expression required" }); return; }
+      try {
+        const result = await runAnalysisExpressionWithDebugger(tabId, expression, options);
+        sendResponse({ ok: true, result });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e && e.message || e) });
+      }
+      return;
+    }
+    if (type === "popup.analysis.cancelAiChat") {
+      const requestId = String(message.requestId || "");
+      const controller = requestId ? analysisAiControllers.get(requestId) : null;
+      if (controller) {
+        try { controller.abort(); } catch (_) {}
+        analysisAiControllers.delete(requestId);
+      }
+      sendResponse({ ok: true, cancelled: !!controller });
+      return;
+    }
+    if (type === "popup.analysis.aiChat") {
+      const got = await chrome.storage.local.get(["analysis_api_key"]);
+      const cfg = await getConfig();
+      const token = String(got.analysis_api_key || cfg.bridgeToken || "").trim();
+      if (!token) { sendResponse({ ok: false, error: "bridge_token 未配置" }); return; }
+      const baseUrl = NEWAPI_CHARGE_BASE_URL.replace(/\/+$/, "");
+      const model = String(message.model || "").trim() || "claude-sonnet-4-6";
+      const messages = Array.isArray(message.messages) ? message.messages : [];
+      const tools = Array.isArray(message.tools) ? message.tools : undefined;
+      const body = { model, messages, max_tokens: message.max_tokens || 8192 };
+      if (tools && tools.length) { body.tools = tools; body.tool_choice = { type: "auto" }; }
+      if (message.system) body.system = String(message.system);
+      let resp, text;
+      const requestId = String(message.requestId || message.request_id || "");
+      const controller = requestId && typeof AbortController !== "undefined" ? new AbortController() : null;
+      if (requestId && controller) analysisAiControllers.set(requestId, controller);
+      try {
+        resp = await fetch(`${baseUrl}/v1/messages`, {
+          method: "POST",
+          headers: {
+            "x-api-key": token,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json"
+          },
+          signal: controller ? controller.signal : undefined,
+          body: JSON.stringify(body)
+        });
+        text = await resp.text();
+      } catch (e) {
+        if (requestId) analysisAiControllers.delete(requestId);
+        if (String(e && e.name || "") === "AbortError") {
+          sendResponse({ ok: false, stopped: true, error: "已停止" });
+          return;
+        }
+        sendResponse({ ok: false, error: `AI request failed: ${e.message}` });
+        return;
+      }
+      if (requestId) analysisAiControllers.delete(requestId);
+      let json = null;
+      try { json = text ? JSON.parse(text) : null; } catch (_) {}
+      if (!resp.ok) {
+        const msg = (json && (json.error?.message || json.error?.code)) || text || `HTTP ${resp.status}`;
+        sendResponse({ ok: false, error: msg });
+        return;
+      }
+      sendResponse({ ok: true, result: json });
       return;
     }
     sendResponse({ ok: false, error: "unknown message type" });
@@ -1313,6 +1918,18 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   veoChangelogRunningTabs.delete(tabId);
   veoChangelogLastByTab.delete(tabId);
 });
+
+try {
+  chrome.windows.onBoundsChanged.addListener((win) => {
+    queueAnalysisWindowStateSave(win);
+  });
+  chrome.windows.onFocusChanged.addListener((windowId) => {
+    if (!windowId || windowId === chrome.windows.WINDOW_ID_NONE) return;
+    chrome.windows.get(windowId).then(win => {
+      queueAnalysisWindowStateSave(win);
+    }).catch(() => {});
+  });
+} catch (_) {}
 
 try {
   if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {

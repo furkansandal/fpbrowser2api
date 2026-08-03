@@ -24,6 +24,7 @@ function authHeaders(at) {
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function sessionId() { return `;${Date.now()}`; }
 function randSeed(max = 99999) { return 1 + Math.floor(Math.random() * max); }
+const VEO_UPLOAD_IMAGE_TIMEOUT_MS = 60000;
 
 // VEO supports concurrent jobs in the same fingerprint-browser window. When
 // several jobs reuse one labs.google tab, job B's submit/done refresh can
@@ -297,6 +298,71 @@ async function waitTabComplete(tabId, timeoutMs = 45000) {
   return false;
 }
 
+function isGoogleLoginPageUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    if (u.protocol !== "https:" || u.hostname !== "accounts.google.com") return false;
+    const s = (u.pathname + u.search + u.hash).toLowerCase();
+    if (u.pathname === "/" || s.includes("/signin/") || s.includes("/v3/signin/")) return true;
+    return ["identifier", "challenge", "selectaccount", "oauth", "service=", "continue=", "speedbump", "passkey"].some(x => s.includes(x));
+  } catch (_) {
+    return /accounts\.google\.com/i.test(String(raw || ""));
+  }
+}
+
+async function waitGoogleAutoLoginIfNeeded(tabId, runtime, timeoutMs = 40000) {
+  let tab = null;
+  try { tab = await chrome.tabs.get(tabId); } catch (_) { tab = null; }
+  let url = String(tab && tab.url || "");
+  if (!isGoogleLoginPageUrl(url)) return { waited: false, reason: "not_google_login_page", url };
+
+  const startedAt = Date.now();
+  try {
+    await runtime.progress(6, {
+      stage: "wait_google_auto_login",
+      tab_id: tabId,
+      url,
+      timeout_ms: timeoutMs
+    });
+  } catch (_) {}
+
+  const deadline = startedAt + Math.max(1000, Number(timeoutMs || 0) || 40000);
+  while (Date.now() < deadline) {
+    await sleep(1000);
+    try {
+      tab = await chrome.tabs.get(tabId);
+      url = String(tab && tab.url || "");
+      if (tab && tab.status !== "complete") await waitTabComplete(tabId, Math.min(5000, Math.max(1000, deadline - Date.now())));
+      if (!isGoogleLoginPageUrl(url)) {
+        const elapsedMs = Date.now() - startedAt;
+        try {
+          await runtime.progress(8, {
+            stage: "wait_google_auto_login_done",
+            tab_id: tabId,
+            url,
+            elapsed_ms: elapsedMs
+          });
+        } catch (_) {}
+        return { waited: true, success: true, url, elapsed_ms: elapsedMs };
+      }
+    } catch (_) {
+      break;
+    }
+  }
+
+  const elapsedMs = Date.now() - startedAt;
+  try {
+    await runtime.progress(8, {
+      stage: "wait_google_auto_login_timeout",
+      tab_id: tabId,
+      url,
+      elapsed_ms: elapsedMs,
+      timeout_ms: timeoutMs
+    });
+  } catch (_) {}
+  return { waited: true, success: false, reason: "timeout", url, elapsed_ms: elapsedMs };
+}
+
 export async function dismissVeoChangelogModalIfPresent(tabId) {
   if (!tabId) return { clicked: false, reason: "no_tab_id" };
   try {
@@ -317,7 +383,9 @@ export async function dismissVeoChangelogModalIfPresent(tabId) {
         const getText = () => String(document.body && document.body.innerText || "");
         const text = getText();
         const idx = text.toLowerCase().indexOf("view all changelogs");
-        if (idx < 0) {
+        const hasPopup = !!document.querySelector('div[role="dialog"]');
+        try { console.log("dialog exists:", hasPopup); } catch (_) {}
+        if (idx < 0 && !hasPopup) {
           return { found: false, clicked: false, reason: "changelog_modal_not_found", url: String(location.href || "") };
         }
         const x = Math.max(8, Math.min(24, window.innerWidth - 8));
@@ -355,7 +423,8 @@ export async function dismissVeoChangelogModalIfPresent(tabId) {
         dispatch("mouseup");
         dispatch("click");
         await sleep(350);
-        const dismissed = getText().toLowerCase().indexOf("view all changelogs") < 0;
+        const dismissed = getText().toLowerCase().indexOf("view all changelogs") < 0 &&
+          !document.querySelector('div[role="dialog"]');
         return {
           found: true,
           clicked: dismissed,
@@ -365,7 +434,8 @@ export async function dismissVeoChangelogModalIfPresent(tabId) {
           x,
           y,
           url: String(location.href || ""),
-          matched_text: text.slice(Math.max(0, idx - 40), idx + 80)
+          matched_text: idx >= 0 ? text.slice(Math.max(0, idx - 40), idx + 80) : "",
+          has_dialog: hasPopup
         };
       }
     });
@@ -376,13 +446,15 @@ export async function dismissVeoChangelogModalIfPresent(tabId) {
 }
 
 async function closeOtherTabsInSameWindow(keepTabId) {
+  const keepIds = Array.isArray(keepTabId) ? keepTabId : [keepTabId];
+  const keepSet = new Set(keepIds.map(id => Number(id)).filter(id => Number.isFinite(id) && id > 0));
   let keepTab = null;
-  try { keepTab = await chrome.tabs.get(keepTabId); } catch (_) {}
+  try { keepTab = await chrome.tabs.get(keepIds[0]); } catch (_) {}
   const query = keepTab && keepTab.windowId ? { windowId: keepTab.windowId } : {};
   const tabs = await chrome.tabs.query(query);
   const removeIds = [];
   for (const tab of tabs || []) {
-    if (!tab || !tab.id || tab.id === keepTabId) continue;
+    if (!tab || !tab.id || keepSet.has(Number(tab.id))) continue;
     removeIds.push(tab.id);
   }
   if (removeIds.length) {
@@ -395,6 +467,33 @@ function closeOtherTabsInSameWindowLater(keepTabId, delayMs = 5000) {
   setTimeout(() => {
     closeOtherTabsInSameWindow(keepTabId).catch(() => {});
   }, Math.max(0, Number(delayMs || 0) || 0));
+}
+
+async function ensureAiStudioNewChatTab({ active = false, windowId = null } = {}) {
+  const targetUrl = "https://aistudio.google.com/prompts/new_chat?model=gemini-3-pro-image";
+  const queryWindowId = Number(windowId);
+  const tabs = await chrome.tabs.query(Number.isFinite(queryWindowId) ? { windowId: queryWindowId } : {});
+  const found = tabs.find(t => (t.url || "") === targetUrl) ||
+    tabs.find(t => String(t.url || "").startsWith(targetUrl));
+  if (found && found.id) {
+    if (found.url !== targetUrl) {
+      await chrome.tabs.update(found.id, { url: targetUrl, active });
+      await waitTabComplete(found.id, 45000);
+      await sleep(1200);
+    } else {
+      await chrome.tabs.update(found.id, { active });
+      if (found.status !== "complete") await waitTabComplete(found.id, 45000);
+    }
+    return found.id;
+  }
+  const createInfo = { url: targetUrl, active };
+  if (Number.isFinite(Number(windowId))) createInfo.windowId = Number(windowId);
+  const tab = await chrome.tabs.create(createInfo);
+  if (tab && tab.id) {
+    await waitTabComplete(tab.id, 45000);
+    await sleep(1200);
+  }
+  return tab && tab.id ? tab.id : null;
 }
 
 async function ensureVeoProjectTab(projectPage, { active = true, navigate = true, create = true } = {}) {
@@ -590,7 +689,7 @@ async function pageFetchJson(tabId, url, { method = "GET", headers = {}, body = 
               }, timeoutMs);
             }
             if (opts.body !== null && opts.body !== undefined) {
-              init.body = JSON.stringify(opts.body);
+              init.body = typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body);
             }
             try {
               const resp = await fetch(u, init);
@@ -1115,40 +1214,58 @@ export async function getRecaptchaToken(tabId, action) {
   return String(result || "");
 }
 
-async function downloadImageAsBase64(url) {
+async function downloadImageAsBase64(url, timeoutMs = VEO_UPLOAD_IMAGE_TIMEOUT_MS) {
   const reqMethod = "GET";
+  const requestTimeoutMs = Math.max(1000, Number(timeoutMs || 0) || VEO_UPLOAD_IMAGE_TIMEOUT_MS);
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  let timer = null;
   let resp;
   try {
-    resp = await fetch(url, { method: reqMethod, credentials: "omit" });
+    if (controller) {
+      timer = setTimeout(() => {
+        try { controller.abort(); } catch (_) {}
+      }, requestTimeoutMs);
+    }
+    resp = await fetch(url, { method: reqMethod, credentials: "omit", signal: controller ? controller.signal : undefined });
+    if (!resp.ok) throw new Error(`download image failed; Request Method: ${reqMethod}; url=${url}; Status Code: ${resp.status}${resp.statusText ? ` ${resp.statusText}` : ""}`);
+    const blob = await resp.blob();
+    const buf = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    const mime = normalizeDownloadedImageMime(blob.type, url, bytes);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return { base64: btoa(bin), mime };
   } catch (e) {
+    const name = String((e && e.name) || "");
+    if (name === "AbortError") throw new Error(`download image timeout after ${requestTimeoutMs}ms; Request Method: ${reqMethod}; url=${url}`);
+    if (/^download image failed;/i.test(String((e && e.message) || ""))) throw e;
     const rawMsg = String((e && e.message) || e || "unknown error");
     throw new Error(`download image failed; Request Method: ${reqMethod}; url=${url}; error=${rawMsg}`);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  if (!resp.ok) throw new Error(`download image failed; Request Method: ${reqMethod}; url=${url}; Status Code: ${resp.status}${resp.statusText ? ` ${resp.statusText}` : ""}`);
-  const blob = await resp.blob();
-  const mime = blob.type || "image/jpeg";
-  const buf = await blob.arrayBuffer();
-  let bin = "";
-  const bytes = new Uint8Array(buf);
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return { base64: btoa(bin), mime };
 }
 
 async function uploadImage(tabId, url, at, projectId, runtime, index, total) {
-  await runtime.progress(7 + index, { stage: "upload_image", index: index + 1, total, url });
-  const img = await downloadImageAsBase64(url);
-  const ext = img.mime.includes("png") ? "png" : "jpg";
+  const timeoutMs = VEO_UPLOAD_IMAGE_TIMEOUT_MS;
+  await runtime.progress(7 + index, { stage: "upload_image", index: index + 1, total, url, timeout_ms: timeoutMs });
+  const startedAt = Date.now();
+  const img = await downloadImageAsBase64(url, timeoutMs);
+  const remainingTimeoutMs = Math.max(1000, timeoutMs - (Date.now() - startedAt));
+  const ext = imageExtensionFromMime(img.mime);
   const tx = await pageFetchJson(tabId, URLS.uploadImage, {
     method: "POST",
     headers: authHeaders(at),
     body: {
       clientContext: { tool: "PINHOLE", projectId: String(projectId) },
-      fileName: `fpv_ext_ext_${Date.now()}_${index}.${ext}`,
+      fileName: `fpbrowser2api_veo_ext_${Date.now()}_${index}.${ext}`,
       imageBytes: img.base64,
       isHidden: false,
       isUserUploaded: true,
       mimeType: img.mime
-    }
+    },
+    attempts: 1,
+    timeoutMs: remainingTimeoutMs
   });
   if (tx.status >= 400) throw new Error(`VEO upload image failed: ${compactErrorResponse(tx)}`);
   const media = tx.json?.media || {};
@@ -1284,7 +1401,7 @@ async function uploadVideoInChunks(tabId, url, at, projectId, runtime) {
         if (!size) throw new Error(`download video failed: empty blob; url=${videoUrl}`);
         const mime = blob.type || defaultMime || "video/mp4";
         const ext = mime.includes("webm") ? "webm" : (mime.includes("quicktime") ? "mov" : "mp4");
-        const fileName = `fpv_ext_ext_${Date.now()}.${ext}`;
+        const fileName = `fpbrowser2api_veo_ext_${Date.now()}.${ext}`;
 
         const startBody = { projectId: pid, fileName, mimeType: mime, sizeBytes: String(size) };
         const startHeaders = {
@@ -1602,10 +1719,15 @@ function normalizeVideoPollOperations(mediaList) {
   return out;
 }
 
+function flowWorkflowUrl(workflowName) {
+  const name = String(workflowName || "").trim().replace(/^\/+/, "");
+  return `${URLS.workflows}/${name}`;
+}
+
 async function archiveWorkflow(tabId, at, workflowId, projectId) {
   if (!workflowId) return false;
   try {
-    const url = `${URLS.workflows}/${encodeURIComponent(workflowId)}`;
+    const url = flowWorkflowUrl(workflowId);
     const tx = await pageFetchJson(tabId, url, {
       method: "PATCH",
       headers: authHeaders(at),
@@ -1621,6 +1743,143 @@ async function archiveWorkflow(tabId, at, workflowId, projectId) {
     return tx.status < 400;
   } catch (_) {
     return false;
+  }
+}
+
+function inferImageMimeFromBytes(bytes) {
+  const b = bytes || [];
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (
+    b.length >= 8 &&
+    b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 &&
+    b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a
+  ) return "image/png";
+  if (
+    b.length >= 6 &&
+    b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 &&
+    b[3] === 0x38 && (b[4] === 0x37 || b[4] === 0x39) && b[5] === 0x61
+  ) return "image/gif";
+  if (
+    b.length >= 12 &&
+    b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 &&
+    b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50
+  ) return "image/webp";
+  if (b.length >= 2 && b[0] === 0x42 && b[1] === 0x4d) return "image/bmp";
+  if (b.length >= 12 && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) {
+    const brand = String.fromCharCode(b[8], b[9], b[10], b[11]);
+    if (brand === "avif" || brand === "avis") return "image/avif";
+  }
+  return "";
+}
+
+function guessImageMimeFromUrl(url) {
+  try {
+    const path = new URL(String(url || ""), location.href).pathname.toLowerCase();
+    if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
+    if (path.endsWith(".png")) return "image/png";
+    if (path.endsWith(".gif")) return "image/gif";
+    if (path.endsWith(".webp")) return "image/webp";
+    if (path.endsWith(".bmp")) return "image/bmp";
+    if (path.endsWith(".avif")) return "image/avif";
+  } catch (_) {}
+  return "";
+}
+
+function normalizeDownloadedImageMime(declaredMime, url, bytes) {
+  const declared = String(declaredMime || "").split(";", 1)[0].trim().toLowerCase();
+  const sniffed = inferImageMimeFromBytes(bytes);
+  if (sniffed) return sniffed;
+  if (declared.startsWith("image/")) return declared;
+  return guessImageMimeFromUrl(url) || "image/jpeg";
+}
+
+async function cleanupProjectWorkflowsBeforeRun(tabId, at, projectId, runtime) {
+  const pid = String(projectId || "").trim();
+  if (!pid) return { skipped: true, reason: "missing_project_id" };
+  const report = async (progress, data) => {
+    try { await runtime.progress(progress, data); } catch (_) {}
+  };
+  const listUrl = "https://labs.google/fx/api/trpc/flow.projectInitialData?input=" +
+    encodeURIComponent(JSON.stringify({ json: { projectId: pid } }));
+  try {
+    await report(6, { stage: "cleanup_project_workflows", project_id: pid });
+    const listTx = await pageFetchJson(tabId, listUrl, {
+      method: "GET",
+      headers: { "content-type": "application/json" },
+      attempts: 2,
+      timeoutMs: 45000
+    });
+    if (listTx.status >= 400) throw new Error(`VEO cleanup workflow list failed: ${compactErrorResponse(listTx)}`);
+    const workflows = listTx.json?.result?.data?.json?.projectContents?.workflows || [];
+    const toDelete = Array.isArray(workflows)
+      ? workflows.filter(w => w && !(w.metadata && w.metadata.archived))
+      : [];
+    const results = { total: Array.isArray(workflows) ? workflows.length : 0, archived: 0, errors: [] };
+    await report(6, {
+      stage: "cleanup_project_workflows_listed",
+      project_id: pid,
+      total: results.total,
+      to_delete_count: toDelete.length
+    });
+    for (let i = 0; i < toDelete.length; i++) {
+      const w = toDelete[i];
+      const workflowName = String(w.name || w.workflowId || w.id || "").trim();
+      if (!workflowName) {
+        results.errors.push({ index: i, error: "missing workflow name" });
+        continue;
+      }
+      try {
+        const body = JSON.stringify({
+          workflow: {
+            name: workflowName,
+            projectId: pid,
+            metadata: { archived: true }
+          },
+          updateMask: "metadata.archived"
+        });
+        const patchTx = await pageFetchJson(tabId, flowWorkflowUrl(workflowName), {
+          method: "PATCH",
+          headers: {
+            "Authorization": `Bearer ${at}`,
+            "Content-Type": "text/plain;charset=UTF-8",
+            "Origin": "https://labs.google",
+            "Referer": "https://labs.google/"
+          },
+          body,
+          attempts: 1,
+          timeoutMs: 45000
+        });
+        if (patchTx.status < 400 && patchTx.json?.metadata?.archived === true) {
+          results.archived++;
+        } else {
+          results.errors.push({
+            id: workflowName,
+            status: patchTx.status,
+            body: String(patchTx.text || JSON.stringify(patchTx.json || null)).slice(0, 200)
+          });
+        }
+      } catch (e) {
+        results.errors.push({ id: workflowName, error: String((e && e.message) || e || "").slice(0, 300) });
+      }
+      await sleep(300);
+    }
+    await report(7, {
+      stage: results.errors.length ? "cleanup_project_workflows_partial_failed" : "cleanup_project_workflows_done",
+      project_id: pid,
+      total: results.total,
+      to_delete_count: toDelete.length,
+      archived: results.archived,
+      errors: results.errors.slice(0, 5)
+    });
+    return results;
+  } catch (e) {
+    const error = String((e && e.message) || e || "").slice(0, 300);
+    await report(7, {
+      stage: "cleanup_project_workflows_skipped_after_error",
+      project_id: pid,
+      error
+    });
+    return { skipped: true, reason: "cleanup_failed", error };
   }
 }
 
@@ -1775,6 +2034,625 @@ function normalizeImageUpsampleTarget(p) {
   return { label: "2K", targetResolution: "UPSAMPLE_IMAGE_RESOLUTION_2K" };
 }
 
+function isAiStudio4kImageRequest(p) {
+  const target = normalizeImageUpsampleTarget(p);
+  if (target.label === "4K") return true;
+  const raw = String(
+    p.extension_image_resolution_label ||
+    p.resolution ||
+    p.image_resolution ||
+    p.veo_image_resolution ||
+    ""
+  ).trim().toLowerCase().replace(/\s+/g, "");
+  return raw === "4k" || raw === "4096" || raw === "3840" || raw === "4k_output" || raw === "uhd_4k";
+}
+
+function mapAiStudioImageAspectRatio(p) {
+  const raw = String(p.extension_image_aspect_ratio || p.image_aspect_ratio || p.aspect_ratio || "").trim();
+  const upper = raw.toUpperCase();
+  if (raw.includes(":")) return raw;
+  if (upper.includes("LANDSCAPE_FOUR_THREE")) return "4:3";
+  if (upper.includes("PORTRAIT_THREE_FOUR")) return "3:4";
+  if (upper.includes("PORTRAIT")) return "9:16";
+  if (upper.includes("SQUARE")) return "1:1";
+  if (upper.includes("LANDSCAPE")) return "16:9";
+  return "1:1";
+}
+
+function mapAiStudioImageModelName(p) {
+  return String(p.extension_image_model_name || "NARWHAL").trim().toUpperCase() === "NARWHAL"
+    ? "models/gemini-3.1-flash-image"
+    : "models/gemini-3-pro-image";
+}
+
+function cleanBase64ForAiStudio(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .replace(/\s+/g, "");
+}
+
+function inferImageMimeFromBase64(base64) {
+  const s = cleanBase64ForAiStudio(base64);
+  if (s.startsWith("/9j/")) return "image/jpeg";
+  if (s.startsWith("iVBORw0KGgo")) return "image/png";
+  if (s.startsWith("R0lGOD")) return "image/gif";
+  if (s.startsWith("UklGR")) return "image/webp";
+  return "";
+}
+
+function imageExtensionFromMime(mimeType) {
+  const mime = String(mimeType || "").toLowerCase();
+  if (mime.includes("png")) return "png";
+  if (mime.includes("gif")) return "gif";
+  if (mime.includes("webp")) return "webp";
+  return "jpg";
+}
+
+function parseImageDataUrlForAiStudio(value) {
+  const s = String(value || "").trim().replace(/^["']|["']$/g, "");
+  const m = /^data:([^;,]+);base64,(.+)$/i.exec(s);
+  if (!m) return null;
+  const base64Data = cleanBase64ForAiStudio(m[2]);
+  return { mimeType: m[1] || inferImageMimeFromBase64(base64Data) || "image/jpeg", base64Data };
+}
+
+function parseBareBase64ImageForAiStudio(value) {
+  const base64Data = cleanBase64ForAiStudio(value);
+  if (!base64Data || /^https?:\/\//i.test(base64Data) || /^blob:/i.test(base64Data)) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64Data)) return null;
+  const mimeType = inferImageMimeFromBase64(base64Data);
+  if (!mimeType) return null;
+  return { mimeType, base64Data };
+}
+
+function parseAiStudioReferenceImageObject(value) {
+  if (!value || typeof value !== "object") return null;
+  const dataUrl = value.dataUrl || value.data_url || "";
+  const fromDataUrl = parseImageDataUrlForAiStudio(dataUrl);
+  if (fromDataUrl) return { ...fromDataUrl, filename: value.filename || value.name || "" };
+  const base64Data = cleanBase64ForAiStudio(value.base64Data || value.base64 || value.imageBytes || value.data || "");
+  if (!base64Data) return null;
+  const mimeType = value.mimeType || value.mime_type || value.mime || inferImageMimeFromBase64(base64Data) || "image/jpeg";
+  return { mimeType, base64Data, filename: value.filename || value.name || "" };
+}
+
+function getAiStudioReferenceImageSources(p) {
+  const raw = p.extension_image_reference_urls ||
+    p.image_reference_urls ||
+    p.reference_image_urls ||
+    p.i2i_urls ||
+    p.image_urls ||
+    [];
+  return Array.isArray(raw) ? raw.filter(Boolean) : (raw ? [raw] : []);
+}
+
+async function collectAiStudioReferenceImages(p, runtime) {
+  const sources = getAiStudioReferenceImageSources(p);
+  const images = [];
+  for (let i = 0; i < sources.length; i++) {
+    const source = sources[i];
+    const data = parseAiStudioReferenceImageObject(source) ||
+      parseImageDataUrlForAiStudio(source) ||
+      parseBareBase64ImageForAiStudio(source);
+    if (data && data.base64Data) {
+      const filename = data.filename || `reference_${i + 1}.${imageExtensionFromMime(data.mimeType)}`;
+      images.push({ ...data, filename });
+      await runtime.progress(7 + i, {
+        stage: "prepare_aistudio_reference_image",
+        index: i + 1,
+        total: sources.length,
+        source_kind: "base64",
+        filename,
+        mime_type: data.mimeType,
+        base64_prefix: data.base64Data.slice(0, 12),
+        base64_length: data.base64Data.length
+      });
+      continue;
+    }
+    await runtime.progress(7 + i, {
+      stage: "prepare_aistudio_reference_image",
+      index: i + 1,
+      total: sources.length,
+      url: String(source || ""),
+      timeout_ms: VEO_UPLOAD_IMAGE_TIMEOUT_MS
+    });
+    const img = await downloadImageAsBase64(source, VEO_UPLOAD_IMAGE_TIMEOUT_MS);
+    const base64Data = cleanBase64ForAiStudio(img.base64);
+    const mimeType = img.mime || inferImageMimeFromBase64(base64Data) || "image/jpeg";
+    let filename = "";
+    try {
+      const u = new URL(String(source || ""));
+      filename = decodeURIComponent((u.pathname.split("/").pop() || "").split("?")[0] || "");
+    } catch (_) {}
+    if (!filename) filename = `reference_${i + 1}.${imageExtensionFromMime(mimeType)}`;
+    images.push({ mimeType, base64Data, filename });
+    await runtime.progress(7 + i, {
+      stage: "prepare_aistudio_reference_image_done",
+      index: i + 1,
+      total: sources.length,
+      source_kind: "url",
+      filename,
+      mime_type: mimeType,
+      base64_prefix: base64Data.slice(0, 12),
+      base64_length: base64Data.length
+    });
+  }
+  return images;
+}
+
+async function runAiStudio4kImageWorkflow(aiStudioTabId, p, runtime) {
+  const prompt = String(p.prompt || "");
+  const modelName = mapAiStudioImageModelName(p);
+  const aspectRatio = mapAiStudioImageAspectRatio(p);
+  const referenceImages = await collectAiStudioReferenceImages(p, runtime);
+  const tabId = aiStudioTabId || await ensureAiStudioNewChatTab({ active: true });
+  if (!tabId) throw new Error("AI Studio new_chat tab not found");
+  await chrome.tabs.update(tabId, { active: true });
+  await waitTabComplete(tabId, 45000);
+  await chrome.tabs.reload(tabId, { bypassCache: false });
+  await waitTabComplete(tabId, 45000);
+  const googleLoginWait = await waitGoogleAutoLoginIfNeeded(tabId, runtime, 40000);
+  if (googleLoginWait && googleLoginWait.waited) {
+    await waitTabComplete(tabId, 10000);
+    await sleep(800);
+  }
+  await sleep(1200);
+  await runtime.progress(10, {
+    stage: "submit_image_task_aistudio_4k",
+    workflow_kind: "image",
+    model_name: modelName,
+    aspect_ratio: aspectRatio,
+    i2i_image_count: referenceImages.length,
+    google_login_wait: googleLoginWait
+  });
+  try {
+    const frames = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    args: [modelName, prompt, aspectRatio, referenceImages],
+    func: async (model_name, prompt, aspectRatio, referenceImages) => {
+      const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+      let originalOpen = null;
+      let originalSend = null;
+      let originalSetRequestHeader = null;
+      try {
+        if (location.hostname !== "aistudio.google.com" || !location.pathname.startsWith("/prompts/new_chat")) {
+          return { ok: false, error: "Expected AI Studio new_chat page", url: String(location.href || "") };
+        }
+        const resolution = "4K";
+        let capturedPayload = null;
+        let capturedHeaders = null;
+        let capturedUrl = null;
+        const base64ToBlob = (base64, mimeType) => {
+          const bin = atob(String(base64 || ""));
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          return new Blob([bytes], { type: mimeType || "image/jpeg" });
+        };
+        const acknowledgeImageRightsIfPresent = async () => {
+          const bodyText = document.body ? (document.body.innerText || document.body.textContent || "") : "";
+          if (!bodyText.includes("necessary rights to any images you upload")) {
+            return { success: true, dismissed: false, message: "image rights dialog not present" };
+          }
+
+          const buttons = Array.from(document.querySelectorAll("button"));
+          let acknowledgeButton = buttons.find(btn =>
+            String(btn.textContent || "").trim() === "Acknowledge" ||
+            String(btn.innerText || "").trim() === "Acknowledge"
+          );
+
+          if (!acknowledgeButton) {
+            acknowledgeButton = buttons.find(btn =>
+              String(btn.textContent || "").includes("Acknowledge") ||
+              String(btn.innerText || "").includes("Acknowledge")
+            );
+          }
+
+          if (!acknowledgeButton) {
+            const clickables = Array.from(document.querySelectorAll('[role="button"], a, div[onclick]'));
+            acknowledgeButton = clickables.find(el =>
+              String(el.textContent || el.innerText || "").includes("Acknowledge")
+            );
+          }
+
+          if (!acknowledgeButton) {
+            return { success: false, dismissed: false, message: "image rights dialog found but Acknowledge button not found" };
+          }
+
+          acknowledgeButton.click();
+          await sleep(1000);
+          const afterText = document.body ? (document.body.innerText || document.body.textContent || "") : "";
+          const dismissed = !afterText.includes("necessary rights to any images you upload");
+          return {
+            success: true,
+            dismissed,
+            message: dismissed
+              ? "image rights dialog acknowledged"
+              : "Acknowledge clicked but image rights dialog may still be present"
+          };
+        };
+        const uploadReferenceImageByDrop = async (image, index) => {
+          const promptBox = document.querySelector("ms-prompt-box");
+          if (!promptBox) return { success: false, error: "ms-prompt-box not found" };
+          const filename = image.filename || `reference_${index + 1}.jpg`;
+          const mimeType = image.mimeType || "image/jpeg";
+          const blob = base64ToBlob(image.base64Data, mimeType);
+          const file = new File([blob], filename, { type: blob.type || mimeType });
+          const dataTransfer = new DataTransfer();
+          dataTransfer.items.add(file);
+          for (const type of ["dragenter", "dragover", "drop"]) {
+            promptBox.dispatchEvent(new DragEvent(type, {
+              bubbles: true,
+              cancelable: true,
+              dataTransfer
+            }));
+            await sleep(120);
+          }
+          const acknowledge = await acknowledgeImageRightsIfPresent();
+          if (!acknowledge.success) return { success: false, error: acknowledge.message, acknowledge, filename, size: file.size, type: file.type };
+          const startedAt = Date.now();
+          let uploaded = false;
+          while (Date.now() - startedAt < 12000) {
+            uploaded = !!(
+              promptBox.querySelector(`img[alt="${CSS.escape(filename)}"]`) ||
+              promptBox.querySelector("img") ||
+              promptBox.querySelector('[data-test-file-preview]') ||
+              promptBox.querySelector('[data-test-media-preview]')
+            );
+            if (uploaded) break;
+            await sleep(300);
+          }
+          return { success: uploaded, filename, size: file.size, type: file.type, uploaded, acknowledge };
+        };
+        const uploadedReferences = [];
+        for (let i = 0; i < (Array.isArray(referenceImages) ? referenceImages.length : 0); i++) {
+          const ref = referenceImages[i];
+          if (!ref || !ref.base64Data) continue;
+          const uploaded = await uploadReferenceImageByDrop(ref, i);
+          uploadedReferences.push(uploaded);
+          if (!uploaded.success) {
+            return { ok: false, error: `Reference image drop upload failed: ${uploaded.error || "unknown error"}`, upload: uploaded, uploadedReferences };
+          }
+          await sleep(300);
+        }
+        const OriginalXHR = XMLHttpRequest;
+        originalOpen = OriginalXHR.prototype.open;
+        originalSend = OriginalXHR.prototype.send;
+        originalSetRequestHeader = OriginalXHR.prototype.setRequestHeader;
+        OriginalXHR.prototype.open = function(method, url) {
+          this._veoAiStudioUrl = url;
+          this._veoAiStudioMethod = method;
+          return originalOpen.apply(this, arguments);
+        };
+        OriginalXHR.prototype.setRequestHeader = function(name, value) {
+          if (!this._veoAiStudioHeaders) this._veoAiStudioHeaders = {};
+          this._veoAiStudioHeaders[name] = value;
+          return originalSetRequestHeader.apply(this, arguments);
+        };
+        OriginalXHR.prototype.send = function(body) {
+          if (this._veoAiStudioUrl && String(this._veoAiStudioUrl).includes("/GenerateContent")) {
+            try {
+              capturedPayload = JSON.parse(body);
+              capturedHeaders = this._veoAiStudioHeaders || {};
+              capturedUrl = this._veoAiStudioUrl;
+              setTimeout(() => {
+                try { this.abort(); } catch (_) {}
+              }, 0);
+              return;
+            } catch (_) {
+              return originalSend.call(this, body);
+            }
+          }
+          return originalSend.call(this, body);
+        };
+        const restoreXhr = () => {
+          XMLHttpRequest.prototype.open = originalOpen;
+          XMLHttpRequest.prototype.send = originalSend;
+          XMLHttpRequest.prototype.setRequestHeader = originalSetRequestHeader;
+        };
+        // 点击 Stop 按钮，清掉应用卡住的 "Thinking" 状态。
+        // 优先按文本/aria-label 匹配，其次 ms-run-button，最后回退到发送按钮。
+        const clickStop = () => {
+          const stopEl = document.querySelector("ms-run-button button") ||
+            document.querySelector('button[aria-label*="stop" i]');
+          const all = Array.from(document.querySelectorAll("button"));
+          const byText = all.filter(b => /stop/i.test((b.textContent || "") + " " + (b.getAttribute("aria-label") || "")));
+          const target = byText[0] || stopEl || sendBtn;
+          if (target) target.click();
+        };
+
+        let textarea = document.querySelector("ms-prompt-box textarea") ||
+          document.querySelector('textarea[placeholder*="prompt" i]') ||
+          document.querySelector('textarea[aria-label*="prompt" i]') ||
+          document.querySelector("textarea");
+        if (!textarea) {
+          restoreXhr();
+          return { ok: false, error: "Textarea not found", url: String(location.href || "") };
+        }
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
+        setter.call(textarea, prompt);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        textarea.dispatchEvent(new Event("change", { bubbles: true }));
+        await sleep(200);
+
+        let sendBtn = document.querySelector("ms-run-button button") ||
+          document.querySelector('button[aria-label*="run" i]') ||
+          document.querySelector('button[aria-label*="send" i]') ||
+          document.querySelector('button[type="submit"]');
+        if (!sendBtn) {
+          restoreXhr();
+          return { ok: false, error: "Send button not found", url: String(location.href || "") };
+        }
+        if (sendBtn.disabled) sendBtn.disabled = false;
+        sendBtn.click();
+
+        const start = Date.now();
+        while (!capturedPayload && Date.now() - start < 5000) await sleep(100);
+        restoreXhr();
+        if (!capturedPayload) {
+          return { ok: false, error: "Failed to capture GenerateContent request", url: String(location.href || "") };
+        }
+
+        capturedPayload[0] = model_name;
+        if (capturedPayload[3]) {
+          let imageParamsIndex = -1;
+          for (let i = 0; i < capturedPayload[3].length; i++) {
+            const item = capturedPayload[3][i];
+            if (!Array.isArray(item) || item.length < 2) continue;
+            const hasRatio = item[0] && typeof item[0] === "string" && item[0].includes(":");
+            const hasResolution = item[1] && typeof item[1] === "string" && item[1].includes("K");
+            const hasNullAndResolution = item[0] === null && typeof item[1] === "string" && item[1].includes("K");
+            if (hasRatio || hasResolution || hasNullAndResolution) {
+              imageParamsIndex = i;
+              break;
+            }
+          }
+          if (imageParamsIndex !== -1) capturedPayload[3][imageParamsIndex] = [aspectRatio, resolution];
+        }
+
+        const responseStartedAt = Date.now();
+        const response = await fetch(capturedUrl, {
+          method: "POST",
+          headers: capturedHeaders,
+          body: JSON.stringify(capturedPayload),
+          credentials: "include"
+        });
+        if (!response.ok) {
+          const errorText = await response.text();
+          try { clickStop(); } catch (_) {}
+          return {
+            ok: false,
+            error: `API returned status ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
+            status: response.status,
+            statusText: response.statusText || "",
+            responseText: errorText,
+            details: errorText.slice(0, 4000)
+          };
+        }
+        const responseText = await response.text();
+        try { clickStop(); } catch (_) {}
+        const images = [];
+        const generationErrors = [];
+        const findImages = (node, depth) => {
+          if (depth > 40 || !node) return;
+          if (Array.isArray(node) && node.length >= 2 && typeof node[0] === "string" && typeof node[1] === "string" && node[0].startsWith("image/")) {
+            images.push({
+              mimeType: node[0],
+              base64Data: node[1],
+              dataUrl: `data:${node[0]};base64,${node[1]}`
+            });
+            return;
+          }
+          if (Array.isArray(node)) {
+            for (const item of node) findImages(item, depth + 1);
+          } else if (typeof node === "object") {
+            for (const item of Object.values(node)) findImages(item, depth + 1);
+          }
+        };
+        const rememberGenerationError = (message) => {
+          const s = String(message || "").trim();
+          if (!s || s.length < 8 || s.length > 2000) return;
+          if (/^[A-Za-z0-9+/=_-]{120,}$/.test(s)) return;
+          if (!/(error|failed|failure|permission|policy|prohibited|sensitive|violate|could not|try rephrasing|not allowed|blocked)/i.test(s)) return;
+          if (!generationErrors.includes(s)) generationErrors.push(s);
+        };
+        const findGenerationErrors = (node, depth) => {
+          if (depth > 40 || !node) return;
+          if (Array.isArray(node)) {
+            if (typeof node[0] === "number" && typeof node[2] === "string") rememberGenerationError(node[2]);
+            for (const item of node) findGenerationErrors(item, depth + 1);
+          } else if (typeof node === "object") {
+            for (const item of Object.values(node)) findGenerationErrors(item, depth + 1);
+          } else if (typeof node === "string") {
+            rememberGenerationError(node);
+          }
+        };
+        const parseGenerateContentStream = (text) => {
+          const clean = String(text || "").replace(/^\)\]\}'\s*/, "").trim();
+          const parsed = [];
+          const tryPush = (s) => {
+            const t = String(s || "").trim();
+            if (!t || t === "[DONE]") return false;
+            try {
+              parsed.push(JSON.parse(t));
+              return true;
+            } catch (_) {
+              return false;
+            }
+          };
+          if (tryPush(clean)) return parsed;
+          for (const rawLine of clean.split(/\r?\n/)) {
+            let line = rawLine.trim();
+            if (!line || /^\d+$/.test(line)) continue;
+            if (line.startsWith("data:")) line = line.slice(5).trim();
+            if (tryPush(line)) continue;
+            const firstJson = line.search(/[\[{]/);
+            if (firstJson > 0) tryPush(line.slice(firstJson));
+          }
+          if (parsed.length) return parsed;
+
+          let start = -1;
+          let depth = 0;
+          let inString = false;
+          let escape = false;
+          for (let i = 0; i < clean.length; i++) {
+            const ch = clean[i];
+            if (inString) {
+              if (escape) {
+                escape = false;
+              } else if (ch === "\\") {
+                escape = true;
+              } else if (ch === "\"") {
+                inString = false;
+              }
+              continue;
+            }
+            if (ch === "\"") {
+              inString = true;
+              continue;
+            }
+            if (ch === "[" || ch === "{") {
+              if (depth === 0) start = i;
+              depth++;
+            } else if ((ch === "]" || ch === "}") && depth > 0) {
+              depth--;
+              if (depth === 0 && start >= 0) {
+                tryPush(clean.slice(start, i + 1));
+                start = -1;
+              }
+            }
+          }
+          return parsed;
+        };
+        const apiResponses = parseGenerateContentStream(responseText);
+        for (const item of apiResponses) {
+          findImages(item, 0);
+          findGenerationErrors(item, 0);
+        }
+        return {
+          ok: true,
+          result: {
+            prompt,
+            config: { model_name, aspectRatio, resolution, referenceImageCount: Array.isArray(referenceImages) ? referenceImages.length : 0 },
+            imageCount: images.length,
+            images,
+            generationErrors,
+            responsePreview: images.length ? "" : responseText.slice(0, 4000),
+            parsedResponseCount: apiResponses.length,
+            responseTimeMs: Date.now() - responseStartedAt
+          }
+        };
+      } catch (error) {
+        try {
+          if (originalOpen) XMLHttpRequest.prototype.open = originalOpen;
+          if (originalSend) XMLHttpRequest.prototype.send = originalSend;
+          if (originalSetRequestHeader) XMLHttpRequest.prototype.setRequestHeader = originalSetRequestHeader;
+        } catch (_) {}
+        // 异常路径：内联兜底点击 Stop，避免 UI 持续卡在 Thinking 状态
+        try {
+          const all = Array.from(document.querySelectorAll("button"));
+          const byText = all.find(b => /stop/i.test((b.textContent || "") + " " + (b.getAttribute("aria-label") || "")));
+          const stopEl = byText ||
+            document.querySelector("ms-run-button button") ||
+            document.querySelector('button[aria-label*="stop" i]');
+          if (stopEl) stopEl.click();
+        } catch (_) {}
+        return { ok: false, error: error && error.message ? error.message : String(error || ""), stack: error && error.stack ? error.stack : "" };
+      }
+    }
+  });
+  const injected = Array.isArray(frames) && frames[0] ? frames[0].result : null;
+  if (!injected || !injected.ok) {
+    const parts = [];
+    if (injected && injected.error) parts.push(String(injected.error));
+    if (injected && injected.details) parts.push(`response=${String(injected.details)}`);
+    if (injected && injected.responseText && injected.responseText !== injected.details) {
+      parts.push(`full_response=${String(injected.responseText).slice(0, 4000)}`);
+    }
+    throw new Error(`AI Studio 4K image generation failed: ${(parts.join("; ") || "empty executeScript result").slice(0, 4500)}`);
+  }
+  const images = injected.result && Array.isArray(injected.result.images) ? injected.result.images : [];
+  const selectedImageIndex = images.length > 0 ? images.length - 1 : -1;
+  const selectedImage = selectedImageIndex >= 0 ? (images[selectedImageIndex] || {}) : {};
+  if (!selectedImage.dataUrl) {
+    const generationErrors = injected.result && Array.isArray(injected.result.generationErrors) ? injected.result.generationErrors : [];
+    const responsePreview = injected.result && injected.result.responsePreview ? String(injected.result.responsePreview) : "";
+    const details = [];
+    if (generationErrors.length) details.push(`generation_error=${generationErrors.join(" | ")}`);
+    if (responsePreview) details.push(`response=${responsePreview}`);
+    throw new Error(`AI Studio 4K image generation returned no image${details.length ? `; ${details.join("; ")}` : ""}`);
+  }
+  let shareUrl = selectedImage.dataUrl;
+  let ossUploads = [];
+  const ossCfg = p.oss_upload || p.extension_oss_upload || null;
+  if (ossCfg) {
+    const ossStartedAt = Date.now();
+    await runtime.progress(92, {
+      stage: "oss_upload",
+      target_resolution: "4K",
+      timeout_ms: Number((ossCfg && (ossCfg.timeout_ms || ossCfg.timeoutMs || ossCfg.upload_timeout_ms || ossCfg.uploadTimeoutMs)) || 60000) || 60000,
+      attempts: Number((ossCfg && (ossCfg.attempts || ossCfg.upload_attempts || ossCfg.uploadAttempts)) || 3) || 3
+    });
+    const uploaded = await uploadDataUrlToAliyunOss(ossCfg, shareUrl, {
+      objectKeyPrefix: (ossCfg && (ossCfg.object_key_prefix || ossCfg.objectKeyPrefix)) || "veo_workflow/image/aistudio/4k",
+      taskId: p._bridge_task_id || p.task_id || "",
+      resolution: "4K",
+      contentType: selectedImage.mimeType || "image/png"
+    });
+    ossUploads = [uploaded];
+    shareUrl = uploaded.url;
+    await runtime.progress(93, {
+      stage: "oss_upload_done",
+      target_resolution: "4K",
+      size: uploaded.size || 0,
+      duration_ms: uploaded.duration_ms || (Date.now() - ossStartedAt),
+      object_key: uploaded.object_key
+    });
+  }
+  await runtime.progress(100, {
+    stage: "done",
+    image_url: shareUrl,
+    image_count: images.length,
+    selected_image_index: selectedImageIndex + 1
+  });
+  return {
+    type: "veo_workflow_image",
+    message: "AI Studio 4K image generation completed",
+    workflow_kind: "image",
+    share_url: shareUrl,
+    image_url: shareUrl,
+    model_name: p.extension_image_model_name || "NARWHAL",
+    ai_studio_model_name: modelName,
+    aspect_ratio: p.extension_image_aspect_ratio || aspectRatio,
+    resolution: "4K",
+    upsample_ok: false,
+    upsample_error: undefined,
+    oss_uploads: ossUploads,
+    upsample_url: (ossUploads[0] && ossUploads[0].url) || undefined,
+    upsample_oss_object_key: (ossUploads[0] && ossUploads[0].object_key) || undefined,
+    project_id: p.project_id,
+    generated_media_id: "",
+    generated_workflow_id: "",
+    workflow_archived: false,
+    i2i_image_count: referenceImages.length,
+    ai_studio_reference_image_count: referenceImages.length,
+    ai_studio_image_count: images.length,
+    ai_studio_selected_image_index: selectedImageIndex + 1
+  };
+  } finally {
+    try {
+      await runtime.progress(99, { stage: "refresh_aistudio_page_after_image_generation" });
+    } catch (_) {}
+    // TODO: stop 按钮已在注入脚本内处理 UI 状态，暂时不需要在 finally 里刷新页面
+    // try {
+    //   await chrome.tabs.reload(tabId, { bypassCache: false });
+    //   await waitTabComplete(tabId, 45000);
+    //   await sleep(1200);
+    // } catch (_) {}
+  }
+}
+
 async function upsampleImage(tabId, at, p, parsed, runtime) {
   const target = normalizeImageUpsampleTarget(p);
   const maxRetries = 3;
@@ -1836,6 +2714,9 @@ async function upsampleImage(tabId, at, p, parsed, runtime) {
 }
 
 async function runImageWorkflow(tabId, p, at, runtime) {
+  if (isAiStudio4kImageRequest(p)) {
+    return await runAiStudio4kImageWorkflow(p._ai_studio_tab_id, p, runtime);
+  }
   const projectId = p.project_id;
   const prompt = p.prompt || "";
   const imageUrls = p.extension_image_reference_urls || [];
@@ -2387,10 +3268,18 @@ export async function runVeoTask(msg, runtime) {
       return await fetchVeoCurrentPageTask(msg, runtime);
     }
     const projectPage = p.project_page || p.target_url || "https://labs.google/fx";
+    await assertProjectPageAccessible(projectPage, runtime);
+    const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
+    let aiStudioTabId = null;
+    const projectTab = await chrome.tabs.get(tabId);
+    aiStudioTabId = await ensureAiStudioNewChatTab({ active: false, windowId: projectTab && projectTab.windowId });
+    if (!aiStudioTabId) throw new Error("AI Studio new_chat tab could not be opened");
+    p._ai_studio_tab_id = aiStudioTabId;
+    await chrome.tabs.update(tabId, { active: true });
+    closeOtherTabsInSameWindowLater([tabId, aiStudioTabId].filter(Boolean), 5000);
+
     if (action === "fetch_tokens" || action === "fetch_access_tokens" || action === "get_access_tokens") {
-      const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
       await reloadProjectPage(1, tabId, projectPage, runtime);
-      closeOtherTabsInSameWindowLater(tabId, 5000);
       return await fetchVeoAccessTokensTask({ ...msg, payload: { ...p, tab_id: tabId } }, runtime);
     }
     if (action === "create_flow_project" || action === "flow_project_create" || action === "create_project") {
@@ -2424,9 +3313,6 @@ export async function runVeoTask(msg, runtime) {
     // 普通生成任务必须保持在 project_page；如果余额刷新打开了 one.google 标签，
     // 这里会重新选中/导航回精确项目页，避免停留到 /tools/flow 列表页。
     
-    await assertProjectPageAccessible(projectPage, runtime);
-    const tabId = await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
-    closeOtherTabsInSameWindowLater(tabId, 5000);
     //await resetLabsGoogleLocalStorageAndReload(3, tabId, projectPage, runtime);
     await runtime.progress(5, { stage: "access_token" });
     const tokenInfo = p.access_token ? { access_token: p.access_token, expires: p.access_expires } : await getAccessTokenFromPage(tabId);
@@ -2443,6 +3329,7 @@ export async function runVeoTask(msg, runtime) {
       moveMouse: true,
       timeoutMs: 20000
     });
+    await cleanupProjectWorkflowsBeforeRun(tabId, at, p.project_id, runtime);
     if (p.workflow_kind === "image" || p.image_mode) {
       return await runImageWorkflow(tabId, p, at, runtime);
     }
