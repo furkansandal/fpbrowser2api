@@ -1143,7 +1143,7 @@ async function uploadImage(tabId, url, at, projectId, runtime, index, total) {
     headers: authHeaders(at),
     body: {
       clientContext: { tool: "PINHOLE", projectId: String(projectId) },
-      fileName: `fpbrowser2api_veo_ext_${Date.now()}_${index}.${ext}`,
+      fileName: `fpv_ext_ext_${Date.now()}_${index}.${ext}`,
       imageBytes: img.base64,
       isHidden: false,
       isUserUploaded: true,
@@ -1284,7 +1284,7 @@ async function uploadVideoInChunks(tabId, url, at, projectId, runtime) {
         if (!size) throw new Error(`download video failed: empty blob; url=${videoUrl}`);
         const mime = blob.type || defaultMime || "video/mp4";
         const ext = mime.includes("webm") ? "webm" : (mime.includes("quicktime") ? "mov" : "mp4");
-        const fileName = `fpbrowser2api_veo_ext_${Date.now()}.${ext}`;
+        const fileName = `fpv_ext_ext_${Date.now()}.${ext}`;
 
         const startBody = { projectId: pid, fileName, mimeType: mime, sizeBytes: String(size) };
         const startHeaders = {
