@@ -12,6 +12,7 @@ const URLS = {
   uploadVideoStart: "https://labs.google/fx/api/upload-video?action=start",
   uploadVideoChunk: "https://labs.google/fx/api/upload-video?action=upload",
   updateVideoOffset: "https://labs.google/fx/api/trpc/videoFx.updateVideoOffset",
+  mediaUrlRedirect: "https://labs.google/fx/api/trpc/media.getMediaUrlRedirect",
   upsampleVideo: "https://aisandbox-pa.googleapis.com/v1/video:batchAsyncGenerateVideoUpsampleVideo",
   upsampleImage: "https://aisandbox-pa.googleapis.com/v1/flow/upsampleImage",
   workflows: "https://aisandbox-pa.googleapis.com/v1/flowWorkflows"
@@ -726,6 +727,75 @@ async function pageFetchJson(tabId, url, { method = "GET", headers = {}, body = 
     }
   }
   throw lastErr || new Error(`pageFetchJson returned empty result; Request Method: ${reqMethod}; url=${url}; attempt=${lastAttempt || 0}/${maxAttempts}`);
+}
+
+async function getGeneratedVideoUrl(tabId, mediaName, attempts = 3) {
+  const name = String(mediaName || "").trim();
+  if (!name) throw new Error("VEO generated video media name is missing");
+
+  const redirectUrl = `${URLS.mediaUrlRedirect}?name=${encodeURIComponent(name)}`;
+  const maxAttempts = Math.max(1, Number.parseInt(attempts, 10) || 1);
+  let lastErr = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    let redirectListener = null;
+    let redirectTimer = null;
+    try {
+      const finalUrlPromise = new Promise((resolve, reject) => {
+        redirectListener = details => {
+          const target = String(details && details.redirectUrl || "").trim();
+          if (target) resolve(target);
+        };
+        chrome.webRequest.onBeforeRedirect.addListener(
+          redirectListener,
+          { urls: [`${URLS.mediaUrlRedirect}*`], tabId: Number(tabId) },
+          []
+        );
+        redirectTimer = setTimeout(() => reject(new Error("redirect event timeout")), 15000);
+      });
+
+      await withVeoTabOpLock(tabId, "get_generated_video_url", async () => {
+        try {
+          const tab = await chrome.tabs.get(tabId);
+          if (tab && tab.status !== "complete") await waitTabComplete(tabId, 45000);
+        } catch (_) {}
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "MAIN",
+          args: [redirectUrl],
+          func: async (url) => {
+            try {
+              // The webRequest listener captures the redirect target. A fetch
+              // rejection after the cross-origin redirect is expected here.
+              await fetch(url, {
+                method: "GET",
+                credentials: "include",
+                redirect: "manual",
+                cache: "no-store"
+              });
+            } catch (_) {}
+            return true;
+          }
+        });
+      });
+
+      const finalUrl = await finalUrlPromise;
+      let parsed = null;
+      try { parsed = new URL(finalUrl); } catch (_) {}
+      if (parsed && parsed.protocol === "https:" && parsed.hostname === "flow-content.google" && parsed.pathname.startsWith("/video/")) {
+        return finalUrl;
+      }
+      throw new Error(`unexpected redirect URL=${String(finalUrl).slice(0, 500)}`);
+    } catch (e) {
+      lastErr = e;
+      if (attempt + 1 < maxAttempts) await sleep(250 * (attempt + 1));
+    } finally {
+      if (redirectTimer) clearTimeout(redirectTimer);
+      if (redirectListener) {
+        try { chrome.webRequest.onBeforeRedirect.removeListener(redirectListener); } catch (_) {}
+      }
+    }
+  }
+  throw new Error(`VEO generated video URL redirect failed; media=${name}; error=${String((lastErr && lastErr.message) || lastErr || "unknown error").slice(0, 500)}`);
 }
 
 async function getAccessTokenFromPage(tabId) {
@@ -2920,28 +2990,21 @@ async function pollVideo(tabId, at, pollMedia, pollOperations, runtime, p) {
       throw err;
     }
     if (last.videoUrl) return last;
-    if (/MEDIA_GENERATION_STATUS_SUCCESSFUL/i.test(String(last.status || "")) && Array.isArray(pollOperations) && pollOperations.length) {
+    if (/MEDIA_GENERATION_STATUS_SUCCESSFUL/i.test(String(last.status || ""))) {
+      const mediaName = String(((pollMedia || []).find(item => item && item.name) || {}).name || "").trim();
+      if (!mediaName) throw new Error("VEO video generation succeeded but poll media name is missing");
       urlFetchAttempts++;
       await runtime.progress(pct, {
         stage: "fetching_video_url",
         attempt,
         url_fetch_attempt: urlFetchAttempts,
         status: last.status,
-        workflow_id: last.workflowId
+        workflow_id: last.workflowId,
+        media_name: mediaName
       });
-      const urlTx = await pageFetchJson(tabId, URLS.videoPoll, { method: "POST", headers: authHeaders(at), body: { operations: pollOperations } });
-      if (urlTx.status >= 400) throw new Error(`VEO video url poll failed: ${compactErrorResponse(urlTx)}`);
-      const urlLast = parseVideoPoll(urlTx.json);
-      last = {
-        ...last,
-        ...urlLast,
-        workflowId: urlLast.workflowId || last.workflowId,
-        projectId: urlLast.projectId || last.projectId,
-        mediaName: urlLast.mediaName || last.mediaName,
-        status: urlLast.status || last.status
-      };
-      if (urlLast.failed) throw new Error(`VEO video generation failed: ${formatVideoPollFailure(urlLast.failure)}`);
-      if (urlLast.videoUrl) return last;
+      last.videoUrl = await getGeneratedVideoUrl(tabId, mediaName);
+      last.mediaName ||= mediaName;
+      return last;
     }
   }
   throw new Error(`VEO video polling timeout; last=${JSON.stringify(last).slice(0, 300)}`);
