@@ -571,7 +571,7 @@ async function runTask(msg) {
         googleAccount: payload.google_account || payload.googleAccount || "",
         googlePassword: payload.google_password || payload.googlePassword || "",
         googleEfa: payload.google_efa || payload.googleEfa || ""
-      }, loginTab?.id ? { tabId: loginTab.id, url: loginUrl } : {});
+      }, loginTab?.id ? { tabId: loginTab.id, url: loginUrl, onlyIfGoogleLoginPage: true } : { onlyIfGoogleLoginPage: true });
       const targetUrl = normalizeRedirectUrl(payload.target_url || payload.after_login_url || "");
       if (targetUrl) {
         const tabId = loginTab?.id;
@@ -743,12 +743,118 @@ function isGoogleAutoLoginWatchUrl(raw) {
   }
 }
 
+function isGoogleFlowProjectUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    return u.protocol === "https:" && (
+      (u.hostname.toLowerCase() === "labs.google" && /^\/fx\/tools\/flow\/project(?:\/|$)/i.test(u.pathname))
+      || (u.hostname.toLowerCase() === "flow.google.com" && /^\/project(?:\/|$)/i.test(u.pathname))
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function isGoogleFlowAboutUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    return u.protocol === "https:" && u.hostname.toLowerCase() === "flow.google.com" && u.pathname.replace(/\/+$/, "") === "/about";
+  } catch (_) {
+    return false;
+  }
+}
+
+async function redirectToPendingVeoProjectIfNeeded(tabId) {
+  try {
+    const got = await chrome.storage.local.get(["veo_pending_project_id"]);
+    const projectId = String(got && got.veo_pending_project_id || "").trim().replace(/^projects\//, "");
+    if (!projectId) return { redirected: false, reason: "no_pending_project" };
+    const tab = await chrome.tabs.get(tabId);
+    const currentUrl = String(tab && tab.url || "");
+    const expected = `https://flow.google.com/project/${encodeURIComponent(projectId)}`;
+    const projectTab = (await chrome.tabs.query({})).find((tab) => {
+      if (!tab || !tab.id) return false;
+      try {
+        const u = new URL(String(tab.url || ""));
+        if (u.hostname.toLowerCase() !== "flow.google.com") return false;
+        const m = u.pathname.match(/^\/project\/([^/?#]+)\/?$/i);
+        return !!m && decodeURIComponent(m[1]) === projectId;
+      } catch (_) {
+        return false;
+      }
+    });
+    const aiStudioUrl = "https://aistudio.google.com/prompts/new_chat?model=gemini-3-pro-image";
+    if (projectTab && projectTab.id) {
+      // The Flow project is already open in another tab. Reuse the login tab
+      // for AI Studio instead of opening/navigating another Flow project tab.
+      await chrome.tabs.update(tabId, { url: aiStudioUrl, active: true });
+      await pushLog("info", "VEO project tab already exists; redirecting login tab to AI Studio", {
+        tab_id: tabId,
+        project_tab_id: projectTab.id,
+        project_id: projectId,
+        from: currentUrl,
+        to: aiStudioUrl
+      });
+      return { redirected: true, reused: true, project_id: projectId, project_tab_id: projectTab.id, url: aiStudioUrl };
+    }
+
+    // No matching Flow project tab exists, so navigate the logged-in tab to
+    // the pending project page.
+    await chrome.tabs.update(tabId, { url: expected, active: true });
+    await pushLog("info", "No existing VEO project tab; redirecting to pending project", { tab_id: tabId, project_id: projectId, from: currentUrl, to: expected });
+    return { redirected: true, project_id: projectId, url: expected };
+  } catch (e) {
+    return { redirected: false, reason: "redirect_failed", error: String(e && e.message || e) };
+  }
+}
+
+async function clickGoogleFlowCreateButtonInTab(tabId) {
+  const frames = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: async () => {
+      const normalize = value => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const isVisible = el => {
+        if (!el) return false;
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 1 && rect.height > 1;
+      };
+      const candidates = Array.from(document.querySelectorAll("button, [role='button'], a"));
+      const button = candidates.find(el => isVisible(el) && (
+        normalize(el.innerText || el.textContent) === "create with google flow" ||
+        normalize(el.getAttribute("aria-label")) === "create with google flow"
+      ));
+      if (!button) return { clicked: false, reason: "create_button_not_found" };
+      try { button.scrollIntoView({ block: "center", inline: "center" }); } catch (_) {}
+      await new Promise(resolve => setTimeout(resolve, 100));
+      try { button.click(); } catch (_) {
+        try { button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window })); } catch (_) {}
+      }
+      return { clicked: true, text: String(button.innerText || button.textContent || "").trim() };
+    }
+  });
+  return Array.isArray(frames) && frames[0] ? frames[0].result : { clicked: false, reason: "empty_execute_result" };
+}
+
+function isGoogleOAuthStartUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    return u.protocol === "https:"
+      && u.hostname.toLowerCase() === "labs.google"
+      && /^\/fx\/api\/auth\/signin(?:\/|$)/i.test(u.pathname);
+  } catch (_) {
+    return false;
+  }
+}
+
 // AI Studio 页面会显示当前登录账号的邮箱，Google 自动登录不得在这里执行
 // DOM 检测、点击或导航。它仍保留在 Google URL 监控范围内，由各登录入口静默跳过。
 function isGoogleAutoLoginProtectedUrl(raw) {
   try {
     const u = new URL(String(raw || ""));
-    return u.protocol === "https:" && u.hostname.toLowerCase() === "aistudio.google.com";
+    return (u.protocol === "https:" && u.hostname.toLowerCase() === "aistudio.google.com")
+      || isGoogleFlowProjectUrl(raw);
   } catch (_) {
     return false;
   }
@@ -882,10 +988,13 @@ async function runGoogleAutoLogin(credsPatch = {}, options = {}) {
   // DOM 文案双重确认过），必须放行，否则监听路径在此直接 skip，走不到下面点击
   // "Sign in with Google" 并跳转 accounts.google.com 的逻辑。真正的非登录页仍由
   // 下方的 DOM 检测兜底拦下。
-  if (options.onlyIfGoogleLoginPage && !isGoogleLoginUrl(curUrl) && !isGoogleAutoLoginWatchUrl(curUrl)) {
+  if (options.onlyIfGoogleLoginPage && !isGoogleLoginUrl(curUrl) && !isGoogleOAuthStartUrl(curUrl)) {
     return { skipped: true, reason: "not_google_login_page", url: curUrl };
   }
   if (!isGoogleAccountsUrl(curUrl)) {
+    if (!isGoogleOAuthStartUrl(curUrl)) {
+      return { skipped: true, reason: "not_google_login_entry", url: curUrl };
+    }
     // 第三方 OAuth 起始页（如 labs.google/fx/api/auth/signin）：先点它自己的
     // "Sign in with Google" 按钮走正常 OAuth 流程；点不到再退回直接导航。
     let clickedProvider = false;
@@ -1233,6 +1342,7 @@ async function detectGoogleLoginPageInTab(tabId) {
 const GOOGLE_AUTO_LOGIN_COOLDOWN_MS = 60 * 1000;
 const googleAutoLoginRunningTabs = new Set();
 const googleAutoLoginLastByTab = new Map();
+const googleFlowAboutRefreshPending = new Set();
 let googleAutoLoginLastConfigWarnAt = 0;
 const GPT_CLOUDFLARE_WATCH_COOLDOWN_MS = 8000;
 const gptCloudflareRunningTabs = new Set();
@@ -1256,6 +1366,52 @@ async function maybeRunGoogleAutoLoginForTab(tabId, url, reason = "tab_event") {
       await pushLog("warn", "Google auto login watch is enabled but account/password is empty");
     }
     return { skipped: true, reason: "missing_credentials" };
+  }
+
+  if (isGoogleFlowAboutUrl(url)) {
+    const now = Date.now();
+    const lastAt = Number(googleAutoLoginLastByTab.get(tabId) || 0);
+    if (now - lastAt < GOOGLE_AUTO_LOGIN_COOLDOWN_MS) {
+      return { skipped: true, reason: "cooldown", cooldown_ms: GOOGLE_AUTO_LOGIN_COOLDOWN_MS - (now - lastAt) };
+    }
+    if (googleAutoLoginRunningTabs.has(tabId)) return { skipped: true, reason: "already_running" };
+    googleAutoLoginLastByTab.set(tabId, now);
+    googleAutoLoginRunningTabs.add(tabId);
+    try {
+      const clicked = await clickGoogleFlowCreateButtonInTab(tabId);
+      if (!clicked || !clicked.clicked) {
+        googleAutoLoginRunningTabs.delete(tabId);
+        if (!googleFlowAboutRefreshPending.has(tabId)) {
+          googleFlowAboutRefreshPending.add(tabId);
+          setTimeout(async () => {
+            googleFlowAboutRefreshPending.delete(tabId);
+            try {
+              const current = await chrome.tabs.get(tabId);
+              if (isGoogleFlowAboutUrl(String(current && current.url || ""))) {
+                googleAutoLoginLastByTab.delete(tabId);
+                await chrome.tabs.reload(tabId, { bypassCache: false });
+              }
+            } catch (_) {}
+          }, 5000);
+        }
+        return { skipped: true, reason: "flow_create_button_not_clicked", detail: clicked };
+      }
+      await sleep(3000);
+      let tab = null;
+      try { tab = await chrome.tabs.get(tabId); } catch (_) {}
+      const nextUrl = String(tab && tab.url || "");
+      googleAutoLoginRunningTabs.delete(tabId);
+      // The click itself only suppresses duplicate about-page events. Allow
+      // the normal login flow below to start immediately on the resulting URL.
+      googleAutoLoginLastByTab.delete(tabId);
+      if (!isGoogleLoginUrl(nextUrl) && !isGoogleOAuthStartUrl(nextUrl)) {
+        return { skipped: true, reason: "flow_create_button_clicked", url: nextUrl };
+      }
+      url = nextUrl;
+    } catch (e) {
+      googleAutoLoginRunningTabs.delete(tabId);
+      return { skipped: true, reason: "flow_create_button_failed", error: String(e && e.message || e) };
+    }
   }
 
   if (googleAutoLoginRunningTabs.has(tabId)) return { skipped: true, reason: "already_running" };
@@ -1289,6 +1445,7 @@ async function maybeRunGoogleAutoLoginForTab(tabId, url, reason = "tab_event") {
     autoWatch: true
   }).then(async (result) => {
     await pushLog("info", "Google auto login watch finished", { tab_id: tabId, result });
+    if (result && result.done) await redirectToPendingVeoProjectIfNeeded(tabId);
   }).catch(async (e) => {
     await pushLog("warn", "Google auto login watch failed", { tab_id: tabId, error: String(e && e.message || e) });
   }).finally(() => {
@@ -1424,7 +1581,7 @@ async function runPopupVeoGenerateTest(kind) {
   if (!project) {
     await pushLog("warn", "VEO 生成测试已停止：当前页面不是 Flow 项目页", {
       current_url: currentUrl,
-      required_url: "https://labs.google/fx/tools/flow/project/xxxxxx",
+      required_url: "https://flow.google.com/project/xxxxxx",
       test_kind: testKind
     });
     return { skipped: true, reason: "not_flow_project_page", current_url: currentUrl };
@@ -1597,7 +1754,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       await chargeNewapiUsage("popup_google_auto_login", { source: "popup.googleAutoLogin" });
       const result = await runGoogleAutoLogin(
         message.creds || {},
-        tab?.id ? { charged: true, tabId: tab.id, url } : { charged: true }
+        tab?.id ? { charged: true, tabId: tab.id, url, onlyIfGoogleLoginPage: true } : { charged: true, onlyIfGoogleLoginPage: true }
       );
       sendResponse({ ok: true, result });
       return;
@@ -1912,6 +2069,7 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   googleAutoLoginRunningTabs.delete(tabId);
   googleAutoLoginLastByTab.delete(tabId);
+  googleFlowAboutRefreshPending.delete(tabId);
   gptCloudflareRunningTabs.delete(tabId);
   gptCloudflareLastByTab.delete(tabId);
   gptBusyTabs.delete(tabId);
