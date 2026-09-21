@@ -3171,44 +3171,72 @@ async function loadVeoInjectedVideoScript(tabId, fileName) {
 }
 
 async function runInjectedVeoVideo(tabId, scriptPath, config) {
-  await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: [scriptPath] });
-  const [{ result }] = await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "MAIN",
-    func: async (runnerConfig) => {
-      try {
-        const runner = globalThis.runGeneratedTest;
-        if (typeof runner !== "function") throw new Error("Injected script did not define runGeneratedTest(config)");
-        return await runner(runnerConfig || {});
-      } catch (error) {
-        return { ok: false, error: String(error && error.message || error), stack: error && error.stack };
-      }
-    },
-    args: [config]
-  });
-  if (!result) throw new Error("VEO injected script returned an empty result");
-  return result;
+  let lastResult = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: [scriptPath] });
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: async (runnerConfig) => {
+        try {
+          const runner = globalThis.runGeneratedTest;
+          if (typeof runner !== "function") throw new Error("Injected script did not define runGeneratedTest(config)");
+          return await runner(runnerConfig || {});
+        } catch (error) {
+          return { ok: false, error: String(error && error.message || error), stack: error && error.stack };
+        }
+      },
+      args: [config]
+    });
+    if (!result) throw new Error("VEO injected script returned an empty result");
+    lastResult = result;
+    if (result.ok) return result;
+
+    const errMsg = String(result.error || "");
+    const isFetchErr = /Failed to fetch|NetworkError|network error|无法获取必要的认证参数/i.test(errMsg);
+    if (attempt < 3 && isFetchErr) {
+      console.warn(`[runInjectedVeoVideo] attempt ${attempt} failed with '${errMsg}', retrying in 2s...`);
+      await sleep(2000);
+    } else {
+      break;
+    }
+  }
+  return lastResult;
 }
 
 async function runInjectedVeoImage(tabId, scriptName, config) {
   const scriptPath = `providers/veo/${scriptName.replace(/\.txt$/i, ".js")}`;
-  await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: [scriptPath] });
-  const [{ result }] = await chrome.scripting.executeScript({
-    target: { tabId },
-    world: "MAIN",
-    func: async (runnerConfig) => {
-      try {
-        const runner = globalThis.runGeneratedTest;
-        if (typeof runner !== "function") throw new Error("Injected image script did not define runGeneratedTest(config)");
-        return await runner(runnerConfig || {});
-      } catch (error) {
-        return { ok: false, error: String(error && error.message || error), stack: error && error.stack };
-      }
-    },
-    args: [config]
-  });
-  if (!result) throw new Error("VEO injected image script returned an empty result");
-  return result;
+  let lastResult = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: [scriptPath] });
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: async (runnerConfig) => {
+        try {
+          const runner = globalThis.runGeneratedTest;
+          if (typeof runner !== "function") throw new Error("Injected image script did not define runGeneratedTest(config)");
+          return await runner(runnerConfig || {});
+        } catch (error) {
+          return { ok: false, error: String(error && error.message || error), stack: error && error.stack };
+        }
+      },
+      args: [config]
+    });
+    if (!result) throw new Error("VEO injected image script returned an empty result");
+    lastResult = result;
+    if (result.ok) return result;
+
+    const errMsg = String(result.error || "");
+    const isFetchErr = /Failed to fetch|NetworkError|network error|无法获取必要的认证参数/i.test(errMsg);
+    if (attempt < 3 && isFetchErr) {
+      console.warn(`[runInjectedVeoImage] attempt ${attempt} failed with '${errMsg}', retrying in 2s...`);
+      await sleep(2000);
+    } else {
+      break;
+    }
+  }
+  return lastResult;
 }
 
 async function runFlow1kImageWorkflow(tabId, p, runtime) {

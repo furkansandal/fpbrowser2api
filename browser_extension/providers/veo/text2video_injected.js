@@ -130,21 +130,37 @@ async function runGeneratedTest(config) {
       `f.req=${encodeURIComponent(JSON.stringify(requestData))}` +
       `&at=${encodeURIComponent(params.atToken)}&`;
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
-        "X-Same-Domain": "1"
-      },
-      body,
-      credentials: "include"
-    });
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+            "X-Same-Domain": "1"
+          },
+          body,
+          credentials: "include"
+        });
 
-    if (!response.ok) {
-      throw new Error(`请求失败: ${response.status} ${response.statusText}`);
+        if (!response.ok) {
+          throw new Error(`请求失败: ${response.status} ${response.statusText}`);
+        }
+
+        return await response.text();
+      } catch (err) {
+        lastError = err;
+        const msg = String(err && err.message || err);
+        const isNetworkErr = /Failed to fetch|NetworkError|network error|Failed to execute 'fetch'/i.test(msg);
+        if (attempt < 3 && (isNetworkErr || /请求失败: 5/i.test(msg))) {
+          console.warn(`⚠️ [sendBatchExecute] attempt ${attempt} failed (${msg}), retrying in 2s...`);
+          await new Promise(r => setTimeout(r, 2000));
+        } else {
+          throw lastError;
+        }
+      }
     }
-
-    return await response.text();
+    throw lastError;
   }
 
   function parseBatchExecuteResponse(responseText) {
