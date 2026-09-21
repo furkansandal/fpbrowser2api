@@ -38,7 +38,7 @@ api_key = ""
 # 默认全部关闭：未部署该服务时不会产生任何外部请求，视频结果保持原样返回。
 [video_postprocess]
 # Whether to mosaic faces in VEO reference images and videos; false skips the mosaic service
-face_mosaic = true
+face_mosaic = false
 # 生成成功后把视频交给外部服务去水印
 remove_watermark = false
 # *-1080p 模型：去水印之后再做一次 1080p 超分，成功则返回超分地址

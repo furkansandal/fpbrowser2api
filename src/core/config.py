@@ -161,7 +161,7 @@ class Config:
         raw = os.getenv("FPB_VEO_FACE_MOSAIC", "")
         if raw.strip():
             return raw.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(self._video_postprocess().get("face_mosaic", True))
+        return bool(self._video_postprocess().get("face_mosaic", False))
 
     @property
     def video_remove_watermark_enabled(self) -> bool:
