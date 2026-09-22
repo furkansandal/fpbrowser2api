@@ -266,7 +266,7 @@ def _veo_extension_local_image_cache_enabled(payload: Dict[str, Any]) -> bool:
     直连下载到 `/assets/veo_image_cache/`，插件再从配置的 base_url 读取本机白名单
     地址，避免图片下载走指纹浏览器代理。
     """
-    if not _veo_env_enabled("VEO_LOCAL_IMAGE_CACHE_ENABLED", True):
+    if not _veo_env_enabled("VEO_LOCAL_IMAGE_CACHE_ENABLED", False):
         return False
     payload = payload or {}
     for key in (
