@@ -3483,7 +3483,10 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   };
   await runtime.progress(15, { stage: "execute_injected_script", video_mode: useImages ? "r2v" : "t2v", image_count: imageUrls.length });
   const result = await runInjectedVeoVideo(tabId, scriptPath, config);
-  if (!result.ok) throw new Error(String(result.error || "VEO injected video generation failed"));
+  if (!result.ok) {
+    const rawSnippet = result.rawResponse ? ` | raw: ${String(result.rawResponse).substring(0, 300)}` : "";
+    throw new Error(String(result.error || "VEO injected video generation failed") + rawSnippet);
+  }
   const videoUrl = String(result.video_url || result.share_url || result.videoUrl || result.result?.videoUrl || "").trim();
   if (!videoUrl) throw new Error("VEO injected video generation returned no video URL");
   await runtime.progress(100, { stage: "done", video_url: videoUrl, video_mode: useImages ? "r2v" : "t2v" });

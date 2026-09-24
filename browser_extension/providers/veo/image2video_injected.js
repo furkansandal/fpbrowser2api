@@ -423,29 +423,57 @@ async function runGeneratedTest(config) {
     }
     
     let mediaUUID = null;
+    let foundRpcItem = false;
+    let rpcErrorDetail = "";
     
-    // 从 MZZa6b 响应中提取 mediaUUID（第二个 UUID）
+    // 从 MZZa6b 响应中提取 mediaUUID
     for (const item of createParsed) {
-      if (item && item[0] === "wrb.fr" && item[1] === "MZZa6b" && item[2]) {
-        const responseStr = String(item[2]);
-        const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-        const allUUIDs = responseStr.match(uuidPattern);
-        
-        if (allUUIDs && allUUIDs.length >= 2) {
-          mediaUUID = allUUIDs[1];
-          console.log("✅ 成功提取视频媒体UUID:", mediaUUID);
-          console.log("  - 找到的所有UUID:", allUUIDs.slice(0, 6));
+      if (item && item[0] === "wrb.fr" && item[1] === "MZZa6b") {
+        foundRpcItem = true;
+        if (item[2]) {
+          const responseStr = String(item[2]);
+          try {
+            const parsedData = JSON.parse(responseStr);
+            if (Array.isArray(parsedData)) {
+              if (typeof parsedData[0] === "string" && parsedData[0].length >= 32) {
+                mediaUUID = parsedData[0];
+              } else if (Array.isArray(parsedData[0]) && typeof parsedData[0][0] === "string" && parsedData[0][0].length >= 32) {
+                mediaUUID = parsedData[0][0];
+              }
+            }
+          } catch (_) {}
+
+          if (!mediaUUID) {
+            const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+            const allUUIDs = responseStr.match(uuidPattern);
+            if (allUUIDs && allUUIDs.length >= 2) {
+              mediaUUID = allUUIDs[1];
+              console.log("✅ 成功提取视频媒体UUID (allUUIDs[1]):", mediaUUID);
+              console.log("  - 找到的所有UUID:", allUUIDs.slice(0, 6));
+            } else if (allUUIDs && allUUIDs.length === 1) {
+              mediaUUID = allUUIDs[0];
+              console.log("✅ 成功提取视频媒体UUID (allUUIDs[0]):", mediaUUID);
+            }
+          }
+          if (mediaUUID) {
+            console.log("✅ 成功提取视频媒体UUID:", mediaUUID);
+          } else {
+            rpcErrorDetail = responseStr.substring(0, 300);
+          }
+        } else {
+          rpcErrorDetail = "item[2] is empty, item: " + JSON.stringify(item).substring(0, 300);
         }
         break;
       }
     }
     
     if (!mediaUUID) {
+      const detail = rpcErrorDetail || (!foundRpcItem ? "MZZa6b RPC not found in response" : "");
       return { 
         ok: false, 
-        error: "创建视频任务失败：无法提取媒体UUID",
-        createParsed: JSON.stringify(createParsed),
-        rawResponse: createResponse
+        error: `创建视频任务失败：无法提取媒体UUID${detail ? ` (${detail})` : ""}`,
+        createParsed: JSON.stringify(createParsed).substring(0, 1000),
+        rawResponse: String(createResponse || "").substring(0, 1000)
       };
     }
     

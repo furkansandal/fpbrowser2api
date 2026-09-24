@@ -162,13 +162,15 @@ GPT_IMAGE2_VIDEO_MODELS: Dict[str, str] = {
 
 
 def _normalize_veo_video_resolution(raw: Any) -> str:
-    """规范化 veo 视频分辨率为 720p / 1080p / 4k；缺省按 720p，非法值抛 400。
+    """规范化 veo 视频分辨率为 360p / 720p / 1080p / 4k；缺省按 720p，非法值抛 400。
 
-    仅用于 veo-3-1 / veo-omni-flash。1080p / 4k 会在生成后经浏览器插件做视频放大。
+    仅用于 veo-3-1 / veo-omni-flash。1080p / 4k 会在生成后做视频放大，360p/720p 保持 base 不放大。
     """
     s = str(raw or "").strip().lower().replace(" ", "")
     if not s:
         return "720p"
+    if s in ("360p", "360", "sd"):
+        return "360p"
     if s in ("720p", "720", "1k"):
         return "720p"
     if s in ("1080p", "1080", "fhd"):
@@ -177,7 +179,7 @@ def _normalize_veo_video_resolution(raw: Any) -> str:
         return "4k"
     raise HTTPException(
         status_code=400,
-        detail=f"unsupported resolution {raw!r}; supported: 720p / 1080p / 4k",
+        detail=f"unsupported resolution {raw!r}; supported: 360p / 720p / 1080p / 4k",
     )
 
 

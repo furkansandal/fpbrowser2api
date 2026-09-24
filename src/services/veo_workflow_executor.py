@@ -5937,15 +5937,16 @@ def _veo_resolve_image_output_resolution(payload: Dict[str, Any]) -> tuple[str, 
 def _veo_resolve_video_output_resolution(
     payload: Dict[str, Any],
 ) -> tuple[str, bool, Optional[str], Optional[str]]:
-    """返回 (展示用标签 '720p'|'1080p'|'4K', 是否需要视频放大, targetResolution 枚举, upsampler model_key)。
+    """返回 (展示用标签 '360p'|'720p'|'1080p'|'4K', 是否需要视频放大, targetResolution 枚举, upsampler model_key)。
 
-    默认 720p，不放大（与原行为一致）。1080p / 4k 时由浏览器插件在生成后调用
-    ``video:batchAsyncGenerateVideoUpsampleVideo`` 做视频放大。
+    默认 720p，不放大。360p 亦不放大。1080p / 4k 时做视频放大。
     """
     raw = payload.get("resolution") or payload.get("video_resolution")
     if raw is None or str(raw).strip() == "":
         return ("720p", False, None, None)
     s = str(raw).strip().lower().replace(" ", "")
+    if s in ("360p", "360", "sd"):
+        return ("360p", False, None, None)
     if s in ("4k", "2160", "uhd", "4096", "3840"):
         return ("4K", True, "VIDEO_RESOLUTION_4K", "veo_3_1_upsampler_4k")
     if s in ("1080p", "1080", "fhd"):
