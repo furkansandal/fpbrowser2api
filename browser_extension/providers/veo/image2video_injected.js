@@ -103,23 +103,96 @@ async function runGeneratedTest(config) {
     });
   }
   
+  const DEFAULT_SITE_KEY = "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV";
+
+  function resolveSitekey() {
+    try {
+      const cfg = window.___grecaptcha_cfg || {};
+      const clients = cfg.clients || {};
+      for (const k of Object.keys(clients)) {
+        const c = clients[k];
+        if (c && c.sitekey) return c.sitekey;
+      }
+    } catch (e) {}
+    return DEFAULT_SITE_KEY;
+  }
+
+  function waitReady(timeout = 5000) {
+    return new Promise((resolve) => {
+      let done = false;
+      const fin = () => { if (!done) { done = true; resolve(); } };
+      try { window.grecaptcha?.enterprise?.ready?.(fin); } catch (e) {}
+      setTimeout(fin, timeout);
+    });
+  }
+
+  async function ensureWidget(sitekey) {
+    if (window.__fp_recaptcha_widget_id !== undefined && window.__fp_recaptcha_widget_id !== null) {
+      return window.__fp_recaptcha_widget_id;
+    }
+    await waitReady(5000);
+    let host = document.getElementById('__fp_recaptcha_host');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = '__fp_recaptcha_host';
+      host.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;';
+      (document.body || document.documentElement).appendChild(host);
+    } else {
+      if (host.childNodes && host.childNodes.length > 0) {
+        host.innerHTML = '';
+      }
+    }
+    return await new Promise((resolve, reject) => {
+      try {
+        const widgetId = window.grecaptcha.enterprise.render(host, {
+          sitekey,
+          size: 'invisible',
+          callback: () => {},
+          'error-callback': (m) => reject(new Error('render_error: ' + m)),
+        });
+        window.__fp_recaptcha_widget_id = widgetId;
+        resolve(widgetId);
+      } catch (e) {
+        try {
+          const cfg = window.___grecaptcha_cfg || {};
+          const clients = cfg.clients || {};
+          const keys = Object.keys(clients);
+          if (keys.length > 0) {
+            window.__fp_recaptcha_widget_id = keys[0];
+            return resolve(keys[0]);
+          }
+        } catch (_) {}
+        reject(new Error('render_threw: ' + (e && e.message || e)));
+      }
+    });
+  }
+
   async function getRecaptchaToken(action) {
     if (!window.grecaptcha || !window.grecaptcha.enterprise) {
       throw new Error("grecaptcha.enterprise not found");
     }
-    await new Promise(function(resolve) { 
-      window.grecaptcha.enterprise.ready(resolve); 
-    });
-    return await window.grecaptcha.enterprise.execute(
-      "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV", 
-      { action: action }
-    );
+    const sitekey = resolveSitekey();
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await waitReady(2500);
+        const widgetId = await ensureWidget(sitekey);
+        const token = await Promise.race([
+          window.grecaptcha.enterprise.execute(widgetId, { action }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('execute_hang')), 10000)),
+        ]);
+        if (token) return String(token);
+      } catch (err) {
+        console.warn(`[getRecaptchaToken] widget execute attempt ${attempt} failed:`, err);
+      }
+      await new Promise(r => setTimeout(r, 600));
+    }
+    return await window.grecaptcha.enterprise.execute(sitekey, { action });
   }
 
   function buildBatchExecuteUrl(rpcids, params, projectId) {
     const reqid = Math.floor(Math.random() * 9000 + 1000) * 100000 + Math.floor(Math.random() * 100000);
-    const hl = document.documentElement.lang || "en";
-    const sourcePath = encodeURIComponent(`/project/${projectId}`);
+    const hl = (document.documentElement.lang || navigator.language || "en").split("-")[0];
+    const sourcePath = encodeURIComponent(location.pathname || `/project/${projectId}`);
 
     return (
       "https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?" +
@@ -266,15 +339,16 @@ async function runGeneratedTest(config) {
     return jpegBase64;
   }
 
-  async function uploadImage(imageUrl, params, projectId, recaptchaToken, index) {
+  async function uploadImage(imageUrl, params, projectId, index) {
     console.log(`📤 上传第 ${index + 1} 张图片...`);
     const imageBase64 = await downloadAndConvertToJpeg(imageUrl);
+    const uploadRecaptchaToken = await getRecaptchaToken("IMAGE_GENERATION");
     
     const uuid1 = generateUUID();
     const uuid2 = generateUUID();
     
     const uploadPayloadArray = [
-      [null, 22, null, null, null, projectId, null, null, null, null, [recaptchaToken, 1]],
+      [null, 22, null, null, null, projectId, null, null, null, null, [uploadRecaptchaToken, 1]],
       imageBase64,
       "image/jpeg",
       1,
@@ -337,12 +411,7 @@ async function runGeneratedTest(config) {
     console.log("✅ 参数准备完成");
     console.log("  - 项目ID:", projectId);
     
-    // 步骤1: 获取 recaptcha token
-    console.log("🔐 获取 reCAPTCHA token...");
-    const recaptchaToken = await getRecaptchaToken("VIDEO_GENERATION");
-    console.log("✅ reCAPTCHA token 获取成功");
-    
-    // 步骤2: 批量上传参考图片
+    // 步骤1: 批量上传参考图片
     console.log(`📤 开始批量上传 ${referenceImageUrls.length} 张参考图片...`);
     const imageUUIDs = [];
     
@@ -351,12 +420,20 @@ async function runGeneratedTest(config) {
       if (!imageUrl) {
         throw new Error(`第 ${i + 1} 张图片URL为空`);
       }
-      const uuid = await uploadImage(imageUrl, params, projectId, recaptchaToken, i);
+      const uuid = await uploadImage(imageUrl, params, projectId, i);
       imageUUIDs.push(uuid);
+      if (i < referenceImageUrls.length - 1) {
+        await new Promise(r => setTimeout(r, 400));
+      }
     }
     
     console.log("✅ 所有图片上传完成！");
     console.log("  - 图片UUIDs:", imageUUIDs);
+    
+    // 步骤2: 获取视频生成专属 reCAPTCHA token
+    console.log("🔐 获取视频生成 reCAPTCHA token...");
+    const videoRecaptchaToken = await getRecaptchaToken("VIDEO_GENERATION");
+    console.log("✅ 视频生成 reCAPTCHA token 获取成功");
     
     // 步骤3: 创建多图生视频任务 (rpcids: MZZa6b)
     console.log("📤 创建多图生视频任务...");
@@ -401,7 +478,7 @@ async function runGeneratedTest(config) {
         null,
         null,
         null,
-        [recaptchaToken, 1]
+        [videoRecaptchaToken, 1]
       ],
       [uuid2, 2]
     ];
@@ -591,6 +668,30 @@ async function runGeneratedTest(config) {
         console.log("✅ 视频地址获取成功！");
         console.log("🎬 视频地址:", videoUrl);
         break;
+      }
+
+      // Fallback: If mediaUUID was an operation ID, resolve real media ID from project media listing (Zzl0ze)
+      try {
+        const listPayload = [`projects/${projectId}`, null, null, null, [1]];
+        const listResp = await sendBatchExecute("Zzl0ze", listPayload, params, projectId);
+        const start = listResp.indexOf(mediaUUID);
+        if (start !== -1) {
+          const snippet = listResp.slice(start, start + 800);
+          const m = snippet.match(/null,null,\\?"([0-9a-fA-F-]{36})\\?"/);
+          if (m && m[1]) {
+            const realMediaId = m[1];
+            console.log("🔍 从项目列表解析出真实 mediaId:", realMediaId);
+            const realUrlResp = await sendBatchExecute("as29s", [realMediaId], params, projectId);
+            const realParsed = extractVideoUrl(realUrlResp);
+            if (realParsed.videoUrl) {
+              videoUrl = realParsed.videoUrl;
+              console.log("✅ 视频地址获取成功 (via realMediaId)！");
+              break;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("⚠️ Zzl0ze mediaId lookup failed:", e);
       }
       
       if (attempt < maxUrlAttempts) {
