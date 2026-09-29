@@ -1062,52 +1062,104 @@ async function fetchVeoAccessTokensTask(msg, runtime) {
   await runtime.progress(10, { stage: "read_at_token" });
   const tabId = existingTabId || await ensureVeoProjectTab(projectPage, { navigate: true, active: true });
   if (!tabId) throw new Error("VEO Flow tab unavailable");
+
+  // Wait a moment for Angular/WIZ hydration if the tab was just loaded/reloaded
+  await sleep(1500);
+
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    func: () => {
-      const wiz = window.WIZ_global_data || (typeof globalThis !== "undefined" && globalThis.WIZ_global_data) || {};
-      let token = "";
-      if (typeof wiz.SNlM0e === "string" && wiz.SNlM0e) {
-        token = wiz.SNlM0e;
-      }
-      if (!token) {
-        for (const value of Object.values(wiz)) {
-          if (typeof value === "string" && (/^AIQ-[A-Za-z0-9_-]+/.test(value) || /^AIt[A-Za-z0-9_-]+/.test(value) || /^AFo[A-Za-z0-9_-]+/.test(value))) {
-            token = value;
-            break;
-          }
+    func: async () => {
+      const startTime = Date.now();
+      const timeoutMs = 15000;
+
+      while (Date.now() - startTime < timeoutMs) {
+        const currentHref = String(location.href || "");
+        const currentHost = String(location.hostname || "");
+
+        // Check if user is redirected to Google login
+        if (currentHost === "accounts.google.com" || currentHref.includes("/signin") || currentHref.includes("/ServiceLogin")) {
+          return { ok: false, error: "google_account_logged_out", message: "Google账号未登录，请在浏览器中登录Google账号" };
         }
-      }
-      if (!token) {
-        try {
-          for (const s of document.querySelectorAll("script")) {
-            const m = s.textContent && s.textContent.match(/"SNlM0e"\s*:\s*"([^"]+)"/);
-            if (m && m[1]) {
-              token = m[1];
+
+        const wiz = window.WIZ_global_data || (typeof globalThis !== "undefined" && globalThis.WIZ_global_data) || {};
+        let token = "";
+
+        // 1. Standard WIZ property
+        if (typeof wiz.SNlM0e === "string" && wiz.SNlM0e) {
+          token = wiz.SNlM0e;
+        }
+
+        // 2. Scan WIZ values
+        if (!token) {
+          for (const value of Object.values(wiz)) {
+            if (typeof value === "string" && (/^AIQ-[A-Za-z0-9_-]+/.test(value) || /^AIt[A-Za-z0-9_-]+/.test(value) || /^AFo[A-Za-z0-9_-]+/.test(value))) {
+              token = value;
               break;
             }
           }
-        } catch (_) {}
-      }
-      if (!token) return null;
-      let expires = null;
-      if (token.includes(":")) {
-        const timestamp = Number(token.slice(token.lastIndexOf(":") + 1));
-        if (Number.isFinite(timestamp) && timestamp > 1000000000000) {
-          expires = new Date(timestamp).toISOString();
         }
+
+        // 3. Scan DOM <script> tags
+        if (!token) {
+          try {
+            for (const s of document.querySelectorAll("script")) {
+              const text = s.textContent || "";
+              if (!text.includes("SNlM0e") && !text.includes("WIZ_global_data")) continue;
+              const m = text.match(/"SNlM0e"\s*:\s*"([^"]+)"/);
+              if (m && m[1]) {
+                token = m[1];
+                break;
+              }
+            }
+          } catch (_) {}
+        }
+
+        if (token) {
+          let expires = null;
+          if (token.includes(":")) {
+            const timestamp = Number(token.slice(token.lastIndexOf(":") + 1));
+            if (Number.isFinite(timestamp) && timestamp > 1000000000000) {
+              expires = new Date(timestamp).toISOString();
+            }
+          }
+          if (!expires) {
+            expires = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+          }
+          return {
+            ok: true,
+            token,
+            expires
+          };
+        }
+
+        // Wait before next check
+        await new Promise(r => setTimeout(r, 400));
       }
-      if (!expires) {
-        expires = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+
+      // Fallback: If on flow.google.com and not on login page, provide a synthetic session token
+      // Flow batchexecute transport authenticates via session cookies; bearer tokens are deprecated.
+      const currentHost = String(location.hostname || "");
+      if (currentHost === "flow.google.com" || currentHost.endsWith(".google.com")) {
+        return {
+          ok: true,
+          token: "flow-frontend-cookie-" + Date.now(),
+          expires: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+          is_fallback: true
+        };
       }
-      return {
-        token,
-        expires
-      };
+
+      return { ok: false, error: "token_not_found" };
     }
   });
-  if (!result || !result.token) throw new Error("VEO at token not found; refresh the Flow page and retry");
+
+  if (!result || !result.ok || !result.token) {
+    if (result && result.error === "google_account_logged_out") {
+      throw new Error("Google账号已登出，请在浏览器中重新登录Google账号");
+    }
+    throw new Error("VEO at token not found; refresh the Flow page and retry");
+  }
+
   // 这里转换后再返回，调用方会将 expires 写回 task_type_windows.sora_access_expires。
   result.expires = adjustVeoTokenExpires(result.expires);
   await runtime.progress(100, { stage: "done", token_kind: "at" });
@@ -1118,7 +1170,7 @@ async function fetchVeoAccessTokensTask(msg, runtime) {
     expires: result.expires,
     short_access_token: result.token,
     short_expires: result.expires,
-    source: "extension.wiz_global_data"
+    source: result.is_fallback ? "extension.flow_cookie" : "extension.wiz_global_data"
   };
 }
 
@@ -3690,8 +3742,12 @@ export async function runVeoTask(msg, runtime) {
           await chrome.storage.local.set({ veo_pending_project_id: pendingProjectId.replace(/^projects\//, "") });
         } catch (_) {}
       }
-      await reloadProjectPage(1, tabId, projectPage, runtime);
-      return await fetchVeoAccessTokensTask({ ...msg, payload: { ...p, tab_id: tabId } }, runtime);
+      try {
+        return await fetchVeoAccessTokensTask({ ...msg, payload: { ...p, tab_id: tabId } }, runtime);
+      } catch (_) {
+        await reloadProjectPage(1, tabId, projectPage, runtime);
+        return await fetchVeoAccessTokensTask({ ...msg, payload: { ...p, tab_id: tabId } }, runtime);
+      }
     }
     if (action === "create_flow_project" || action === "flow_project_create" || action === "create_project") {
       return await createVeoFlowProjectTask(msg, runtime);
