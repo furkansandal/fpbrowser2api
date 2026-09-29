@@ -10,31 +10,36 @@ async function runGeneratedTest(config) {
   
   const prompt = String(config.prompt || "").trim();
   const ratio = String(config.ratio || "1:1").trim();
-  const modelName = String(config.modelName || "GEM_PIX_2").trim().toUpperCase() === "NARWHAL" ? "NARWHAL" : "GEM_PIX_2";
+  const rawModel = String(config.modelName || "").trim().toUpperCase();
+  const modelName = (rawModel === "HARBOR_SEAL" || rawModel.includes("LITE"))
+    ? "HARBOR_SEAL"
+    : ((rawModel === "NARWHAL" || rawModel.includes("FLASH")) ? "NARWHAL" : "GEM_PIX_2");
   
   if (!prompt) {
     return { ok: false, error: "缺少必需参数: config.prompt" };
   }
   
-  // 将比例转换为 API 参数值（根据实际抓包分析）
+  // 将比例转换为 API 参数值（对齐 Flow 官方 batchexecute 枚举）
   // 1 = 方形 (1:1)
   // 2 = 竖版 (9:16)
-  // 5 = 横版 (16:9)
+  // 3 = 横版 (16:9)
+  // 4 = 竖版 (3:4)
+  // 5 = 横版 (4:3)
   let ratioValue;
   if (ratio === "1:1" || ratio === "方形" || ratio === "square") {
     ratioValue = 1;
   } else if (ratio === "16:9" || ratio === "横版" || ratio === "horizontal") {
-    ratioValue = 5;
+    ratioValue = 3;
   } else if (ratio === "9:16" || ratio === "竖版" || ratio === "vertical") {
     ratioValue = 2;
   } else if (ratio === "4:3") {
-    ratioValue = 3;
+    ratioValue = 5;
   } else if (ratio === "3:4") {
     ratioValue = 4;
   } else {
     return { 
       ok: false, 
-      error: `不支持的图片比例: ${ratio}，请使用 "1:1"、"16:9" 或 "9:16"` 
+      error: `不支持的图片比例: ${ratio}，请使用 "1:1"、"16:9"、"9:16"、"4:3" 或 "3:4"` 
     };
   }
   

@@ -2474,9 +2474,11 @@ function mapAiStudioImageAspectRatio(p) {
 }
 
 function mapAiStudioImageModelName(p) {
-  return String(p.extension_image_model_name || "NARWHAL").trim().toUpperCase() === "NARWHAL"
-    ? "models/gemini-3.1-flash-image"
-    : "models/gemini-3-pro-image";
+  const m = String(p.extension_image_model_name || "NARWHAL").trim().toUpperCase();
+  if (m === "HARBOR_SEAL" || m.includes("LITE") || m === "NARWHAL") {
+    return "models/gemini-3.1-flash-image";
+  }
+  return "models/gemini-3-pro-image";
 }
 
 function cleanBase64ForAiStudio(value) {
@@ -3439,10 +3441,14 @@ async function runInjectedVeoImage(tabId, scriptName, config) {
 async function runFlow1kImageWorkflow(tabId, p, runtime) {
   const refs = getAiStudioReferenceImageSources(p).map(x => String(x || "").trim()).filter(Boolean);
   const ratio = mapAiStudioImageAspectRatio(p);
+  const rawModelName = String(p.extension_image_model_name || "").trim().toUpperCase();
+  const flowModelName = (rawModelName === "HARBOR_SEAL" || rawModelName.includes("LITE"))
+    ? "HARBOR_SEAL"
+    : (rawModelName === "GEM_PIX_2" || rawModelName.includes("PRO") ? "GEM_PIX_2" : "NARWHAL");
   const config = {
     prompt: String(p.prompt || "").trim(),
     ratio,
-    modelName: mapAiStudioImageModelName(p).includes("gemini-3.1") ? "NARWHAL" : "GEM_PIX_2",
+    modelName: flowModelName,
     referenceImageUrls: refs
   };
   const scriptName = refs.length ? "image2image_injected.js" : "text2image_injected.js";

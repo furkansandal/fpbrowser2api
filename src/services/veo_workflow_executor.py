@@ -3896,6 +3896,8 @@ IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR = "IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR
 VEO_IMAGE_MODEL_NARWHAL = "NARWHAL"
 # 与 flow2api generation_handler gemini-3.0-pro-image-*（GEM_PIX_2）一致
 VEO_IMAGE_MODEL_GEM_PIX_2 = "GEM_PIX_2"
+# 与 flowkit HARBOR_SEAL (Nano Banana 2 Lite) 一致
+VEO_IMAGE_MODEL_HARBOR_SEAL = "HARBOR_SEAL"
 VEO_IMAGE_GENERATION_MAX_REFERENCE_IMAGES = 10
 VEO_IMAGE_REFERENCE_MAX_PIXELS_4K = 3840 * 2160
 UPSAMPLE_IMAGE_RESOLUTION_2K = "UPSAMPLE_IMAGE_RESOLUTION_2K"
@@ -5906,15 +5908,17 @@ def _veo_truthy_payload_flag(v: Any) -> bool:
 
 
 def _veo_resolve_image_model_name(payload: Dict[str, Any]) -> str:
-    """文生图/图生图模型：默认 NARWHAL；`use_gem_pix_2` 或显式模型名为 GEM_PIX_2 时用 GEM_PIX_2（对齐 flow2api）。"""
+    """文生图/图生图模型：默认 NARWHAL；`use_gem_pix_2` 或显式模型名为 GEM_PIX_2 时用 GEM_PIX_2；HARBOR_SEAL (Lite) 支持。"""
     for key in ("veo_image_model", "image_model_name", "imageModelName"):
         raw = payload.get(key)
         if raw is None or str(raw).strip() == "":
             continue
         s = str(raw).strip().upper().replace("-", "_")
-        if s in ("GEM_PIX_2", "GEMPIX2", "GEM_PIX2"):
+        if s in ("GEM_PIX_2", "GEMPIX2", "GEM_PIX2", "PRO", "NANO_BANANA_PRO", "NANA_BANANA_PRO"):
             return VEO_IMAGE_MODEL_GEM_PIX_2
-        if s in ("NARWHAL",):
+        if s in ("HARBOR_SEAL", "HARBORSEAL", "LITE", "NANO_BANANA_2_LITE", "NANA_BANANA_2_LITE", "NANO_BANANA_LITE", "NANA_BANANA_LITE"):
+            return VEO_IMAGE_MODEL_HARBOR_SEAL
+        if s in ("NARWHAL", "NANO_BANANA_2", "NANA_BANANA_2"):
             return VEO_IMAGE_MODEL_NARWHAL
     if _veo_truthy_payload_flag(payload.get("use_gem_pix_2") or payload.get("veo_use_gem_pix_2")):
         return VEO_IMAGE_MODEL_GEM_PIX_2

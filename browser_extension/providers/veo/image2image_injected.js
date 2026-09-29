@@ -12,7 +12,10 @@ async function runGeneratedTest(config) {
   const prompt = String(config.prompt || "").trim();
   const referenceImageUrls = Array.isArray(config.referenceImageUrls) ? config.referenceImageUrls : [];
   const ratio = String(config.ratio || "1:1").trim();
-  const modelName = String(config.modelName || "GEM_PIX_2").trim().toUpperCase() === "NARWHAL" ? "NARWHAL" : "GEM_PIX_2";
+  const rawModel = String(config.modelName || "").trim().toUpperCase();
+  const modelName = (rawModel === "HARBOR_SEAL" || rawModel.includes("LITE"))
+    ? "HARBOR_SEAL"
+    : ((rawModel === "NARWHAL" || rawModel.includes("FLASH")) ? "NARWHAL" : "GEM_PIX_2");
   
   if (!prompt) {
     return { ok: false, error: "缺少必需参数: config.prompt" };

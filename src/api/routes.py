@@ -119,6 +119,14 @@ OPENAI_COMPAT_VIDEO_MODELS = (
     "nana-banana-pro",
     "nana-banana-2-4k",
     "nana-banana-pro-4k",
+    "nana-banana-2-lite",
+    "nana-banana-2-lite-4k",
+    "nano-banana-2",
+    "nano-banana-pro",
+    "nano-banana-2-4k",
+    "nano-banana-pro-4k",
+    "nano-banana-2-lite",
+    "nano-banana-2-lite-4k",
     "veo-3-1",
     "veo-3-1-fast",
     "veo-3-1-lite",
@@ -140,6 +148,14 @@ OPENAI_COMPAT_IMAGE_MODELS = (
     "nana-banana-pro",
     "nana-banana-2-4k",
     "nana-banana-pro-4k",
+    "nana-banana-2-lite",
+    "nana-banana-2-lite-4k",
+    "nano-banana-2",
+    "nano-banana-pro",
+    "nano-banana-2-4k",
+    "nano-banana-pro-4k",
+    "nano-banana-2-lite",
+    "nano-banana-2-lite-4k",
     "gpt-image2-1k",
     "gpt-image2-2k",
     "gpt-image2-4k",
@@ -314,7 +330,7 @@ def _normalize_video_task_payload(payload: Dict[str, Any], *, require_image_seco
         _require_video_image_seconds_4(payload, model)
     if model in {"seedance-2", "seedance-2-fast"}:
         task_type_code = "dreamina_workflow"
-    elif model in {"nana-banana-2"}:
+    elif model in {"nana-banana-2", "nano-banana-2"}:
         task_type_code = "veo_workflow"
         payload["n_frames"] = "1"
         payload["duration"] = 1
@@ -327,7 +343,7 @@ def _normalize_video_task_payload(payload: Dict[str, Any], *, require_image_seco
             if raw_resolution == "4k":
                 raw_resolution = "1k"
         payload["resolution"] = raw_resolution
-    elif model in {"nana-banana-pro"}:
+    elif model in {"nana-banana-pro", "nano-banana-pro"}:
         task_type_code = "veo_workflow"
         payload["n_frames"] = "1"
         payload["duration"] = 1
@@ -340,17 +356,36 @@ def _normalize_video_task_payload(payload: Dict[str, Any], *, require_image_seco
             if raw_resolution == "4k":
                 raw_resolution = "1k"
         payload["resolution"] = raw_resolution
-    elif model in {"nana-banana-2-4k"}:
+    elif model in {"nana-banana-2-lite", "nano-banana-2-lite", "nana-banana-lite", "nano-banana-lite"}:
+        task_type_code = "veo_workflow"
+        payload["n_frames"] = "1"
+        payload["duration"] = 1
+        payload["image_model_name"] = "HARBOR_SEAL"
+        raw_resolution = payload.get("resolution")
+        if raw_resolution is None:
+            raw_resolution = "1k"
+        else:
+            raw_resolution = raw_resolution.lower()
+            if raw_resolution == "4k":
+                raw_resolution = "1k"
+        payload["resolution"] = raw_resolution
+    elif model in {"nana-banana-2-4k", "nano-banana-2-4k"}:
         task_type_code = "veo_workflow"
         payload["n_frames"] = "1"
         payload["duration"] = 1
         payload["image_model_name"] = "NARWHAL"
         payload["resolution"] = "4k"
-    elif model in {"nana-banana-pro-4k"}:
+    elif model in {"nana-banana-pro-4k", "nano-banana-pro-4k"}:
         task_type_code = "veo_workflow"
         payload["n_frames"] = "1"
         payload["duration"] = 1
         payload["image_model_name"] = "GEM_PIX_2"
+        payload["resolution"] = "4k"
+    elif model in {"nana-banana-2-lite-4k", "nano-banana-2-lite-4k"}:
+        task_type_code = "veo_workflow"
+        payload["n_frames"] = "1"
+        payload["duration"] = 1
+        payload["image_model_name"] = "HARBOR_SEAL"
         payload["resolution"] = "4k"
     elif model in veo_model_registry.API_MODEL_TO_FAMILY:
         # 统一的 Veo 3.1 族 + Omni Flash 路径：API 层只解析 family + duration，
