@@ -485,57 +485,93 @@ async function runGeneratedTest(config) {
     const videoRecaptchaToken = await getRecaptchaToken("VIDEO_GENERATION");
     console.log("✅ 视频生成 reCAPTCHA token 获取成功");
     
-    // 步骤3: 创建多图生视频任务 (rpcids: MZZa6b)
-    console.log("📤 创建多图生视频任务...");
+    // 步骤3: 创建视频生成任务
+    const duration = Number(config.duration || 8);
+    const durationS = [4, 6, 8, 10].includes(duration) ? duration : 8;
+    const isFirstLast = config.isFirstLast === true || config.videoMode === "start_end" || (imageUUIDs.length === 2 && config.videoMode === "i2v");
+    
+    console.log(`📤 创建视频生成任务... (模式: ${isFirstLast ? "首尾帧插值 nprQif" : "多图参考 MZZa6b"}, 时长: ${durationS}s)`);
     
     const uuid1 = generateUUID().toUpperCase();
     const uuid2 = generateUUID().toUpperCase();
     
-    // 构建图片引用数组
-    const imageReferences = imageUUIDs.map(uuid => [null, uuid]);
+    let rpcid = "MZZa6b";
+    let modelName = `abra_r2v_${durationS}s`;
+    let createPayloadArray;
     
-    console.log("  - 图片引用数组:", JSON.stringify(imageReferences));
+    if (isFirstLast && imageUUIDs.length >= 2) {
+      rpcid = "nprQif";
+      modelName = `omni_flash_i2v_${durationS}s_first_last`;
+      createPayloadArray = [
+        [
+          [
+            [null, null, [[[prompt]]]],
+            modelName,
+            aspectRatioCode,
+            null,
+            [null, imageUUIDs[0], null, null, null, [null, null, 1, 1]],
+            [null, imageUUIDs[1], null, null, null, [null, null, 1, 1]],
+            [null, null, null, null, uuid1, uuid2]
+          ]
+        ],
+        [
+          null,
+          22,
+          null,
+          null,
+          null,
+          projectId,
+          null,
+          null,
+          null,
+          null,
+          [videoRecaptchaToken, 1]
+        ],
+        [uuid2, 2]
+      ];
+    } else {
+      rpcid = "MZZa6b";
+      modelName = `abra_r2v_${durationS}s`;
+      const imageReferences = imageUUIDs.map(uuid => [null, uuid]);
+      createPayloadArray = [
+        [
+          [
+            [
+              null,
+              null,
+              [[[prompt]]]
+            ],
+            imageReferences,
+            modelName,
+            aspectRatioCode,
+            null,
+            [null, null, null, null, uuid1, uuid2]
+          ]
+        ],
+        [
+          null,
+          22,
+          null,
+          null,
+          null,
+          projectId,
+          null,
+          null,
+          null,
+          null,
+          [videoRecaptchaToken, 1]
+        ],
+        [uuid2, 2]
+      ];
+    }
+    
+    console.log(`  - RPC: ${rpcid}, 模型: ${modelName}`);
     console.log("  - 横竖比例代码:", aspectRatioCode);
     console.log("  - UUID1:", uuid1);
     console.log("  - UUID2:", uuid2);
-    
-    // 按照你提供的原始例子的精确结构构建
-    // 原始: [[[[null,null,[[[\"竖版：在跑\"]]]],[[null,\"uuid\"]],\"abra_r2v_10s\",1,null,[null,null,null,null,\"UUID1\",\"UUID2\"]]],[null,22,...],[\"UUID2\",2]]
-    // 注意：最外层需要再包一层数组
-    const createPayloadArray = [
-      [
-        [
-          [
-            null,
-            null,
-            [[[prompt]]]
-          ],
-          imageReferences,
-          "abra_r2v_10s",
-          aspectRatioCode,  // 1=竖版(9:16), 2=横版(16:9)
-          null,
-          [null, null, null, null, uuid1, uuid2]
-        ]
-      ],
-      [
-        null,
-        22,
-        null,
-        null,
-        null,
-        projectId,
-        null,
-        null,
-        null,
-        null,
-        [videoRecaptchaToken, 1]
-      ],
-      [uuid2, 2]
-    ];
-    
     console.log("  - 完整payload预览:", JSON.stringify(createPayloadArray).substring(0, 200) + "...");
 
-    const createResponse = await sendBatchExecute("MZZa6b", createPayloadArray, params, projectId);
+    const createResponse = await sendBatchExecute(rpcid, createPayloadArray, params, projectId);
     
     console.log("📋 原始响应:", createResponse.substring(0, 500));
     
@@ -553,9 +589,9 @@ async function runGeneratedTest(config) {
     let foundRpcItem = false;
     let rpcErrorDetail = "";
     
-    // 从 MZZa6b 响应中提取 mediaUUID
+    // 从响应中提取 mediaUUID
     for (const item of createParsed) {
-      if (item && item[0] === "wrb.fr" && item[1] === "MZZa6b") {
+      if (item && item[0] === "wrb.fr" && (item[1] === rpcid || item[1] === "MZZa6b" || item[1] === "nprQif")) {
         foundRpcItem = true;
         if (item[2]) {
           const responseStr = String(item[2]);

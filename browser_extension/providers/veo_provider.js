@@ -3670,11 +3670,17 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   const scriptName = useImages ? "image2video_injected.txt" : "text2video_injected.txt";
   await runtime.progress(10, { stage: "load_injected_script", video_mode: useImages ? "r2v" : "t2v", image_count: imageUrls.length });
   const scriptPath = await loadVeoInjectedVideoScript(tabId, scriptName);
+  const isFirstLast = (Array.isArray(p.i2v_urls) && p.i2v_urls.length >= 2) || mode === "start_end" || mode === "first_last";
+  const duration = Number(p.duration || p.duration_seconds || p.video_duration || 8);
   const config = {
     prompt,
     project_id: String(p.project_id || ""),
     aspectRatio,
     referenceImageUrls: imageUrls.slice(0, 9),
+    duration: [4, 6, 8, 10].includes(duration) ? duration : 8,
+    videoMode: mode,
+    isFirstLast,
+    modelKey: p.extension_model_key || "",
     maxWaitSeconds: Number(p.max_wait_seconds || p.timeout_seconds || 600),
     pollIntervalSeconds: Number(p.poll_interval_seconds || 5),
   };
