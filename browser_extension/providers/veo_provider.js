@@ -783,11 +783,37 @@ async function getGeneratedVideoUrl(tabId, projectId, mediaName, attempts = 3) {
         world: "MAIN",
         args: [project, media],
         func: async (projectId, mediaName) => {
-          const params = { fSid: null, atToken: null, bl: null };
-          for (const val of (window.WIZ_global_data ? Object.values(window.WIZ_global_data) : [])) {
-            if (!params.fSid && typeof val === "string" && /^\d{15,20}$/.test(val)) params.fSid = val;
-            if (!params.atToken && typeof val === "string" && /^AIQ-[A-Za-z0-9_-]+:\d+$/.test(val)) params.atToken = val;
+          const wiz = window.WIZ_global_data || (typeof globalThis !== "undefined" && globalThis.WIZ_global_data) || {};
+          const params = {
+            fSid: typeof wiz.FdrFJe === "string" ? wiz.FdrFJe : null,
+            atToken: typeof wiz.SNlM0e === "string" ? wiz.SNlM0e : null,
+            bl: typeof wiz.cfb2h === "string" ? wiz.cfb2h : null
+          };
+          for (const val of Object.values(wiz)) {
+            if (!params.fSid && typeof val === "string" && /^-?\d{15,25}$/.test(val)) params.fSid = val;
+            if (!params.atToken && typeof val === "string" && (/^AIQ-[A-Za-z0-9_-]+/.test(val) || /^AIt[A-Za-z0-9_-]+/.test(val) || /^AFo[A-Za-z0-9_-]+/.test(val))) params.atToken = val;
             if (!params.bl && typeof val === "string" && /^boq[_-]/.test(val)) params.bl = val;
+          }
+          if (!params.atToken || !params.fSid || !params.bl) {
+            try {
+              for (const s of document.querySelectorAll("script")) {
+                const text = s.textContent || "";
+                if (!text.includes("SNlM0e") && !text.includes("WIZ_global_data")) continue;
+                if (!params.atToken) {
+                  const mAt = text.match(/"SNlM0e"\s*:\s*"([^"]+)"/);
+                  if (mAt && mAt[1]) params.atToken = mAt[1];
+                }
+                if (!params.fSid) {
+                  const mSid = text.match(/"FdrFJe"\s*:\s*"([^"]+)"/);
+                  if (mSid && mSid[1]) params.fSid = mSid[1];
+                }
+                if (!params.bl) {
+                  const mBl = text.match(/"cfb2h"\s*:\s*"([^"]+)"/) || text.match(/(boq_labs-ai-sandbox-frontend_[A-Za-z0-9_.-]+)/);
+                  if (mBl && mBl[1]) params.bl = mBl[1];
+                }
+                if (params.atToken && params.fSid && params.bl) break;
+              }
+            } catch (_) {}
           }
           if (!params.fSid || !params.bl) {
             try {
@@ -799,7 +825,7 @@ async function getGeneratedVideoUrl(tabId, projectId, mediaName, attempts = 3) {
               }
             } catch (_) {}
           }
-          if (!params.bl) params.bl = "boq_labs-ai-sandbox-frontend_20260903.13_p1";
+          if (!params.bl) params.bl = "boq_labs-ai-sandbox-frontend_20260922.00_p0";
           if (!params.fSid || !params.atToken) throw new Error("Flow 请求参数不可用，请刷新页面后重试");
           const rpcids = "as29s";
           const reqid = Math.floor(Math.random() * 9000 + 1000) * 100000 + 22222;
@@ -1040,20 +1066,44 @@ async function fetchVeoAccessTokensTask(msg, runtime) {
     target: { tabId },
     world: "MAIN",
     func: () => {
+      const wiz = window.WIZ_global_data || (typeof globalThis !== "undefined" && globalThis.WIZ_global_data) || {};
       let token = "";
-      if (window.WIZ_global_data) {
-        for (const value of Object.values(window.WIZ_global_data)) {
-          if (typeof value === "string" && /^AIQ-[A-Za-z0-9_-]+:\d+$/.test(value)) {
+      if (typeof wiz.SNlM0e === "string" && wiz.SNlM0e) {
+        token = wiz.SNlM0e;
+      }
+      if (!token) {
+        for (const value of Object.values(wiz)) {
+          if (typeof value === "string" && (/^AIQ-[A-Za-z0-9_-]+/.test(value) || /^AIt[A-Za-z0-9_-]+/.test(value) || /^AFo[A-Za-z0-9_-]+/.test(value))) {
             token = value;
             break;
           }
         }
       }
+      if (!token) {
+        try {
+          for (const s of document.querySelectorAll("script")) {
+            const m = s.textContent && s.textContent.match(/"SNlM0e"\s*:\s*"([^"]+)"/);
+            if (m && m[1]) {
+              token = m[1];
+              break;
+            }
+          }
+        } catch (_) {}
+      }
       if (!token) return null;
-      const timestamp = Number(token.slice(token.lastIndexOf(":") + 1));
+      let expires = null;
+      if (token.includes(":")) {
+        const timestamp = Number(token.slice(token.lastIndexOf(":") + 1));
+        if (Number.isFinite(timestamp) && timestamp > 1000000000000) {
+          expires = new Date(timestamp).toISOString();
+        }
+      }
+      if (!expires) {
+        expires = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+      }
       return {
         token,
-        expires: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null
+        expires
       };
     }
   });
@@ -1076,11 +1126,37 @@ async function runVeoFlowProjectRpc(tabId, operation, projectId, projectName) {
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId }, world: "MAIN",
     func: async (operation, projectId, projectName) => {
-      const params = { fSid: null, atToken: null, bl: null };
-      for (const val of (window.WIZ_global_data ? Object.values(window.WIZ_global_data) : [])) {
-        if (!params.fSid && typeof val === "string" && /^\d{15,20}$/.test(val)) params.fSid = val;
-        if (!params.atToken && typeof val === "string" && /^AIQ-[A-Za-z0-9_-]+:\d+$/.test(val)) params.atToken = val;
+      const wiz = window.WIZ_global_data || (typeof globalThis !== "undefined" && globalThis.WIZ_global_data) || {};
+      const params = {
+        fSid: typeof wiz.FdrFJe === "string" ? wiz.FdrFJe : null,
+        atToken: typeof wiz.SNlM0e === "string" ? wiz.SNlM0e : null,
+        bl: typeof wiz.cfb2h === "string" ? wiz.cfb2h : null
+      };
+      for (const val of Object.values(wiz)) {
+        if (!params.fSid && typeof val === "string" && /^-?\d{15,25}$/.test(val)) params.fSid = val;
+        if (!params.atToken && typeof val === "string" && (/^AIQ-[A-Za-z0-9_-]+/.test(val) || /^AIt[A-Za-z0-9_-]+/.test(val) || /^AFo[A-Za-z0-9_-]+/.test(val))) params.atToken = val;
         if (!params.bl && typeof val === "string" && /^boq[_-]/.test(val)) params.bl = val;
+      }
+      if (!params.atToken || !params.fSid || !params.bl) {
+        try {
+          for (const s of document.querySelectorAll("script")) {
+            const text = s.textContent || "";
+            if (!text.includes("SNlM0e") && !text.includes("WIZ_global_data")) continue;
+            if (!params.atToken) {
+              const mAt = text.match(/"SNlM0e"\s*:\s*"([^"]+)"/);
+              if (mAt && mAt[1]) params.atToken = mAt[1];
+            }
+            if (!params.fSid) {
+              const mSid = text.match(/"FdrFJe"\s*:\s*"([^"]+)"/);
+              if (mSid && mSid[1]) params.fSid = mSid[1];
+            }
+            if (!params.bl) {
+              const mBl = text.match(/"cfb2h"\s*:\s*"([^"]+)"/) || text.match(/(boq_labs-ai-sandbox-frontend_[A-Za-z0-9_.-]+)/);
+              if (mBl && mBl[1]) params.bl = mBl[1];
+            }
+            if (params.atToken && params.fSid && params.bl) break;
+          }
+        } catch (_) {}
       }
       if (!params.fSid || !params.bl) {
         try {
@@ -1092,7 +1168,7 @@ async function runVeoFlowProjectRpc(tabId, operation, projectId, projectName) {
           }
         } catch (_) {}
       }
-      if (!params.bl) params.bl = "boq_labs-ai-sandbox-frontend_20260903.13_p1";
+      if (!params.bl) params.bl = "boq_labs-ai-sandbox-frontend_20260922.00_p0";
       if (!params.fSid) throw new Error("无法获取 f.sid（会话ID），请刷新页面后重试");
       if (!params.atToken) throw new Error("无法获取认证token，请刷新页面后重试");
       const rpcids = operation === "create" ? "jHPbke" : "QI2zvc";
@@ -1920,86 +1996,122 @@ async function cleanupProjectWorkflowsBeforeRun(tabId, _at, projectId, runtime) 
       world: "MAIN",
       args: [pid, 500],
       func: async (projectId, delayMs) => {
-        const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-        const getStableParams = () => {
-          const params = { fSid: null, atToken: null, bl: null };
-          for (const val of (window.WIZ_global_data ? Object.values(window.WIZ_global_data) : [])) {
-            if (!params.fSid && typeof val === "string" && /^-?\d{15,20}$/.test(val)) params.fSid = val;
-            if (!params.atToken && typeof val === "string" && /^AIQ-[A-Za-z0-9_-]+:\d+$/.test(val)) params.atToken = val;
-            if (!params.bl && typeof val === "string" && /^boq[_-]/.test(val)) params.bl = val;
+        try {
+          const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+          const getStableParams = () => {
+            const params = { fSid: null, atToken: null, bl: null };
+            const wiz = window.WIZ_global_data || (typeof globalThis !== "undefined" && globalThis.WIZ_global_data) || {};
+
+            if (typeof wiz.SNlM0e === "string" && wiz.SNlM0e) params.atToken = wiz.SNlM0e;
+            if (typeof wiz.FdrFJe === "string" && wiz.FdrFJe) params.fSid = wiz.FdrFJe;
+            if (typeof wiz.cfb2h === "string" && wiz.cfb2h) params.bl = wiz.cfb2h;
+
+            for (const val of Object.values(wiz)) {
+              if (!params.fSid && typeof val === "string" && /^-?\d{15,25}$/.test(val)) params.fSid = val;
+              if (!params.atToken && typeof val === "string" && (/^AIQ-[A-Za-z0-9_-]+/.test(val) || /^AIt[A-Za-z0-9_-]+/.test(val) || /^AFo[A-Za-z0-9_-]+/.test(val))) params.atToken = val;
+              if (!params.bl && typeof val === "string" && /^boq[_-]/.test(val)) params.bl = val;
+            }
+
+            if (!params.atToken || !params.fSid || !params.bl) {
+              try {
+                for (const s of document.querySelectorAll("script")) {
+                  const text = s.textContent || "";
+                  if (!text.includes("SNlM0e") && !text.includes("WIZ_global_data")) continue;
+                  if (!params.atToken) {
+                    const mAt = text.match(/"SNlM0e"\s*:\s*"([^"]+)"/);
+                    if (mAt && mAt[1]) params.atToken = mAt[1];
+                  }
+                  if (!params.fSid) {
+                    const mSid = text.match(/"FdrFJe"\s*:\s*"([^"]+)"/);
+                    if (mSid && mSid[1]) params.fSid = mSid[1];
+                  }
+                  if (!params.bl) {
+                    const mBl = text.match(/"cfb2h"\s*:\s*"([^"]+)"/) || text.match(/(boq_labs-ai-sandbox-frontend_[A-Za-z0-9_.-]+)/);
+                    if (mBl && mBl[1]) params.bl = mBl[1];
+                  }
+                  if (params.atToken && params.fSid && params.bl) break;
+                }
+              } catch (_) {}
+            }
+
+            if (!params.fSid || !params.bl) {
+              try {
+                const entries = performance.getEntriesByType("resource").filter(e => String(e.name).includes("batchexecute"));
+                if (entries.length) {
+                  const url = new URL(entries[entries.length - 1].name);
+                  params.fSid ||= url.searchParams.get("f.sid");
+                  params.bl ||= url.searchParams.get("bl");
+                }
+              } catch (_) {}
+            }
+            if (!params.bl) params.bl = "boq_labs-ai-sandbox-frontend_20260922.00_p0";
+            return params;
+          };
+          const params = getStableParams();
+          if (!params.fSid || !params.atToken) {
+            return { ok: false, error: "Flow media cleanup parameters are unavailable (fSid=" + !!params.fSid + ", atToken=" + !!params.atToken + ")" };
           }
-          if (!params.fSid || !params.bl) {
+          const requestRpc = async (rpcids, payload) => {
+            const reqid = Math.floor(Math.random() * 9000 + 1000) * 100000 + Math.floor(Math.random() * 100000);
+            const hl = (document.documentElement.lang || navigator.language || "en").split("-")[0];
+            const url = `https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${rpcids}&source-path=${encodeURIComponent(`/project/${projectId}`)}&bl=${encodeURIComponent(params.bl)}&f.sid=${encodeURIComponent(params.fSid)}&hl=${encodeURIComponent(hl)}&_reqid=${reqid}&rt=c`;
+            const requestData = [[[rpcids, payload, null, "generic"]]];
+            const response = await fetch(url, {
+              method: "POST",
+              headers: { "Content-Type": "application/x-www-form-urlencoded;charset=utf-8", "X-Same-Domain": "1" },
+              body: `f.req=${encodeURIComponent(JSON.stringify(requestData))}&at=${encodeURIComponent(params.atToken)}&`,
+              credentials: "include"
+            });
+            const responseText = await response.text();
+            if (!response.ok) throw new Error(`${rpcids} request failed: ${response.status} ${response.statusText}`);
+            return responseText;
+          };
+          const listText = await requestRpc("Zzl0ze", JSON.stringify([`projects/${projectId}`, null, null, null, [0]]));
+          const mediaItems = [];
+          for (const line of listText.split(/\r?\n/).map(value => value.trim()).filter(Boolean)) {
+            if (!line.startsWith("[[")) continue;
             try {
-              const entries = performance.getEntriesByType("resource").filter(e => String(e.name).includes("batchexecute"));
-              if (entries.length) {
-                const url = new URL(entries[entries.length - 1].name);
-                params.fSid ||= url.searchParams.get("f.sid");
-                params.bl ||= url.searchParams.get("bl");
+              const chunk = JSON.parse(line);
+              const rpc = Array.isArray(chunk) && chunk.find(item => Array.isArray(item) && item[0] === "wrb.fr" && item[1] === "Zzl0ze");
+              if (!rpc || typeof rpc[2] !== "string") continue;
+              const payload = JSON.parse(rpc[2]);
+              const items = Array.isArray(payload && payload[1]) ? payload[1] : [];
+              for (const item of items) {
+                if (!Array.isArray(item) || !item[0] || !Array.isArray(item[3])) continue;
+                mediaItems.push({
+                  id: String(item[0]),
+                  filename: String(item[3][0] || "unknown"),
+                  isArchived: item[3][2] === true,
+                  projectId: String(item[4] || projectId)
+                });
               }
             } catch (_) {}
           }
-          if (!params.bl) params.bl = "boq_labs-ai-sandbox-frontend_20260903.13_p1";
-          return params;
-        };
-        const params = getStableParams();
-        if (!params.fSid || !params.atToken) throw new Error("Flow media cleanup parameters are unavailable; refresh the page and retry");
-        const requestRpc = async (rpcids, payload) => {
-          const reqid = Math.floor(Math.random() * 9000 + 1000) * 100000 + Math.floor(Math.random() * 100000);
-          const hl = document.documentElement.lang || "en";
-          const url = `https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${rpcids}&source-path=${encodeURIComponent(`/project/${projectId}`)}&bl=${encodeURIComponent(params.bl)}&f.sid=${encodeURIComponent(params.fSid)}&hl=${encodeURIComponent(hl)}&_reqid=${reqid}&rt=c`;
-          const requestData = [[[rpcids, payload, null, "generic"]]];
-          const response = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/x-www-form-urlencoded;charset=utf-8", "X-Same-Domain": "1" },
-            body: `f.req=${encodeURIComponent(JSON.stringify(requestData))}&at=${encodeURIComponent(params.atToken)}&`,
-            credentials: "include"
-          });
-          const responseText = await response.text();
-          if (!response.ok) throw new Error(`${rpcids} request failed: ${response.status} ${response.statusText}`);
-          return responseText;
-        };
-        const listText = await requestRpc("Zzl0ze", JSON.stringify([`projects/${projectId}`, null, null, null, [0]]));
-        const mediaItems = [];
-        for (const line of listText.split(/\r?\n/).map(value => value.trim()).filter(Boolean)) {
-          if (!line.startsWith("[[")) continue;
-          try {
-            const chunk = JSON.parse(line);
-            const rpc = Array.isArray(chunk) && chunk.find(item => Array.isArray(item) && item[0] === "wrb.fr" && item[1] === "Zzl0ze");
-            if (!rpc || typeof rpc[2] !== "string") continue;
-            const payload = JSON.parse(rpc[2]);
-            const items = Array.isArray(payload && payload[1]) ? payload[1] : [];
-            for (const item of items) {
-              if (!Array.isArray(item) || !item[0] || !Array.isArray(item[3])) continue;
-              mediaItems.push({
-                id: String(item[0]),
-                filename: String(item[3][0] || "unknown"),
-                isArchived: item[3][2] === true,
-                projectId: String(item[4] || projectId)
-              });
+          const pending = mediaItems.filter(item => !item.isArchived);
+          const results = { total: mediaItems.length, to_archive_count: pending.length, archived: 0, errors: [] };
+          for (let i = 0; i < pending.length; i++) {
+            const item = pending[i];
+            try {
+              const archivePayload = JSON.stringify([[[item.id, null, null, [null, null, 1], projectId]], [["metadata.archived"]]]);
+              const archiveText = await requestRpc("pGCYOe", archivePayload);
+              if (!archiveText.includes('"pGCYOe"') && !archiveText.includes("wrb.fr")) {
+                throw new Error("archive response did not contain pGCYOe result");
+              }
+              results.archived++;
+            } catch (e) {
+              results.errors.push({ id: item.id, filename: item.filename, error: String((e && e.message) || e || "").slice(0, 300) });
             }
-          } catch (_) {}
-        }
-        const pending = mediaItems.filter(item => !item.isArchived);
-        const results = { total: mediaItems.length, to_archive_count: pending.length, archived: 0, errors: [] };
-        for (let i = 0; i < pending.length; i++) {
-          const item = pending[i];
-          try {
-            const archivePayload = JSON.stringify([[[item.id, null, null, [null, null, 1], projectId]], [["metadata.archived"]]]);
-            const archiveText = await requestRpc("pGCYOe", archivePayload);
-            if (!archiveText.includes('"pGCYOe"') && !archiveText.includes("wrb.fr")) {
-              throw new Error("archive response did not contain pGCYOe result");
-            }
-            results.archived++;
-          } catch (e) {
-            results.errors.push({ id: item.id, filename: item.filename, error: String((e && e.message) || e || "").slice(0, 300) });
+            if (i < pending.length - 1) await sleep(delayMs);
           }
-          if (i < pending.length - 1) await sleep(delayMs);
+          return { ok: true, results };
+        } catch (err) {
+          return { ok: false, error: String((err && err.message) || err) };
         }
-        return results;
       }
     });
     if (!result) throw new Error("VEO cleanup media request returned empty result");
-    const results = result;
+    if (!result.ok) throw new Error(result.error || "VEO cleanup media request failed");
+    const results = result.results;
     await report(7, {
       stage: results.errors.length ? "cleanup_project_media_partial_failed" : "cleanup_project_media_done",
       project_id: pid,
@@ -2226,42 +2338,75 @@ async function fetchVeoBalanceByBatchExecute(tabId, projectId) {
     world: "MAIN",
     args: [project],
     func: async (projectId) => {
-      const params = { fSid: null, atToken: null, bl: null };
-      for (const val of (window.WIZ_global_data ? Object.values(window.WIZ_global_data) : [])) {
-        if (!params.fSid && typeof val === "string" && /^-?\d{15,20}$/.test(val)) params.fSid = val;
-        if (!params.atToken && typeof val === "string" && /^AIQ-[A-Za-z0-9_-]+:\d+$/.test(val)) params.atToken = val;
-        if (!params.bl && typeof val === "string" && /^boq[_-]/.test(val)) params.bl = val;
+      try {
+        const wiz = window.WIZ_global_data || (typeof globalThis !== "undefined" && globalThis.WIZ_global_data) || {};
+        const params = {
+          fSid: typeof wiz.FdrFJe === "string" ? wiz.FdrFJe : null,
+          atToken: typeof wiz.SNlM0e === "string" ? wiz.SNlM0e : null,
+          bl: typeof wiz.cfb2h === "string" ? wiz.cfb2h : null
+        };
+        for (const val of Object.values(wiz)) {
+          if (!params.fSid && typeof val === "string" && /^-?\d{15,25}$/.test(val)) params.fSid = val;
+          if (!params.atToken && typeof val === "string" && (/^AIQ-[A-Za-z0-9_-]+/.test(val) || /^AIt[A-Za-z0-9_-]+/.test(val) || /^AFo[A-Za-z0-9_-]+/.test(val))) params.atToken = val;
+          if (!params.bl && typeof val === "string" && /^boq[_-]/.test(val)) params.bl = val;
+        }
+        if (!params.atToken || !params.fSid || !params.bl) {
+          try {
+            for (const s of document.querySelectorAll("script")) {
+              const text = s.textContent || "";
+              if (!text.includes("SNlM0e") && !text.includes("WIZ_global_data")) continue;
+              if (!params.atToken) {
+                const mAt = text.match(/"SNlM0e"\s*:\s*"([^"]+)"/);
+                if (mAt && mAt[1]) params.atToken = mAt[1];
+              }
+              if (!params.fSid) {
+                const mSid = text.match(/"FdrFJe"\s*:\s*"([^"]+)"/);
+                if (mSid && mSid[1]) params.fSid = mSid[1];
+              }
+              if (!params.bl) {
+                const mBl = text.match(/"cfb2h"\s*:\s*"([^"]+)"/) || text.match(/(boq_labs-ai-sandbox-frontend_[A-Za-z0-9_.-]+)/);
+                if (mBl && mBl[1]) params.bl = mBl[1];
+              }
+              if (params.atToken && params.fSid && params.bl) break;
+            }
+          } catch (_) {}
+        }
+        if (!params.fSid || !params.bl) {
+          try {
+            const entries = performance.getEntriesByType("resource").filter(e => String(e.name).includes("batchexecute"));
+            if (entries.length) {
+              const u = new URL(entries[entries.length - 1].name);
+              params.fSid ||= u.searchParams.get("f.sid");
+              params.bl ||= u.searchParams.get("bl");
+            }
+          } catch (_) {}
+        }
+        if (!params.bl) params.bl = "boq_labs-ai-sandbox-frontend_20260922.00_p0";
+        if (!params.fSid || !params.atToken) {
+          return { ok: false, error: "Flow balance request parameters unavailable (fSid=" + !!params.fSid + ", atToken=" + !!params.atToken + ")" };
+        }
+        const rpcids = "nzlxg";
+        const reqid = Math.floor(Math.random() * 9000 + 1000) * 100000 + 22222;
+        const hl = (document.documentElement.lang || navigator.language || "en").split("-")[0];
+        const url = `https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${rpcids}&source-path=${encodeURIComponent(`/project/${projectId}`)}&bl=${encodeURIComponent(params.bl)}&f.sid=${encodeURIComponent(params.fSid)}&hl=${encodeURIComponent(hl)}&_reqid=${reqid}&rt=c`;
+        const requestData = [[[rpcids, "[]", null, "generic"]]];
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded;charset=utf-8", "X-Same-Domain": "1" },
+          body: `f.req=${encodeURIComponent(JSON.stringify(requestData))}&at=${encodeURIComponent(params.atToken)}&`,
+          credentials: "include"
+        });
+        const responseText = await response.text();
+        if (!response.ok) return { ok: false, error: `VEO balance request failed: ${response.status} ${response.statusText}` };
+        return { ok: true, text: responseText };
+      } catch (err) {
+        return { ok: false, error: String((err && err.message) || err) };
       }
-      if (!params.fSid || !params.bl) {
-        try {
-          const entries = performance.getEntriesByType("resource").filter(e => String(e.name).includes("batchexecute"));
-          if (entries.length) {
-            const u = new URL(entries[entries.length - 1].name);
-            params.fSid ||= u.searchParams.get("f.sid");
-            params.bl ||= u.searchParams.get("bl");
-          }
-        } catch (_) {}
-      }
-      if (!params.bl) params.bl = "boq_labs-ai-sandbox-frontend_20260903.13_p1";
-      if (!params.fSid || !params.atToken) throw new Error("Flow balance request parameters are unavailable; refresh the page and retry");
-      const rpcids = "nzlxg";
-      const reqid = Math.floor(Math.random() * 9000 + 1000) * 100000 + 22222;
-      const hl = document.documentElement.lang || "en";
-      const url = `https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=${rpcids}&source-path=${encodeURIComponent(`/project/${projectId}`)}&bl=${encodeURIComponent(params.bl)}&f.sid=${encodeURIComponent(params.fSid)}&hl=${encodeURIComponent(hl)}&_reqid=${reqid}&rt=c`;
-      const requestData = [[[rpcids, "[]", null, "generic"]]];
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=utf-8", "X-Same-Domain": "1" },
-        body: `f.req=${encodeURIComponent(JSON.stringify(requestData))}&at=${encodeURIComponent(params.atToken)}&`,
-        credentials: "include"
-      });
-      const responseText = await response.text();
-      if (!response.ok) throw new Error(`VEO balance request failed: ${response.status} ${response.statusText}`);
-      return responseText;
     }
   });
   if (!result) throw new Error("VEO balance request returned empty result");
-  return parseVeoBalanceBatchResponse(result);
+  if (!result.ok) throw new Error(result.error || "VEO balance request failed");
+  return parseVeoBalanceBatchResponse(result.text);
 }
 
 function mapAiStudioImageAspectRatio(p) {

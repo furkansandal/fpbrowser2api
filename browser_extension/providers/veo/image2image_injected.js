@@ -53,20 +53,51 @@ async function runGeneratedTest(config) {
   
   function getStableParams() {
     const params = { fSid: null, atToken: null, bl: null };
+    const wiz = window.WIZ_global_data || (typeof globalThis !== "undefined" && globalThis.WIZ_global_data) || {};
 
-    if (window.WIZ_global_data) {
-      for (const key in window.WIZ_global_data) {
-        const value = window.WIZ_global_data[key];
-        if (!params.fSid && typeof value === "string" && /^-?\d{15,20}$/.test(value)) {
-          params.fSid = value;
-        }
-        if (!params.atToken && typeof value === "string" && /^AIQ-[A-Za-z0-9_-]+:\d+$/.test(value)) {
-          params.atToken = value;
-        }
-        if (!params.bl && typeof value === "string" && /^boq[_-]/.test(value)) {
-          params.bl = value;
-        }
+    if (typeof wiz.SNlM0e === "string" && wiz.SNlM0e) {
+      params.atToken = wiz.SNlM0e;
+    }
+    if (typeof wiz.FdrFJe === "string" && wiz.FdrFJe) {
+      params.fSid = wiz.FdrFJe;
+    }
+    if (typeof wiz.cfb2h === "string" && wiz.cfb2h) {
+      params.bl = wiz.cfb2h;
+    }
+
+    for (const val of Object.values(wiz)) {
+      if (!params.fSid && typeof val === "string" && /^-?\d{15,25}$/.test(val)) {
+        params.fSid = val;
       }
+      if (!params.atToken && typeof val === "string" && (/^AIQ-[A-Za-z0-9_-]+/.test(val) || /^AIt[A-Za-z0-9_-]+/.test(val) || /^AFo[A-Za-z0-9_-]+/.test(val))) {
+        params.atToken = val;
+      }
+      if (!params.bl && typeof val === "string" && /^boq[_-]/.test(val)) {
+        params.bl = val;
+      }
+    }
+
+    if (!params.atToken || !params.fSid || !params.bl) {
+      try {
+        const scripts = document.querySelectorAll("script");
+        for (let i = 0; i < scripts.length; i++) {
+          const text = scripts[i].textContent || "";
+          if (!text || (!text.includes("WIZ_global_data") && !text.includes("SNlM0e"))) continue;
+          if (!params.atToken) {
+            const mAt = text.match(/"SNlM0e"\s*:\s*"([^"]+)"/);
+            if (mAt && mAt[1]) params.atToken = mAt[1];
+          }
+          if (!params.fSid) {
+            const mSid = text.match(/"FdrFJe"\s*:\s*"([^"]+)"/);
+            if (mSid && mSid[1]) params.fSid = mSid[1];
+          }
+          if (!params.bl) {
+            const mBl = text.match(/"cfb2h"\s*:\s*"([^"]+)"/) || text.match(/(boq_labs-ai-sandbox-frontend_[A-Za-z0-9_.-]+)/);
+            if (mBl && mBl[1]) params.bl = mBl[1];
+          }
+          if (params.atToken && params.fSid && params.bl) break;
+        }
+      } catch (_) {}
     }
 
     if (!params.fSid || !params.bl) {
@@ -84,7 +115,7 @@ async function runGeneratedTest(config) {
     }
 
     if (!params.bl) {
-      params.bl = "boq_labs-ai-sandbox-frontend_20260903.13_p1";
+      params.bl = "boq_labs-ai-sandbox-frontend_20260922.00_p0";
     }
 
     return params;
