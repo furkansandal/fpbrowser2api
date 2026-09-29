@@ -453,20 +453,20 @@ async function runGeneratedTest(config) {
     console.log("✅ 视频任务创建成功！");
     console.log("  - 媒体UUID:", mediaUUID);
     
-    // 步骤3: 轮询任务状态 (rpcids: jwpduf)
+    // 步骤3: 轮询任务状态 (rpcids: jwpduf & Zzl0ze fallback)
     console.log("⏳ 开始轮询任务状态...");
     
-    const maxPolls = 60;
+    const maxPolls = 80;
     const pollInterval = 5000;
     let pollCount = 0;
     let taskStatus = null;
     let isComplete = false;
+    let videoUrl = null;
     
     while (pollCount < maxPolls && !isComplete) {
       pollCount++;
       console.log(`🔄 轮询第 ${pollCount}/${maxPolls} 次...`);
       
-      // jwpduf 请求格式: [null, null, [[mediaUUID]]]
       const pollPayloadArray = [null, null, [[mediaUUID]]];
       const pollResponse = await sendBatchExecute("jwpduf", pollPayloadArray, params, projectId);
       const pollParsed = parseBatchExecuteResponse(pollResponse);
@@ -474,54 +474,53 @@ async function runGeneratedTest(config) {
       if (pollParsed && pollParsed.length > 0) {
         for (const item of pollParsed) {
           if (item && item[0] === "wrb.fr" && item[1] === "jwpduf" && item[2]) {
+            const responseStr = String(item[2]);
+            if (responseStr.includes('"CAE"')) {
+              isComplete = true;
+              console.log("✅ 任务完成 (检测到 CAE 状态)！");
+              break;
+            }
             try {
-              const data = JSON.parse(item[2]);
-              // 从响应中提取状态信息
-              // 响应结构: data[2][0][5][8] 是状态信息
-              if (data && data[2] && data[2][0] && data[2][0][5] && data[2][0][5][8]) {
-                const statusInfo = data[2][0][5][8];
-                
-                // statusInfo 可能是数字或数组
-                // 成功: 3 或 6 (数字)
-                // 失败: [4, [3, "ERROR_CODE"], ["DETAIL"]]
-                if (Array.isArray(statusInfo)) {
-                  taskStatus = statusInfo[0];
-                  
-                  // 检查是否有错误信息（状态码为 4 表示失败）
-                  if (taskStatus === 4 && statusInfo[1] && Array.isArray(statusInfo[1])) {
-                    const errorCode = statusInfo[1][1] || "UNKNOWN_ERROR";
-                    const errorDetails = statusInfo[2] ? statusInfo[2].join(", ") : "";
-                    const errorMessage = errorDetails ? 
-                      `${errorCode}: ${errorDetails}` : 
-                      errorCode;
-                    
-                    console.error("❌ 视频生成失败:", errorMessage);
-                    
-                    return {
-                      ok: false,
-                      error: `视频生成失败: ${errorMessage}`,
-                      errorCode,
-                      errorDetails: statusInfo[2] || [],
-                      mediaUUID,
-                      pollCount
-                    };
-                  }
-                } else {
-                  taskStatus = statusInfo;
-                }
-                
-                console.log("  - 当前状态:", taskStatus);
-                
-                // 状态 3 表示完成
-                if (taskStatus === 3) {
+              const data = JSON.parse(responseStr);
+              if (data && data[2] && data[2][0]) {
+                const record = data[2][0];
+                if (record[3] === "CAE") {
                   isComplete = true;
-                  console.log("✅ 任务完成！");
+                  console.log("✅ 任务完成 (record[3] === 'CAE')！");
                   break;
                 }
-                
-                // 状态 6 表示处理中
-                if (taskStatus === 6) {
-                  console.log("  - 任务处理中...");
+                if (record[5] && record[5][8]) {
+                  const statusInfo = record[5][8];
+                  if (Array.isArray(statusInfo)) {
+                    taskStatus = statusInfo[0];
+                    if (taskStatus === 4 && statusInfo[1] && Array.isArray(statusInfo[1])) {
+                      const errorCode = statusInfo[1][1] || "UNKNOWN_ERROR";
+                      const errorDetails = statusInfo[2] ? statusInfo[2].join(", ") : "";
+                      console.warn("⚠️ 状态返回告警:", errorCode, errorDetails);
+                      if (!String(errorDetails).includes("Media not found") && !String(errorCode).includes("NOT_FOUND")) {
+                        return {
+                          ok: false,
+                          error: `视频生成失败: ${errorCode} ${errorDetails}`,
+                          errorCode,
+                          errorDetails: statusInfo[2] || [],
+                          mediaUUID,
+                          pollCount
+                        };
+                      }
+                    }
+                  } else {
+                    taskStatus = statusInfo;
+                  }
+                  
+                  console.log("  - 当前状态:", taskStatus);
+                  if (taskStatus === 3) {
+                    isComplete = true;
+                    console.log("✅ 任务完成 (状态码 3)！");
+                    break;
+                  }
+                  if (taskStatus === 6) {
+                    console.log("  - 任务处理中...");
+                  }
                 }
               }
             } catch (e) {
@@ -531,12 +530,48 @@ async function runGeneratedTest(config) {
         }
       }
       
+      // 每 3 次轮询主动检查一次项目媒体列表 (Zzl0ze) 和 as29s
+      if (isComplete || pollCount % 3 === 0 || pollCount >= maxPolls - 2) {
+        try {
+          const urlResp = await sendBatchExecute("as29s", [mediaUUID], params, projectId);
+          const parsed = extractVideoUrl(urlResp);
+          if (parsed && parsed.videoUrl) {
+            videoUrl = parsed.videoUrl;
+            isComplete = true;
+            console.log("✅ 直接通过 as29s 获取到视频地址:", videoUrl);
+            break;
+          }
+        } catch (_) {}
+
+        try {
+          const listPayload = [`projects/${projectId}`, null, null, null, [1]];
+          const listResp = await sendBatchExecute("Zzl0ze", listPayload, params, projectId);
+          const start = listResp.indexOf(mediaUUID);
+          if (start !== -1) {
+            const snippet = listResp.slice(start, start + 800);
+            const m = snippet.match(/null,null,\\?"([0-9a-fA-F-]{36})\\?"/);
+            if (m && m[1]) {
+              const realMediaId = m[1];
+              console.log("🔍 从项目列表解析出真实 mediaId:", realMediaId);
+              const realUrlResp = await sendBatchExecute("as29s", [realMediaId], params, projectId);
+              const realParsed = extractVideoUrl(realUrlResp);
+              if (realParsed && realParsed.videoUrl) {
+                videoUrl = realParsed.videoUrl;
+                isComplete = true;
+                console.log("✅ 视频地址获取成功 (via Zzl0ze realMediaId)！");
+                break;
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
       if (!isComplete && pollCount < maxPolls) {
         await new Promise(resolve => setTimeout(resolve, pollInterval));
       }
     }
     
-    if (!isComplete) {
+    if (!isComplete && !videoUrl) {
       return {
         ok: false,
         error: `任务超时：轮询 ${maxPolls} 次后仍未完成`,
@@ -545,33 +580,54 @@ async function runGeneratedTest(config) {
       };
     }
     
-    // 步骤4: 等待5秒让视频地址准备完成
-    console.log("⏳ 等待视频地址准备...");
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // 步骤5: 获取视频URL (rpcids: as29s)
-    console.log("🎬 获取视频URL...");
-    
-    const maxUrlAttempts = 3;
-    let videoUrl = null;
-    
-    for (let attempt = 1; attempt <= maxUrlAttempts; attempt++) {
-      console.log(`🔍 正在读取视频地址，第 ${attempt}/${maxUrlAttempts} 次`);
+    // 步骤4 & 5: 获取视频URL (如果轮询中未提前拿到)
+    if (!videoUrl) {
+      console.log("⏳ 等待视频地址准备...");
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      console.log("🎬 获取视频URL...");
       
-      const urlPayloadArray = [mediaUUID];
-      const urlResponse = await sendBatchExecute("as29s", urlPayloadArray, params, projectId);
-      
-      const parsed = extractVideoUrl(urlResponse);
-      if (parsed.videoUrl) {
-        videoUrl = parsed.videoUrl;
-        console.log("✅ 视频地址获取成功！");
-        console.log("🎬 视频地址:", videoUrl);
-        break;
-      }
-      
-      if (attempt < maxUrlAttempts) {
-        console.log("⚠️ 未找到视频地址，5秒后重试...");
-        await new Promise(resolve => setTimeout(resolve, 5000));
+      const maxUrlAttempts = 4;
+      for (let attempt = 1; attempt <= maxUrlAttempts; attempt++) {
+        console.log(`🔍 正在读取视频地址，第 ${attempt}/${maxUrlAttempts} 次`);
+        
+        const urlPayloadArray = [mediaUUID];
+        const urlResponse = await sendBatchExecute("as29s", urlPayloadArray, params, projectId);
+        
+        const parsed = extractVideoUrl(urlResponse);
+        if (parsed.videoUrl) {
+          videoUrl = parsed.videoUrl;
+          console.log("✅ 视频地址获取成功！");
+          console.log("🎬 视频地址:", videoUrl);
+          break;
+        }
+
+        try {
+          const listPayload = [`projects/${projectId}`, null, null, null, [1]];
+          const listResp = await sendBatchExecute("Zzl0ze", listPayload, params, projectId);
+          const start = listResp.indexOf(mediaUUID);
+          if (start !== -1) {
+            const snippet = listResp.slice(start, start + 800);
+            const m = snippet.match(/null,null,\\?"([0-9a-fA-F-]{36})\\?"/);
+            if (m && m[1]) {
+              const realMediaId = m[1];
+              console.log("🔍 从项目列表解析出真实 mediaId:", realMediaId);
+              const realUrlResp = await sendBatchExecute("as29s", [realMediaId], params, projectId);
+              const realParsed = extractVideoUrl(realUrlResp);
+              if (realParsed && realParsed.videoUrl) {
+                videoUrl = realParsed.videoUrl;
+                console.log("✅ 视频地址获取成功 (via realMediaId)！");
+                break;
+              }
+            }
+          }
+        } catch (e) {
+          console.warn("⚠️ Zzl0ze mediaId lookup failed:", e);
+        }
+        
+        if (attempt < maxUrlAttempts) {
+          console.log("⚠️ 未找到视频地址，4秒后重试...");
+          await new Promise(resolve => setTimeout(resolve, 4000));
+        }
       }
     }
     
