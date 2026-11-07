@@ -2,7 +2,12 @@
 runGeneratedTest(config) parameter contract:
 The JSON in the Test Config box is passed as config. Keep this list even when some fields are unused.
 - config.prompt: string - 视频生成的提示词
-- config.referenceImageUrls: array - 参考图片URL数组（1-4张）
+- config.videoMode: string - "i2v" | "start_end" | "r2v" | "edit" | "extend"
+- config.modelKey: string - Flow videoModelKey (e.g. "macaron_cookie_r2v_10s")
+- config.outputResolution: string - "VIDEO_RESOLUTION_720P" | "VIDEO_RESOLUTION_360P"
+- config.referenceImageUrls: array - 参考图片URL数组（0-9张）
+- config.referenceAudioRefs: array - 参考音频/音色数组（0-5个，如 "voices/puck"）
+- config.referenceVideoUrl: string - 参考视频URL（edit / extend 模式）
 - config.aspectRatio: string - 视频横竖比例，可选值："9:16"（竖版）或 "16:9"（横版），默认 "16:9"
 */
 
@@ -10,26 +15,48 @@ async function runGeneratedTest(config) {
   const startTime = Date.now();
   
   const prompt = String(config.prompt || "").trim();
-  const referenceImageUrls = Array.isArray(config.referenceImageUrls) ? config.referenceImageUrls : [];
+  const referenceImageUrls = (Array.isArray(config.referenceImageUrls) ? config.referenceImageUrls : [])
+    .map(u => String(u || "").trim()).filter(Boolean);
+  const referenceAudioRefs = (Array.isArray(config.referenceAudioRefs) ? config.referenceAudioRefs : [])
+    .map(a => String(a || "").trim()).filter(Boolean);
+  const referenceVideoUrl = String(config.referenceVideoUrl || "").trim();
   const aspectRatio = String(config.aspectRatio || "16:9").trim();
+
+  let videoMode = String(config.videoMode || "").trim().toLowerCase();
+  if (!videoMode) {
+    if (referenceVideoUrl) videoMode = "edit";
+    else videoMode = "r2v";
+  }
   
   if (!prompt) {
     return { ok: false, error: "缺少必需参数: config.prompt" };
   }
   
-  if (referenceImageUrls.length === 0) {
-    return { ok: false, error: "缺少必需参数: config.referenceImageUrls（至少需要1张参考图）" };
+  if ((videoMode === "edit" || videoMode === "extend") && !referenceVideoUrl) {
+    return { ok: false, error: `${videoMode} 模式缺少必需参数: config.referenceVideoUrl` };
+  }
+  if (videoMode === "i2v" && referenceImageUrls.length < 1) {
+    return { ok: false, error: "i2v 模式至少需要 1 张首帧图片" };
+  }
+  if (videoMode === "start_end" && referenceImageUrls.length < 2) {
+    return { ok: false, error: "start_end 模式需要 2 张图片（首帧+尾帧）" };
+  }
+  if (videoMode === "r2v" && referenceImageUrls.length === 0 && referenceAudioRefs.length === 0) {
+    return { ok: false, error: "缺少必需参数: referenceImageUrls 或 referenceAudioRefs" };
   }
   
   if (referenceImageUrls.length > 9) {
-    return { ok: false, error: "参考图片数量超过限制（最多4张）" };
+    return { ok: false, error: "参考图片数量超过限制（最多9张）" };
+  }
+  if (referenceAudioRefs.length > 5) {
+    return { ok: false, error: "参考音频数量超过限制（最多5个）" };
   }
   
   // 验证并转换 aspectRatio
   let aspectRatioCode;
-  if (aspectRatio === "9:16") {
+  if (aspectRatio === "9:16" || aspectRatio === "竖版" || aspectRatio === "vertical") {
     aspectRatioCode = 1; // 竖版
-  } else if (aspectRatio === "16:9") {
+  } else if (aspectRatio === "16:9" || aspectRatio === "横版" || aspectRatio === "horizontal") {
     aspectRatioCode = 2; // 横版
   } else {
     return { 
@@ -38,9 +65,11 @@ async function runGeneratedTest(config) {
     };
   }
   
-  console.log("🚀 开始多图生视频测试");
+  console.log(`🚀 开始 Flow 视频任务 (${videoMode})`);
   console.log("  - 提示词:", prompt);
   console.log("  - 参考图数量:", referenceImageUrls.length);
+  console.log("  - 参考音频数量:", referenceAudioRefs.length);
+  if (referenceVideoUrl) console.log("  - 参考视频:", referenceVideoUrl);
   console.log("  - 视频比例:", aspectRatio, `(代码: ${aspectRatioCode})`);
   referenceImageUrls.forEach((url, idx) => {
     console.log(`  - 参考图${idx + 1}:`, url);
@@ -444,6 +473,151 @@ async function runGeneratedTest(config) {
     return mediaUUID;
   }
 
+  async function probeVideoDuration(blob) {
+    try {
+      const url = URL.createObjectURL(blob);
+      const v = document.createElement("video");
+      v.preload = "metadata";
+      v.muted = true;
+      const duration = await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(0), 6000);
+        v.onloadedmetadata = () => {
+          clearTimeout(timer);
+          resolve(Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0);
+        };
+        v.onerror = () => {
+          clearTimeout(timer);
+          resolve(0);
+        };
+        v.src = url;
+      });
+      URL.revokeObjectURL(url);
+      return duration;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  async function uploadVideo(videoUrl, params, projectId) {
+    console.log("📥 正在下载参考视频:", videoUrl);
+    let response = null;
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        response = await fetch(videoUrl);
+        if (!response.ok) throw new Error(`视频下载失败: ${response.status}`);
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
+        else throw lastErr;
+      }
+    }
+    const blob = await response.blob();
+    const mimeType = (blob.type && blob.type.startsWith("video/")) ? blob.type : "video/mp4";
+    const measuredDuration = await probeVideoDuration(blob);
+    const startUrl = `https://flow.google.com/upload/v1/flow/upload/video/${projectId}`;
+    const startHeaders = {
+      "X-Goog-Upload-Protocol": "resumable",
+      "X-Goog-Upload-Command": "start",
+      "X-Goog-Upload-Header-Content-Length": String(blob.size),
+      "X-Goog-Upload-Header-Content-Type": mimeType,
+      "Slug": encodeURIComponent("reference-video.mp4"),
+    };
+    if (params.atToken) startHeaders["X-Framework-Xsrf-Token"] = params.atToken;
+    const startResp = await fetch(startUrl, {
+      method: "POST",
+      headers: startHeaders,
+      credentials: "include",
+    });
+    if (!startResp.ok) {
+      throw new Error(`Scotty video upload start failed: ${startResp.status} ${startResp.statusText}`);
+    }
+    const uploadUrl = startResp.headers.get("x-goog-upload-url") || startResp.headers.get("X-Goog-Upload-URL");
+    if (!uploadUrl) {
+      throw new Error("Scotty video upload start response missing x-goog-upload-url header");
+    }
+    const finalizeHeaders = {
+      "X-Goog-Upload-Command": "upload, finalize",
+      "X-Goog-Upload-Offset": "0",
+    };
+    if (params.atToken) finalizeHeaders["X-Framework-Xsrf-Token"] = params.atToken;
+    const finResp = await fetch(uploadUrl, {
+      method: "POST",
+      headers: finalizeHeaders,
+      body: blob,
+      credentials: "include",
+    });
+    if (!finResp.ok) {
+      throw new Error(`Scotty video upload finalize failed: ${finResp.status} ${finResp.statusText}`);
+    }
+    const finText = await finResp.text();
+    let finJson = null;
+    try { finJson = JSON.parse(finText); } catch (_) {}
+    let rawMediaId = (
+      finJson?.media_id ||
+      finJson?.mediaId ||
+      finJson?.media?.name ||
+      finJson?.media?.media_id ||
+      finJson?.media?.mediaId ||
+      finJson?.name ||
+      ""
+    );
+    if (!rawMediaId) {
+      const mediaKeyMatch = finText.match(/"media(?:_id|Id)?"[\s\S]{0,120}?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+      if (mediaKeyMatch) {
+        rawMediaId = mediaKeyMatch[1];
+      } else {
+        const allMatches = finText.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi);
+        if (allMatches && allMatches.length > 0) {
+          rawMediaId = allMatches[allMatches.length - 1];
+        }
+      }
+    }
+    const videoMediaId = String(rawMediaId || "").replace(/^media\//i, "").trim();
+    if (!videoMediaId) {
+      throw new Error(`Scotty video upload succeeded but mediaId could not be parsed: ${finText.substring(0, 300)}`);
+    }
+    console.log("✅ 参考视频上传成功, mediaId:", videoMediaId, "duration:", measuredDuration);
+    let finalUpStatus = null;
+    let upPollSample = "";
+    for (let p = 0; p < 30; p++) {
+      await new Promise(r => setTimeout(r, 3000));
+      try {
+        const upPollResp = await sendBatchExecute("jwpduf", [null, null, [[videoMediaId]]], params, projectId);
+        const upParsed = parseBatchExecuteResponse(upPollResp);
+        let upStatus = null;
+        if (upParsed && upParsed.length > 0) {
+          for (const item of upParsed) {
+            if (item && item[0] === "wrb.fr" && item[1] === "jwpduf" && item[2]) {
+              upPollSample = String(item[2]).substring(0, 300);
+              const d = JSON.parse(item[2]);
+              const st = d?.[2]?.[0]?.[5]?.[8];
+              upStatus = Array.isArray(st) ? st[0] : st;
+              break;
+            }
+          }
+        }
+        finalUpStatus = upStatus;
+        console.log(`  - 上传视频处理状态 (${p + 1}/30):`, upStatus);
+        if (upStatus === 3) break;
+        if (upStatus === 4 || upStatus === 5) {
+          throw new Error(`Uploaded reference video processing failed (status=${upStatus})`);
+        }
+      } catch (e) {
+        if (/processing failed/i.test(String(e?.message || ""))) throw e;
+      }
+    }
+    return { videoMediaId, durationSeconds: measuredDuration, upStatus: finalUpStatus, upPollSample, finText: finText.substring(0, 250) };
+  }
+
+  function normalizeAudioRef(ref) {
+    const s = String(ref || "").trim();
+    if (!s) return "";
+    if (s.startsWith("voices/") || s.startsWith("media/")) return s;
+    return s;
+  }
+
   // ============ 主流程 ============
   
   try {
@@ -462,116 +636,170 @@ async function runGeneratedTest(config) {
     console.log("  - 项目ID:", projectId);
     
     // 步骤1: 批量上传参考图片
-    console.log(`📤 开始批量上传 ${referenceImageUrls.length} 张参考图片...`);
     const imageUUIDs = [];
-    
-    for (let i = 0; i < referenceImageUrls.length; i++) {
-      const imageUrl = String(referenceImageUrls[i]).trim();
-      if (!imageUrl) {
-        throw new Error(`第 ${i + 1} 张图片URL为空`);
+    if (referenceImageUrls.length > 0) {
+      console.log(`📤 开始批量上传 ${referenceImageUrls.length} 张参考图片...`);
+      for (let i = 0; i < referenceImageUrls.length; i++) {
+        const imageUrl = String(referenceImageUrls[i]).trim();
+        if (!imageUrl) {
+          throw new Error(`第 ${i + 1} 张图片URL为空`);
+        }
+        const uuid = await uploadImage(imageUrl, params, projectId, i);
+        imageUUIDs.push(uuid);
+        if (i < referenceImageUrls.length - 1) {
+          await new Promise(r => setTimeout(r, 400));
+        }
       }
-      const uuid = await uploadImage(imageUrl, params, projectId, i);
-      imageUUIDs.push(uuid);
-      if (i < referenceImageUrls.length - 1) {
-        await new Promise(r => setTimeout(r, 400));
-      }
+      console.log("✅ 所有图片上传完成！", imageUUIDs);
     }
-    
-    console.log("✅ 所有图片上传完成！");
-    console.log("  - 图片UUIDs:", imageUUIDs);
+
+    // 步骤1b: 上传参考视频（edit / extend 模式）
+    let uploadedVideo = null;
+    if ((videoMode === "edit" || videoMode === "extend") && referenceVideoUrl) {
+      uploadedVideo = await uploadVideo(referenceVideoUrl, params, projectId);
+    }
     
     // 步骤2: 获取视频生成专属 reCAPTCHA token
     console.log("🔐 获取视频生成 reCAPTCHA token...");
     const videoRecaptchaToken = await getRecaptchaToken("VIDEO_GENERATION");
     console.log("✅ 视频生成 reCAPTCHA token 获取成功");
     
-    // 步骤3: 创建视频生成任务
-    const duration = Number(config.duration || 8);
-    const durationS = [4, 6, 8, 10].includes(duration) ? duration : 8;
-    const isFirstLast = config.isFirstLast === true || config.videoMode === "start_end" || (imageUUIDs.length === 2 && config.videoMode === "i2v");
-    
-    console.log(`📤 创建视频生成任务... (模式: ${isFirstLast ? "首尾帧插值 nprQif" : "多图参考 MZZa6b"}, 时长: ${durationS}s)`);
-    
+    // 步骤3: 根据 videoMode 构建对应的 Flow batchexecute RPC
     const uuid1 = generateUUID().toUpperCase();
     const uuid2 = generateUUID().toUpperCase();
-    
-    let rpcid = "MZZa6b";
-    let modelName = `abra_r2v_${durationS}s`;
-    let createPayloadArray;
-    
-    if (isFirstLast && imageUUIDs.length >= 2) {
-      rpcid = "nprQif";
-      modelName = `omni_flash_i2v_${durationS}s_first_last`;
-      createPayloadArray = [
-        [
-          [
-            [null, null, [[[prompt]]]],
-            modelName,
-            aspectRatioCode,
-            null,
-            [null, imageUUIDs[0], null, null, null, [null, null, 1, 1]],
-            [null, imageUUIDs[1], null, null, null, [null, null, 1, 1]],
-            [null, null, null, null, uuid1, uuid2]
-          ]
-        ],
-        [
-          null,
-          22,
-          null,
-          null,
-          null,
-          projectId,
-          null,
-          null,
-          null,
-          null,
-          [videoRecaptchaToken, 1]
-        ],
-        [uuid2, 2]
+    const destination = [null, null, null, null, uuid1, uuid2];
+    const textInput = [null, null, [[[prompt]]]];
+    const imageReferences = imageUUIDs.map(uuid => [null, uuid]);
+    const audioReferences = referenceAudioRefs
+      .map(normalizeAudioRef)
+      .filter(Boolean)
+      .map(v => [v]);
+
+    const defaultModelByMode = {
+      i2v: "macaron_cookie_i2v_10s",
+      start_end: "macaron_cookie_i2v_fl_8s",
+      r2v: "macaron_cookie_r2v_10s",
+      edit: "macaron_cookie_edit",
+      extend: "macaron_cookie_extend_8s",
+    };
+    const modelKey = String(config.modelKey || defaultModelByMode[videoMode] || "macaron_cookie_r2v_10s").trim();
+    const outputResolution = String(config.outputResolution || "VIDEO_RESOLUTION_720P").trim();
+    const is360p = modelKey.endsWith("_360p") || /360P/i.test(outputResolution);
+    const outputSpec = is360p ? [4] : null;
+
+    let rpcId = "MZZa6b";
+    let reqItem = null;
+
+    const startFrameIndex = Math.max(0, Number(config.startFrameIndex || 0) || 0);
+    const durSec = Math.round(Number(config.videoDurationSeconds || uploadedVideo?.durationSeconds || 4) || 4);
+    // Flow uses Xc=30 for uploaded videos (_.fQ: source===UPLOADED ? 30 : 24)
+    const computedEndFrame = config.endFrameIndex != null
+      ? Number(config.endFrameIndex)
+      : Math.min(300, startFrameIndex + Math.round(durSec * 30));
+    const endFrameIndex = Math.max(startFrameIndex + 1, computedEndFrame);
+
+    if (videoMode === "i2v") {
+      rpcId = "eb1hJf";
+      reqItem = [
+        textInput,
+        modelKey,
+        aspectRatioCode,
+        null,
+        [null, imageUUIDs[0]],
+        destination,
+        null,
+        null,
+        null,
+        outputSpec
+      ];
+    } else if (videoMode === "start_end") {
+      rpcId = "nprQif";
+      reqItem = [
+        textInput,
+        modelKey,
+        aspectRatioCode,
+        null,
+        [null, imageUUIDs[0]],
+        [null, imageUUIDs[1]],
+        destination,
+        null,
+        null
+      ];
+    } else if (videoMode === "edit") {
+      rpcId = "jIps6";
+      reqItem = [
+        [null, uploadedVideo.videoMediaId, startFrameIndex, endFrameIndex],
+        textInput,
+        modelKey,
+        aspectRatioCode,
+        destination,
+        null,
+        null,
+        null,
+        imageReferences,
+        audioReferences,
+        [],
+        [],
+        outputSpec
+      ];
+    } else if (videoMode === "extend") {
+      rpcId = "fZytfe";
+      reqItem = [
+        [null, uploadedVideo.videoMediaId],
+        textInput,
+        modelKey,
+        aspectRatioCode,
+        null,
+        destination,
+        null,
+        null,
+        imageReferences,
+        audioReferences,
+        [],
+        [],
+        outputSpec
       ];
     } else {
-      rpcid = "MZZa6b";
-      modelName = `abra_r2v_${durationS}s`;
-      const imageReferences = imageUUIDs.map(uuid => [null, uuid]);
-      createPayloadArray = [
-        [
-          [
-            [
-              null,
-              null,
-              [[[prompt]]]
-            ],
-            imageReferences,
-            modelName,
-            aspectRatioCode,
-            null,
-            [null, null, null, null, uuid1, uuid2]
-          ]
-        ],
-        [
-          null,
-          22,
-          null,
-          null,
-          null,
-          projectId,
-          null,
-          null,
-          null,
-          null,
-          [videoRecaptchaToken, 1]
-        ],
-        [uuid2, 2]
+      // r2v (References)
+      rpcId = "MZZa6b";
+      reqItem = [
+        textInput,
+        imageReferences,
+        modelKey,
+        aspectRatioCode,
+        null,
+        destination,
+        null,
+        audioReferences.length > 0 ? audioReferences : null,
+        null,
+        [],
+        [],
+        outputSpec
       ];
     }
-    
-    console.log(`  - RPC: ${rpcid}, 模型: ${modelName}`);
-    console.log("  - 横竖比例代码:", aspectRatioCode);
-    console.log("  - UUID1:", uuid1);
-    console.log("  - UUID2:", uuid2);
-    console.log("  - 完整payload预览:", JSON.stringify(createPayloadArray).substring(0, 200) + "...");
 
-    const createResponse = await sendBatchExecute(rpcid, createPayloadArray, params, projectId);
+    const createPayloadArray = [
+      [reqItem],
+      [
+        null,
+        22,
+        null,
+        null,
+        null,
+        projectId,
+        null,
+        null,
+        null,
+        null,
+        [videoRecaptchaToken, 1]
+      ],
+      [uuid2, 2]
+    ];
+    
+    console.log(`  - RPC: ${rpcId}, modelKey: ${modelKey}, mode: ${videoMode}`);
+    console.log("  - 完整payload预览:", JSON.stringify(createPayloadArray).substring(0, 240) + "...");
+
+    const createResponse = await sendBatchExecute(rpcId, createPayloadArray, params, projectId);
     
     console.log("📋 原始响应:", createResponse.substring(0, 500));
     
@@ -589,9 +817,8 @@ async function runGeneratedTest(config) {
     let foundRpcItem = false;
     let rpcErrorDetail = "";
     
-    // 从响应中提取 mediaUUID
     for (const item of createParsed) {
-      if (item && item[0] === "wrb.fr" && (item[1] === rpcid || item[1] === "MZZa6b" || item[1] === "nprQif")) {
+      if (item && item[0] === "wrb.fr" && item[1] === rpcId) {
         foundRpcItem = true;
         if (item[2]) {
           const responseStr = String(item[2]);
@@ -612,7 +839,6 @@ async function runGeneratedTest(config) {
             if (allUUIDs && allUUIDs.length >= 2) {
               mediaUUID = allUUIDs[1];
               console.log("✅ 成功提取视频媒体UUID (allUUIDs[1]):", mediaUUID);
-              console.log("  - 找到的所有UUID:", allUUIDs.slice(0, 6));
             } else if (allUUIDs && allUUIDs.length === 1) {
               mediaUUID = allUUIDs[0];
               console.log("✅ 成功提取视频媒体UUID (allUUIDs[0]):", mediaUUID);
@@ -631,7 +857,7 @@ async function runGeneratedTest(config) {
     }
     
     if (!mediaUUID) {
-      const detail = rpcErrorDetail || (!foundRpcItem ? "MZZa6b RPC not found in response" : "");
+      const detail = rpcErrorDetail || (!foundRpcItem ? `${rpcId} RPC not found in response` : "");
       return { 
         ok: false, 
         error: `创建视频任务失败：无法提取媒体UUID${detail ? ` (${detail})` : ""}`,
@@ -640,14 +866,15 @@ async function runGeneratedTest(config) {
       };
     }
     
-    console.log("✅ 多图生视频任务创建成功！");
+    console.log(`✅ 视频任务 (${videoMode}) 创建成功！`);
     console.log("  - 媒体UUID:", mediaUUID);
     
     // 步骤4: 轮询任务状态 (rpcids: jwpduf & Zzl0ze fallback)
     console.log("⏳ 开始轮询任务状态...");
     
-    const maxPolls = 80;
-    const pollInterval = 5000;
+    const pollInterval = Math.max(1000, (Number(config.pollIntervalSeconds) || 5) * 1000);
+    const maxWaitSeconds = Math.max(60, Number(config.maxWaitSeconds) || 600);
+    const maxPolls = Math.max(12, Math.ceil((maxWaitSeconds * 1000) / pollInterval));
     let pollCount = 0;
     let taskStatus = null;
     let isComplete = false;
@@ -681,33 +908,51 @@ async function runGeneratedTest(config) {
                 }
                 if (record[5] && record[5][8]) {
                   const statusInfo = record[5][8];
+                  
+                  // statusInfo 可能是数字或数组
+                  // 成功: 3 或 6
+                  // 失败: [4, [3, "ERROR_CODE"], ["DETAIL"]]
                   if (Array.isArray(statusInfo)) {
                     taskStatus = statusInfo[0];
-                    if (taskStatus === 4 && statusInfo[1] && Array.isArray(statusInfo[1])) {
-                      const errorCode = statusInfo[1][1] || "UNKNOWN_ERROR";
-                      const errorDetails = statusInfo[2] ? statusInfo[2].join(", ") : "";
-                      console.warn("⚠️ 状态返回告警:", errorCode, errorDetails);
-                      if (!String(errorDetails).includes("Media not found") && !String(errorCode).includes("NOT_FOUND")) {
-                        return {
-                          ok: false,
-                          error: `视频生成失败: ${errorCode} ${errorDetails}`,
-                          errorCode,
-                          errorDetails: statusInfo[2] || [],
-                          mediaUUID,
-                          pollCount
-                        };
-                      }
-                    }
                   } else {
                     taskStatus = statusInfo;
                   }
+                  if (taskStatus === 4 || taskStatus === 5) {
+                    const errArr = Array.isArray(statusInfo) && Array.isArray(statusInfo[1]) ? statusInfo[1] : null;
+                    const errorCode = (errArr && errArr[1]) || `STATUS_${taskStatus}`;
+                    const errorDetails = (Array.isArray(statusInfo) && Array.isArray(statusInfo[2])) ? statusInfo[2].join(", ") : JSON.stringify(statusInfo);
+                    const errorMessage = errorDetails ? `${errorCode}: ${errorDetails}` : errorCode;
+                    console.warn("⚠️ 状态返回告警:", errorMessage);
+                    if (!String(errorDetails).includes("Media not found") && !String(errorCode).includes("NOT_FOUND")) {
+                      return {
+                        ok: false,
+                        error: `视频生成失败: ${errorMessage}`,
+                        errorCode,
+                        errorDetails: (Array.isArray(statusInfo) && statusInfo[2]) || [],
+                        mediaUUID,
+                        rawResponse: JSON.stringify({
+                          videoMediaId: uploadedVideo?.videoMediaId,
+                          dur: uploadedVideo?.durationSeconds,
+                          upStatus: uploadedVideo?.upStatus,
+                          upPollSample: uploadedVideo?.upPollSample,
+                          startFrameIndex,
+                          endFrameIndex,
+                          finText: uploadedVideo?.finText
+                        })
+                      };
+                    }
+                  }
                   
                   console.log("  - 当前状态:", taskStatus);
+                  
+                  // 状态 3 表示完成
                   if (taskStatus === 3) {
                     isComplete = true;
-                    console.log("✅ 任务完成 (状态码 3)！");
+                    console.log("✅ 任务完成！");
                     break;
                   }
+                  
+                  // 状态 6 表示处理中
                   if (taskStatus === 6) {
                     console.log("  - 任务处理中...");
                   }
@@ -791,6 +1036,7 @@ async function runGeneratedTest(config) {
           break;
         }
 
+        // Fallback: If mediaUUID was an operation ID, resolve real media ID from project media listing (Zzl0ze)
         try {
           const listPayload = [`projects/${projectId}`, null, null, null, [1]];
           const listResp = await sendBatchExecute("Zzl0ze", listPayload, params, projectId);
@@ -803,7 +1049,7 @@ async function runGeneratedTest(config) {
               console.log("🔍 从项目列表解析出真实 mediaId:", realMediaId);
               const realUrlResp = await sendBatchExecute("as29s", [realMediaId], params, projectId);
               const realParsed = extractVideoUrl(realUrlResp);
-              if (realParsed && realParsed.videoUrl) {
+              if (realParsed.videoUrl) {
                 videoUrl = realParsed.videoUrl;
                 console.log("✅ 视频地址获取成功 (via realMediaId)！");
                 break;
@@ -833,19 +1079,25 @@ async function runGeneratedTest(config) {
     
     return {
       ok: true,
-      message: "多图生视频任务完成",
+      message: `视频任务 (${videoMode}) 完成`,
       elapsedMs,
       elapsedFormatted: `${Math.floor(elapsedMs / 1000)}秒`,
       input: { 
         prompt,
+        videoMode,
+        modelKey,
+        outputResolution,
         referenceImageCount: referenceImageUrls.length,
         referenceImageUrls,
+        referenceAudioRefs,
+        referenceVideoUrl,
         aspectRatio,
         aspectRatioCode
       },
       result: {
         projectId,
         imageUUIDs,
+        videoMediaId: uploadedVideo?.videoMediaId || null,
         mediaUUID,
         videoUrl,
         pollCount,

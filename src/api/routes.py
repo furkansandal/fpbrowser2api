@@ -132,12 +132,32 @@ OPENAI_COMPAT_VIDEO_MODELS = (
     "veo-3-1-lite",
     "veo-3-1-lite-low",
     "veo-omni-flash",
+    "veo-omni-1-1-flash",
+    "veo-omni-flash-1-1",
     "veo-omni-flash-video-edit",
+    "veo-omni-1-1-flash-video-edit",
+    "veo-omni-1-2-flash",
+    "veo-omni-flash-1-2",
+    "veo-omni-1-2-flash-video-edit",
+    "veo-omni-flash-1-2-video-edit",
+    "veo-omni-1-2-flash-video-extend",
+    "veo-omni-flash-1-2-video-extend",
+    "veo-omni-flash-video-extend",
     # `-1080p` 变体：与去掉后缀的同名模型完全一致，只是在视频生成成功后再做一次
     # 1080p 超分，成功则返回超分后的地址（超分失败不影响任务成功）。
     "veo-3-1-1080p",
     "veo-omni-flash-1080p",
+    "veo-omni-1-1-flash-1080p",
+    "veo-omni-flash-1-1-1080p",
     "veo-omni-flash-video-edit-1080p",
+    "veo-omni-1-1-flash-video-edit-1080p",
+    "veo-omni-1-2-flash-1080p",
+    "veo-omni-flash-1-2-1080p",
+    "veo-omni-1-2-flash-video-edit-1080p",
+    "veo-omni-flash-1-2-video-edit-1080p",
+    "veo-omni-1-2-flash-video-extend-1080p",
+    "veo-omni-flash-1-2-video-extend-1080p",
+    "veo-omni-flash-video-extend-1080p",
     "gpt-image2-1k",
     "gpt-image2-2k",
     "gpt-image2-4k",
@@ -291,7 +311,17 @@ UPSCALE_1080P_MODEL_SUFFIX = "-1080p"
 UPSCALE_1080P_VIDEO_MODELS = (
     "veo-3-1-1080p",
     "veo-omni-flash-1080p",
+    "veo-omni-1-1-flash-1080p",
+    "veo-omni-flash-1-1-1080p",
     "veo-omni-flash-video-edit-1080p",
+    "veo-omni-1-1-flash-video-edit-1080p",
+    "veo-omni-1-2-flash-1080p",
+    "veo-omni-flash-1-2-1080p",
+    "veo-omni-1-2-flash-video-edit-1080p",
+    "veo-omni-flash-1-2-video-edit-1080p",
+    "veo-omni-1-2-flash-video-extend-1080p",
+    "veo-omni-flash-1-2-video-extend-1080p",
+    "veo-omni-flash-video-extend-1080p",
 )
 UPSCALE_1080P_VIDEO_MODEL_SET = set(UPSCALE_1080P_VIDEO_MODELS)
 
@@ -388,25 +418,33 @@ def _normalize_video_task_payload(payload: Dict[str, Any], *, require_image_seco
         payload["image_model_name"] = "HARBOR_SEAL"
         payload["resolution"] = "4k"
     elif model in veo_model_registry.API_MODEL_TO_FAMILY:
-        # 统一的 Veo 3.1 族 + Omni Flash 路径：API 层只解析 family + duration，
-        # 具体 mode（t2v/i2v/start_end/r2v）由 backend 依据上传图像判定，并基于
+        # 统一的 Veo 3.1 族 + Omni 1.1 / 1.2 Flash 路径：API 层只解析 family + duration，
+        # 具体 mode（t2v/i2v/start_end/r2v/edit/extend）由 backend 依据上传媒体判定，并基于
         # registry 解析最终 flow 模型 key。
         task_type_code = "veo_workflow"
         family = veo_model_registry.API_MODEL_TO_FAMILY[model]
-        # 该族在任意模式下支持的全部时长集合；API 层仅按 (family, duration) 校验，
-        # mode+duration 的不兼容由 backend 返回 400。
-        supported: set[int] = set()
-        for mode in (
-            veo_model_registry.MODE_T2V,
-            veo_model_registry.MODE_I2V,
-            veo_model_registry.MODE_START_END,
-            veo_model_registry.MODE_R2V,
-        ):
-            supported.update(veo_model_registry.supported_durations(family, mode))
+        if model.endswith("-video-edit"):
+            payload.setdefault("video_mode", veo_model_registry.MODE_EDIT)
+        elif model.endswith("-video-extend"):
+            payload.setdefault("video_mode", veo_model_registry.MODE_EXTEND)
+
+        explicit_mode = str(payload.get("video_mode") or "").strip().lower()
+        if explicit_mode in veo_model_registry.ALL_MODES:
+            supported = set(veo_model_registry.supported_durations(family, explicit_mode))
+        else:
+            supported = set()
+            for mode in veo_model_registry.ALL_MODES:
+                supported.update(veo_model_registry.supported_durations(family, mode))
+
         raw_duration = payload.get("duration")
         if raw_duration is None:
-            # 缺省时长：omni 默认 10s，veo 3.1 系列默认 8s。
-            duration = 10 if family == veo_model_registry.FAMILY_OMNI else 8
+            # 缺省时长：extend 默认 8s，omni (1.1 / 1.2) 默认 10s，veo 3.1 系列默认 8s。
+            if explicit_mode == veo_model_registry.MODE_EXTEND:
+                duration = 8
+            elif family in veo_model_registry.OMNI_FAMILIES:
+                duration = 10
+            else:
+                duration = 8
         else:
             try:
                 duration = int(raw_duration)
@@ -424,22 +462,20 @@ def _normalize_video_task_payload(payload: Dict[str, Any], *, require_image_seco
         payload["duration"] = duration
         # backend 从 model key 取真实帧数；这里仅给一个 >1 的占位值，
         # 保证 image_mode（n_frames==1）判定不会误判为图像生成。
-        payload["n_frames"] = duration * 30
+        payload["n_frames"] = duration * 24 if family in veo_model_registry.OMNI_FAMILIES else duration * 30
         # backend 会基于 veo_family + mode + duration + orientation 经 registry 解析
         # 出 video_model，因此这里统一 pop 掉（含 omni）。
         payload.pop("video_model", None)
-        payload.pop("video_url", None)
-        # 720p（默认）/ 1080p / 4k；1080p/4k 由插件在生成后做视频放大。
-        payload["resolution"] = _normalize_veo_video_resolution(payload.get("resolution"))
-    elif model in {"veo-omni-flash-video-edit"}:
-        task_type_code = "veo_workflow"
-        duration = payload.get("duration")
-        if duration != 10:
-            raise HTTPException(status_code=400, detail="veo-omni-flash only supports duration=10")
-        payload["n_frames"] = 240
-        payload["video_model"] = "abra_t2v_10s"
-        payload["model"] = "veo-omni-flash"
-        payload["resolution"] = _normalize_veo_video_resolution(payload.get("resolution"))
+        if family not in veo_model_registry.OMNI_FAMILIES:
+            payload.pop("video_url", None)
+        # 360p / 720p（默认）/ 1080p / 4k；1080p/4k 由插件在生成后做视频放大。
+        resolution = _normalize_veo_video_resolution(payload.get("resolution"))
+        if resolution == "360p" and not veo_model_registry.supports_360p(family):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{model} does not support 360p resolution",
+            )
+        payload["resolution"] = resolution
     elif model in GPT_IMAGE2_VIDEO_MODELS:
         task_type_code = "gpt_workflow"
         duration = payload.get("duration")

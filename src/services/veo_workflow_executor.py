@@ -130,9 +130,10 @@ _VEO_LOCAL_IMAGE_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(
 _VEO_LOCAL_IMAGE_LOCKS: Dict[str, asyncio.Lock] = {}
 _VEO_LOCAL_IMAGE_LOCKS_GUARD = asyncio.Lock()
 _VEO_LOCAL_IMAGE_LAST_CLEANUP = 0.0
-_VEO_OMNI_T2V_MODEL="abra_t2v_10s"
-_VEO_OMNI_R2V_MODEL="abra_r2v_10s"
-_VEO_OMNI_VEDIT_MODEL ="abra_edit"
+_VEO_OMNI_T2V_MODEL = "macaron_cookie_t2v_10s"
+_VEO_OMNI_R2V_MODEL = "macaron_cookie_r2v_10s"
+_VEO_OMNI_VEDIT_MODEL = "macaron_cookie_edit"
+_VEO_OMNI_VEXTEND_MODEL = "macaron_cookie_extend_8s"
 
 def _veo_local_image_cache_ttl_seconds() -> float:
     return _veo_float_env("VEO_LOCAL_IMAGE_CACHE_TTL_SECONDS", 1 * 3600, min_value=0.0, max_value=30 * 86400)
@@ -421,10 +422,10 @@ async def _veo_probe_local_video_metadata(path: Path) -> Dict[str, Any]:
             frame_count = int(round(duration * fps))
         out: Dict[str, Any] = {"duration_seconds": duration, "fps": fps, "frame_count": frame_count}
         if frame_count > 0:
-            if frame_count > 241:
-                frame_count = 241
-            # VEO 的 videoInput 使用 0 起始 frame index，因此结束帧取最后一帧下标。
-            out["end_frame_index"] = max(0, frame_count - 1)
+            if frame_count > 361:
+                frame_count = 361
+            # VEO 的 videoInput 使用 0 起始 frame index，因此结束帧取最后一帧下标（最高 360，对应 15s@24fps）。
+            out["end_frame_index"] = max(0, min(360, frame_count - 1))
         return out
 
     try:
@@ -433,14 +434,20 @@ async def _veo_probe_local_video_metadata(path: Path) -> Dict[str, Any]:
         return {}
 
 
-def _veo_assert_reference_video_duration(meta: Dict[str, Any], *, source: str) -> None:
+def _veo_assert_reference_video_duration(
+    meta: Dict[str, Any],
+    *,
+    source: str,
+    max_seconds: float = 30.0,
+) -> None:
     try:
         duration = float(meta.get("duration_seconds") or meta.get("duration") or 0)
     except Exception:
         duration = 0.0
-    if duration > 30.0 + 1e-3:
+    limit = float(max_seconds or 30.0)
+    if duration > limit + 1e-3:
         raise NonPenalizedTaskError(
-            f"VEO 参考视频时长不能超过30秒，当前约 {duration:.3f} 秒，违规：{safe_trim(source, 300)}",
+            f"VEO 参考视频时长不能超过{int(round(limit))}秒，当前约 {duration:.3f} 秒，违规：{safe_trim(source, 300)}",
             status_code=400,
             content_violation=True,
         )
@@ -4660,11 +4667,53 @@ def _veo_extract_url_from_image_item(item: Any) -> Optional[str]:
     return None
 
 
-def _veo_r2v_max_ref_images(payload: Dict[str, Any]) -> int:
-    """从 registry 取 (veo_family, r2v, duration) 允许的最大参考图数量。
+def _veo_registry_resolution(payload: Dict[str, Any]) -> str:
+    """payload 的分辨率映射到 registry 的模型键表：仅 `360p` 走原生 360p 表。"""
+    raw = str((payload or {}).get("resolution") or "").strip().lower().replace(" ", "")
+    if raw in ("360p", "360"):
+        return veo_model_registry.RESOLUTION_360P
+    return veo_model_registry.RESOLUTION_720P
 
-    omni_flash=7，veo 系列=3。无 veo_family（旧 omni video-edit 兜底）或组合不受支持
-    时返回 8（沿用旧默认上限），真正的不支持组合由 `resolve()` 在模型解析阶段返回 400。
+
+FLOW_PRESET_VOICES: tuple[str, ...] = (
+    "puck",
+    "kore",
+    "fenrir",
+    "zephyr",
+    "aoede",
+    "charon",
+    "enceladus",
+    "erinome",
+    "gacrux",
+    "iapetus",
+    "laomedeia",
+    "leda",
+    "orus",
+    "pulcherrima",
+    "rasalgethi",
+    "sadachbia",
+    "sadaltager",
+    "schedar",
+    "sulafat",
+    "umbriel",
+    "vindemiatrix",
+    "zubenelgenubi",
+    "achernar",
+    "achird",
+    "algenib",
+    "algieba",
+    "alnilam",
+    "autonoe",
+    "callirrhoe",
+    "despina",
+)
+FLOW_PRESET_VOICE_SET = frozenset(FLOW_PRESET_VOICES)
+
+
+def _veo_r2v_max_ref_images(payload: Dict[str, Any], mode: str = veo_model_registry.MODE_R2V) -> int:
+    """从 registry 取 (veo_family, mode, duration) 允许的最大参考图数量。
+
+    omni_flash: r2v=7, edit=5, extend=3；veo 系列: r2v=3。
     """
     payload = payload or {}
     family = str(payload.get("veo_family") or "").strip()
@@ -4674,19 +4723,123 @@ def _veo_r2v_max_ref_images(payload: Dict[str, Any]) -> int:
         duration = int(payload.get("duration"))
     except (TypeError, ValueError):
         duration = 8
-    max_ref = veo_model_registry.max_ref_images(family, veo_model_registry.MODE_R2V, duration)
+    max_ref = veo_model_registry.max_ref_images(
+        family, mode, duration, _veo_registry_resolution(payload)
+    )
     return max_ref if max_ref > 0 else 8
 
 
-def _veo_collect_ingredients_image_urls(payload: Dict[str, Any], max_ref_images: int = 8) -> List[str]:
-    """Ingredients（R2V）参考图 URL：来自 `Ingredients_images`（或 `ingredients_images`）。
+def _veo_max_ref_audios(payload: Dict[str, Any], mode: str = veo_model_registry.MODE_R2V) -> int:
+    """从 registry 取 (veo_family, mode, duration) 允许的最大音频/声音参考数量。
 
-    最大参考图数量来自 registry（omni=7 / veo=3），由调用方按 veo_family 计算后传入。
+    omni_flash: r2v=5, edit=3, extend=3。
+    """
+    payload = payload or {}
+    family = str(payload.get("veo_family") or "").strip()
+    if not family:
+        return 5
+    try:
+        duration = int(payload.get("duration"))
+    except (TypeError, ValueError):
+        duration = 10
+    return veo_model_registry.max_ref_audios(
+        family, mode, duration, _veo_registry_resolution(payload)
+    )
+
+
+def _veo_normalize_audio_ref(item: Any, index: int = 0) -> Optional[str]:
+    """将用户传入的音频 URL 或音色名规范化为 Flow RPC 所需的声音标识（如 `voices/puck` 或自定义 UUID）。"""
+    raw = ""
+    if isinstance(item, str):
+        raw = item.strip()
+    elif isinstance(item, dict):
+        for k in ("voice", "voice_id", "voiceId", "id", "name", "url", "audio_url", "audioUrl", "src"):
+            v = str(item.get(k) or "").strip()
+            if v:
+                raw = v
+                break
+    if not raw:
+        return None
+    low = raw.lower()
+    if low.startswith("voices/"):
+        vname = low.split("/", 1)[1].strip()
+        if vname:
+            return f"voices/{vname}"
+    if low in FLOW_PRESET_VOICE_SET:
+        return f"voices/{low}"
+    if re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", raw):
+        return low
+    try:
+        parsed = urlparse(raw)
+        stem = Path(unquote(parsed.path or "")).stem.strip().lower()
+        if stem in FLOW_PRESET_VOICE_SET:
+            return f"voices/{stem}"
+        for preset in FLOW_PRESET_VOICES:
+            if preset in stem:
+                return f"voices/{preset}"
+    except Exception:
+        pass
+    return f"voices/{FLOW_PRESET_VOICES[index % len(FLOW_PRESET_VOICES)]}"
+
+
+def _veo_collect_ingredients_audio_refs(payload: Dict[str, Any], max_ref_audios: int = 5) -> List[str]:
+    """收集并规范化 R2V / Edit / Extend 的音频/音色参考列表。"""
+    payload = payload or {}
+    raw: Any = None
+    for key in (
+        "Ingredients_audios",
+        "ingredients_audios",
+        "audio_urls",
+        "audios",
+        "voice_ids",
+        "voices",
+        "reference_audios",
+    ):
+        if payload.get(key) is not None:
+            raw = payload.get(key)
+            break
+    if raw is None:
+        single = payload.get("audio_url") or payload.get("voice_id") or payload.get("voice")
+        if single is not None and str(single).strip():
+            raw = [single]
+    if not isinstance(raw, list) or len(raw) == 0:
+        return []
+    if max_ref_audios <= 0:
+        raise NonPenalizedTaskError(
+            "当前模型或模式不支持音频/音色参考（仅 veo-omni-flash 的 r2v/edit/extend 支持）",
+            status_code=400,
+            content_violation=True,
+        )
+    if len(raw) > max_ref_audios:
+        raise NonPenalizedTaskError(
+            f"当前模式最多支持 {max_ref_audios} 个音频/音色参考",
+            status_code=400,
+            content_violation=True,
+        )
+    out: List[str] = []
+    for idx, it in enumerate(raw):
+        norm = _veo_normalize_audio_ref(it, index=idx)
+        if not norm:
+            raise NonPenalizedTaskError(
+                "audio_urls / ingredients_audios 中存在无法解析的音频参考",
+                status_code=400,
+                content_violation=True,
+            )
+        out.append(norm)
+    return out
+
+
+def _veo_collect_ingredients_image_urls(payload: Dict[str, Any], max_ref_images: int = 8) -> List[str]:
+    """Ingredients（R2V / Edit / Extend）参考图 URL：来自 `Ingredients_images`（或 `ingredients_images` / `reference_images`）。
+
+    最大参考图数量来自 registry（omni: r2v=7, edit=5, extend=3 / veo: r2v=3），由调用方按 veo_family 计算后传入。
     """
     payload = payload or {}
     raw = payload.get("Ingredients_images")
     if raw is None:
         raw = payload.get("ingredients_images")
+    if raw is None:
+        raw = payload.get("reference_images")
     if not isinstance(raw, list):
         return []
     if max_ref_images <= 0:
@@ -4706,15 +4859,23 @@ def _veo_collect_ingredients_image_urls(payload: Dict[str, Any], max_ref_images:
     return out
 
 def _veo_collect_ingredients_video_urls(payload: Dict[str, Any]) -> List[str]:
-    """Ingredients/R2V 视频参考 URL，最多 1 个。
+    """Edit / Extend 视频参考 URL，最多 1 个。
 
-    业务入口只允许从 payload.video_url 读取参考视频；不要从其它
-    ingredients/reference 字段兼容解析，避免误把结果视频地址等字段当成参考视频。
+    支持从 payload.extend_video_url、payload.video_url、payload.ingredients_video_urls 或 metadata 中读取参考视频。
     """
     payload = payload or {}
-    if "video_url" not in payload or payload.get("video_url") is None:
-        return []
-    video_url = str(payload.get("video_url") or "").strip()
+    meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    video_url = str(
+        payload.get("extend_video_url")
+        or payload.get("video_url")
+        or meta.get("extend_video_url")
+        or meta.get("video_url")
+        or ""
+    ).strip()
+    if not video_url:
+        raw_list = payload.get("ingredients_video_urls") or meta.get("ingredients_video_urls")
+        if isinstance(raw_list, list) and raw_list:
+            video_url = str(raw_list[0] or "").strip()
     if not video_url:
         return []
     parsed = urlparse(video_url)
@@ -4857,8 +5018,8 @@ def _veo_payload_video_model_is_omni(payload: Dict[str, Any]) -> bool:
     if raw is None:
         return False
     model = str(raw).strip()
-    if model == _VEO_OMNI_T2V_MODEL or model == "veo-omni-flash":
-        return True;
+    if model == _VEO_OMNI_T2V_MODEL or model.startswith("macaron_cookie_") or model in veo_model_registry.OMNI_API_MODELS:
+        return True
     return False
 
 def _veo_payload_video_model_uses_r2v_for_i2v_refs(payload: Dict[str, Any]) -> bool:
@@ -4872,7 +5033,7 @@ def _veo_payload_video_model_uses_r2v_for_i2v_refs(payload: Dict[str, Any]) -> b
     )
     for raw in candidates:
         model = str(raw or "").strip().lower()
-        if model in {_VEO_OMNI_T2V_MODEL, _VEO_OMNI_VEDIT_MODEL}:
+        if model in {_VEO_OMNI_T2V_MODEL, _VEO_OMNI_VEDIT_MODEL, _VEO_OMNI_VEXTEND_MODEL, "abra_t2v_10s", "abra_edit"}:
             return True
     return False
 
@@ -4896,16 +5057,14 @@ def _veo_resolve_extension_video_model_and_aspect(
     want_ingredients: bool = False,
     want_i2v: bool = False,
     want_start_end: bool = False,
+    want_edit: bool = False,
+    want_extend: bool = False,
     window_balance: Optional[int] = None,
 ) -> tuple[str, str, int]:
     """解析 (flow_model_key, video_aspect, max_ref_img)。
 
     主路径：payload.veo_family + 模式（want_* 派生）+ duration + orientation 经
     `veo_model_registry.resolve()` 解析。不支持的组合 → 400。
-
-    兜底路径：payload 无 veo_family（仅 `veo-omni-flash-video-edit` 旧流程会命中，
-    该流程随后在调用处被覆盖为 `abra_edit`）时，沿用旧的 Fast 族解析，保持旧行为。
-    auto-ultra 已移除。
     """
     payload = payload or {}
     family = str(payload.get("veo_family") or "").strip()
@@ -4922,7 +5081,11 @@ def _veo_resolve_extension_video_model_and_aspect(
             if orientation == veo_model_registry.ORIENTATION_PORTRAIT
             else VIDEO_ASPECT_RATIO_LANDSCAPE
         )
-        if want_ingredients:
+        if want_extend:
+            mode = veo_model_registry.MODE_EXTEND
+        elif want_edit:
+            mode = veo_model_registry.MODE_EDIT
+        elif want_ingredients:
             mode = veo_model_registry.MODE_R2V
         elif want_start_end:
             mode = veo_model_registry.MODE_START_END
@@ -4933,19 +5096,27 @@ def _veo_resolve_extension_video_model_and_aspect(
         try:
             duration = int(payload.get("duration"))
         except (TypeError, ValueError):
-            duration = 8
-        res = veo_model_registry.resolve(family, mode, duration, orientation)
+            duration = 8 if want_extend else (10 if family in veo_model_registry.OMNI_FAMILIES else 8)
+        resolution = _veo_registry_resolution(payload)
+        res = veo_model_registry.resolve(family, mode, duration, orientation, resolution)
         if res is None:
-            supported = veo_model_registry.supported_durations(family, mode)
+            supported = veo_model_registry.supported_durations(family, mode, resolution)
             raise NonPenalizedTaskError(
-                f"该模型族不支持此组合：family={family} mode={mode} duration={duration}s。"
+                f"该模型族不支持此组合：family={family} mode={mode} duration={duration}s "
+                f"resolution={resolution}。"
                 f"该族 {mode} 支持的时长：{supported or '不支持该模式'}",
                 status_code=400,
             )
         model_key, max_ref = res
         return model_key, video_aspect, max_ref
 
-    # 兜底（旧 omni video-edit）：沿用旧的 Fast 族解析；调用处会覆盖为 abra_edit。
+    # 兜底（无 veo_family 时）：
+    if want_extend:
+        _, video_aspect = _veo_resolve_r2v_model(payload)
+        return _VEO_OMNI_VEXTEND_MODEL, video_aspect, 3
+    if want_edit:
+        _, video_aspect = _veo_resolve_r2v_model(payload)
+        return _VEO_OMNI_VEDIT_MODEL, video_aspect, 5
     if want_ingredients:
         model_key, video_aspect = _veo_resolve_r2v_model(payload)
     elif want_i2v:
@@ -5955,6 +6126,9 @@ def _veo_resolve_video_output_resolution(
         return ("4K", True, "VIDEO_RESOLUTION_4K", "veo_3_1_upsampler_4k")
     if s in ("1080p", "1080", "fhd"):
         return ("1080p", True, "VIDEO_RESOLUTION_1080P", "veo_3_1_upsampler_1080p")
+    # 360p 是 omni_flash 的原生模型键（`*_360p`），直接生成，不做放大。
+    if s in ("360p", "360"):
+        return ("360p", False, None, None)
     return ("720p", False, None, None)
 
 # ---------------------------------------------------------------------------
@@ -6004,20 +6178,89 @@ async def veo_workflow(
 
     ingredients_urls: List[str] = []
     ingredients_video_urls: List[str] = []
+    ingredients_audio_refs: List[str] = []
     want_ingredients = False
+    want_edit = False
+    want_extend = False
+    explicit_video_mode = str(payload.get("video_mode") or "").strip().lower()
     if not image_mode:
-        ingredients_urls = _veo_collect_ingredients_image_urls(
-            payload, max_ref_images=_veo_r2v_max_ref_images(payload)
-        )
         ingredients_video_urls = _veo_collect_ingredients_video_urls(payload)
-        want_ingredients = len(ingredients_urls) >= 1 or len(ingredients_video_urls) >= 1
-        #raise NonPenalizedTaskError("Veo3.1视频维护中，暂时下架", status_code=400,content_violation=True)
+        want_extend = (
+            explicit_video_mode == veo_model_registry.MODE_EXTEND
+            or bool(str(payload.get("extend_video_url") or "").strip())
+            or _veo_truthy_payload_flag(payload.get("extend"))
+        )
+        want_edit = (
+            explicit_video_mode == veo_model_registry.MODE_EDIT
+            or (len(ingredients_video_urls) >= 1 and not want_extend)
+        )
+        if want_extend and not ingredients_video_urls:
+            raise NonPenalizedTaskError(
+                "Video Extend 模式需要提供参考视频（video_url 或 extend_video_url）",
+                status_code=400,
+                content_violation=True,
+            )
+        if want_edit and not ingredients_video_urls:
+            raise NonPenalizedTaskError(
+                "Video Edit 模式需要提供参考视频（video_url）",
+                status_code=400,
+                content_violation=True,
+            )
+
+        ref_mode = (
+            veo_model_registry.MODE_EXTEND
+            if want_extend
+            else (
+                veo_model_registry.MODE_EDIT
+                if want_edit
+                else veo_model_registry.MODE_R2V
+            )
+        )
+        max_ref_img = _veo_r2v_max_ref_images(payload, mode=ref_mode)
+        max_ref_aud = _veo_max_ref_audios(payload, mode=ref_mode)
+        ingredients_urls = _veo_collect_ingredients_image_urls(
+            payload, max_ref_images=max_ref_img
+        )
+        ingredients_audio_refs = _veo_collect_ingredients_audio_refs(
+            payload, max_ref_audios=max_ref_aud
+        )
+        raw_imgs = payload.get("images")
+        if not ingredients_urls and isinstance(raw_imgs, list) and len(raw_imgs) > 0:
+            if (
+                want_edit
+                or want_extend
+                or explicit_video_mode == veo_model_registry.MODE_R2V
+                or len(ingredients_audio_refs) > 0
+                or len(raw_imgs) > 2
+            ):
+                if len(raw_imgs) > max_ref_img:
+                    raise NonPenalizedTaskError(
+                        f"当前模式最多支持 {max_ref_img} 张参考图",
+                        status_code=400,
+                        content_violation=True,
+                    )
+                for it in raw_imgs:
+                    u = _veo_extract_url_from_image_item(it)
+                    if not u:
+                        raise NonPenalizedTaskError(
+                            "images 数组中存在无法解析的图片地址",
+                            status_code=400,
+                            content_violation=True,
+                        )
+                    ingredients_urls.append(u)
+
+        want_ingredients = (not want_edit and not want_extend) and (
+            len(ingredients_urls) >= 1
+            or len(ingredients_audio_refs) >= 1
+            or explicit_video_mode == veo_model_registry.MODE_R2V
+        )
 
     want_i2v = False
-    if not image_mode:
-        want_i2v = _veo_payload_looks_like_i2v(payload)
-    if want_ingredients:
-        want_i2v = False
+    if not image_mode and not want_edit and not want_extend and not want_ingredients:
+        want_i2v = (
+            explicit_video_mode in {veo_model_registry.MODE_I2V, veo_model_registry.MODE_START_END}
+            or _veo_payload_looks_like_i2v(payload)
+        )
 
     # start_end（首尾帧插值）与 i2v（仅首帧）按图片数量区分：2 张 → start_end，1 张 → i2v。
     want_start_end = False
@@ -6033,7 +6276,7 @@ async def veo_workflow(
                 status_code=400,
             )
         # 首帧+尾帧（2 张）→ start_end（插值）；仅首帧（1 张）→ i2v。
-        if len(i2v_urls) >= 2:
+        if len(i2v_urls) >= 2 or explicit_video_mode == veo_model_registry.MODE_START_END:
             want_start_end = True
         if _veo_payload_video_model_uses_r2v_for_i2v_refs(payload):
             r2v_from_i2v_urls = list(i2v_urls)
@@ -6042,6 +6285,24 @@ async def veo_workflow(
             want_i2v = False
             want_start_end = False
             i2v_urls = []
+
+    resolved_video_mode = (
+        "extend"
+        if want_extend
+        else (
+            "edit"
+            if want_edit
+            else (
+                "r2v"
+                if want_ingredients
+                else (
+                    "start_end"
+                    if want_start_end
+                    else ("i2v" if want_i2v else "t2v")
+                )
+            )
+        )
+    )
 
     labs_hint = str(payload.get("veo_url") or payload.get("target_url") or "").strip() or "https://labs.google/fx"
     project_id = str(
@@ -6096,14 +6357,15 @@ async def veo_workflow(
     _mode = (
         "IMAGE"
         if image_mode
-        else ("INGREDIENTS_R2V" if want_ingredients else ("I2V" if want_i2v else "T2V"))
+        else resolved_video_mode.upper()
     )
     append_log(
         log_file,
         f"[veo] workflow {_mode} n_frames={n_frames} start project_id={project_id!r} "
         f"prompt={safe_trim(prompt, 200)!r} "
-        f"ingredients={len(ingredients_urls) if want_ingredients else 0} "
-        f"ingredient_videos={len(ingredients_video_urls) if want_ingredients else 0} "
+        f"ingredients={len(ingredients_urls)} "
+        f"ingredient_audios={len(ingredients_audio_refs)} "
+        f"ingredient_videos={len(ingredients_video_urls)} "
         f"images={len(i2v_urls) if want_i2v else 0}",
     )
     await progress_cb(
@@ -6112,23 +6374,17 @@ async def veo_workflow(
             "stage": "init",
             "workflow_kind": "image" if image_mode else "video",
             "n_frames": n_frames,
-            "video_mode": (
-                "r2v"
-                if want_ingredients
-                else ("i2v" if want_i2v else "t2v")
-            ),
+            "video_mode": resolved_video_mode,
             "prompt": safe_trim(prompt, 200),
             "project_id": project_id,
-            "image_count": len(ingredients_urls) if want_ingredients else (len(i2v_urls) if want_i2v else 0),
-            "video_reference_count": len(ingredients_video_urls) if want_ingredients else 0,
+            "image_count": len(ingredients_urls) if (want_ingredients or want_edit or want_extend) else (len(i2v_urls) if want_i2v else 0),
+            "audio_reference_count": len(ingredients_audio_refs),
+            "video_reference_count": len(ingredients_video_urls),
         },
     )
 
     if should_use_extension_executor(payload):
         # 插件模式下任务执行不再每次用带 fpb_* 参数的 URL 打开/导航窗口。
-        # fpb_* 配置只在管理页“AccessToken / 过期 -> 更新”时写入一次，插件会持久化
-        # 到 chrome.storage.local；之后只要指纹浏览器窗口启动、插件启动，就用缓存配置
-        # 自动连接 WebSocket。这里保持目标页 URL 干净，避免额外 CDP/导航造成风控风险。
         annotated_project_page = project_page
         annotated_bring_prefix = project_page
         ext_at = str(access_token or "").strip() or None
@@ -6188,13 +6444,6 @@ async def veo_workflow(
                 ext_exp = str((ext_tok_info or {}).get("expires") or "").strip() or None
                 ext_at = str((ext_tok_info or {}).get("short_access_token") or "").strip() or ext_at
                 if not _veo_cached_access_still_valid(ext_at, ext_exp, margin_seconds=10):
-                    # Video generation is now executed by the Flow browser
-                    # console scripts and does not require the legacy short
-                    # access token. Do not automatically disable the task
-                    # window when that legacy token is absent/expired; doing
-                    # so incorrectly turns off every VEO mapping after a
-                    # successful or failed generation. Explicit callers may
-                    # opt back into the old behavior for diagnostics.
                     if bool(payload.get("disable_window_on_logout", False)) and db is not None and task_type_window_id:
                         try:
                             mid = int(task_type_window_id)
@@ -6222,7 +6471,6 @@ async def veo_workflow(
             _ext_i2i_urls = _veo_collect_image_generation_reference_urls(payload) if _veo_payload_has_image_generation_references(payload) else []
             _ext_model_key = None
             _ext_video_aspect = None
-            # 视频放大仅在视频分支生效；图片分支保持默认（不放大）。
             _ext_video_resolution_label, _ext_video_want_upsample, _ext_video_upsample_target, _ext_video_upsample_model_key = ("720p", False, None, None)
         else:
             _ext_model_key, _ext_video_aspect, _ext_max_ref = _veo_resolve_extension_video_model_and_aspect(
@@ -6230,20 +6478,16 @@ async def veo_workflow(
                 want_ingredients=want_ingredients,
                 want_i2v=want_i2v,
                 want_start_end=want_start_end,
+                want_edit=want_edit,
+                want_extend=want_extend,
                 window_balance=_ext_window_balance,
             )
-            # 视频参考（reference video）仍走旧的 omni 视频编辑流程 abra_edit，与 veo_family 无关。
-            # 新版 veo 族在 API 层已 pop 掉 video_url，因此此分支仅命中 veo-omni-flash-video-edit。
-            if want_ingredients and ingredients_video_urls:
-                _ext_model_key = _VEO_OMNI_VEDIT_MODEL
-            print(f"_ext_model_key:{_ext_model_key} _ext_video_aspect:{_ext_video_aspect}");
+            print(f"_ext_model_key:{_ext_model_key} _ext_video_aspect:{_ext_video_aspect}")
             _ext_image_aspect = None
             _ext_image_model = None
-            # 图片放大字段对视频保持默认（"1K"/False/None），避免误触发 flow/upsampleImage。
             _ext_resolution_label, _ext_want_upsample, _ext_upsample_target_resolution = ("1K", False, None)
             _ext_want_external_4k = False
             _ext_i2i_urls = []
-            # 视频分辨率：720p（默认/原行为）/ 1080p / 4k；1080p/4k 由插件在生成后做视频放大。
             _ext_video_resolution_label, _ext_video_want_upsample, _ext_video_upsample_target, _ext_video_upsample_model_key = _veo_resolve_video_output_resolution(payload)
         # 保存对外返回用的原始图片 URL。后续 localize 只替换“插件上传用 URL”，
         # 不能污染 thumb_url 等需要返回给公网用户的字段。
@@ -6275,9 +6519,6 @@ async def veo_workflow(
         elif not _face_mosaic_enabled and (ingredients_urls or i2v_urls or ingredients_video_urls):
             append_log(log_file, "[veo][reference-mosaic] skipped by config")
         if _veo_extension_local_image_cache_enabled(payload):
-            # 输入图不要让指纹浏览器通过海外代理直连原图；Python 服务端先直连下载并
-            # 暴露为 http://<base_url>/assets/veo_image_cache/...，插件再读取这个
-            # 本机白名单 URL。这里仅替换下发给插件的 URL，不改用户原始 payload。
             if ingredients_urls:
                 ingredients_urls = await _veo_materialize_image_urls_for_extension(
                     ingredients_urls,
@@ -6302,10 +6543,8 @@ async def veo_workflow(
                     progress_cb=progress_cb,
                     log_file=log_file,
                 )
+        _ext_video_reference_meta: Dict[str, Any] = {}
         if ingredients_video_urls:
-            # The watermark service downloads remote HTTP(S) inputs itself. Do not
-            # localize the original first, otherwise the same source is downloaded
-            # once here and once again by the masking service.
             source_video_url = str(ingredients_video_urls[0] or "").strip()
             video_url_for_extension = source_video_url
             if _face_mosaic_enabled:
@@ -6317,24 +6556,26 @@ async def veo_workflow(
                     kind="video",
                 )
                 _masked_face_reference_count += _video_faces
-            # The extension must receive a local allow-listed URL. This is the only
-            # download of the masked result; the original remote input was not cached.
-            ingredients_video_urls = [
-                await _veo_materialize_video_for_extension(
-                    video_url_for_extension,
-                    kind="ingredients_video",
-                    progress_cb=progress_cb,
-                    log_file=log_file,
-                )
-            ]
-        _ext_video_reference_meta: Dict[str, Any] = {}
-        if ingredients_video_urls:
-            _video_ref_url = str(ingredients_video_urls[0] or "").strip()
+            localized_video_url = await _veo_materialize_video_for_extension(
+                video_url_for_extension,
+                kind="ingredients_video",
+                progress_cb=progress_cb,
+                log_file=log_file,
+            )
+            if _veo_extension_local_image_cache_enabled(payload):
+                ingredients_video_urls = [localized_video_url]
+            else:
+                ingredients_video_urls = [video_url_for_extension]
+            _video_ref_url = str(localized_video_url or "").strip()
             _video_ref_path = _veo_local_asset_path_from_url(_video_ref_url)
             if _video_ref_path:
                 _ext_video_reference_meta = await _veo_probe_local_video_metadata(_video_ref_path)
                 if _ext_video_reference_meta:
-                    _veo_assert_reference_video_duration(_ext_video_reference_meta, source=_video_ref_url)
+                    _veo_assert_reference_video_duration(
+                        _ext_video_reference_meta,
+                        source=_video_ref_url,
+                        max_seconds=15.0 if want_edit else 30.0,
+                    )
                     try:
                         await progress_cb(
                             3,
@@ -6376,8 +6617,6 @@ async def veo_workflow(
                 ext_payload["prompt"] = ext_prompt
 
         if _ext_video_reference_meta:
-            # Python 服务端已经下载到本机缓存，顺手 ffprobe 最快且能拿到真实 fps/帧数；
-            # 下发给插件，避免插件只能用 <video>.duration 后按固定 8fps 猜 endFrameIndex。
             if _ext_video_reference_meta.get("duration_seconds"):
                 ext_payload.setdefault("ingredients_video_duration_seconds", _ext_video_reference_meta.get("duration_seconds"))
                 ext_payload.setdefault("video_reference_duration_seconds", _ext_video_reference_meta.get("duration_seconds"))
@@ -6394,17 +6633,14 @@ async def veo_workflow(
         ext_payload.update(
             {
                 "workflow_kind": "image" if image_mode else "video",
-                "video_mode": (
-                    "r2v"
-                    if want_ingredients
-                    else ("i2v" if want_i2v else "t2v")
-                ),
+                "video_mode": resolved_video_mode,
                 "project_id": project_id,
                 "project_page": annotated_project_page,
                 "bring_prefix": annotated_bring_prefix,
                 "n_frames": n_frames,
                 "image_mode": image_mode,
                 "ingredients_urls": ingredients_urls,
+                "ingredients_audio_refs": ingredients_audio_refs,
                 "ingredients_video_urls": ingredients_video_urls,
                 "ingredients_video_url": ingredients_video_urls[0] if ingredients_video_urls else "",
                 "i2v_urls": i2v_urls,
@@ -6428,6 +6664,18 @@ async def veo_workflow(
                 "extension_video_want_upsample": _ext_video_want_upsample,
                 "extension_video_upsample_target_resolution": _ext_video_upsample_target,
                 "extension_video_upsample_model_key": _ext_video_upsample_model_key,
+                # 提交时的 outputSpec.resolution。Flow 2026-08-28 起把 outputSpec 变成
+                # 必填：不带它的请求会被接受但在生成阶段以 INVALID_ARGUMENT 失败。
+                # 1080p/4k 仍按 720p 生成（之后由插件放大），所以这里只有 360p / 720p。
+                "extension_video_output_resolution": (
+                    None
+                    if image_mode
+                    else (
+                        "VIDEO_RESOLUTION_360P"
+                        if _ext_video_resolution_label == "360p"
+                        else "VIDEO_RESOLUTION_720P"
+                    )
+                ),
             }
         )
         _ext_r2_upload = _veo_extension_r2_upload_config(ext_payload, resolution_label=_ext_resolution_label) if image_mode else {}

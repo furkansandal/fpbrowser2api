@@ -3,6 +3,8 @@ runGeneratedTest(config) parameter contract:
 The JSON in the Test Config box is passed as config. Keep this list even when some fields are unused.
 - config.prompt: string - 文生视频的提示词
 - config.aspectRatio: string - 视频比例，"16:9" 横版 或 "9:16" 竖版，默认 "16:9"
+- config.modelKey: string - Flow videoModelKey (默认 "macaron_cookie_t2v_10s")
+- config.outputResolution: string - "VIDEO_RESOLUTION_720P" | "VIDEO_RESOLUTION_360P"
 */
 
 async function runGeneratedTest(config) {
@@ -30,8 +32,14 @@ async function runGeneratedTest(config) {
     };
   }
   
+  const modelKey = String(config.modelKey || "macaron_cookie_t2v_10s").trim() || "macaron_cookie_t2v_10s";
+  const outputResolution = String(config.outputResolution || "VIDEO_RESOLUTION_720P").trim();
+  const is360p = modelKey.endsWith("_360p") || /360P/i.test(outputResolution);
+  const outputSpec = is360p ? [4] : null;
+
   console.log("🚀 开始文生视频测试");
   console.log("  - 提示词:", prompt);
+  console.log("  - 模型Key:", modelKey);
   console.log("  - 视频比例:", aspectRatio, `(参数值: ${aspectRatioValue})`);
   
   // ============ 工具函数 ============
@@ -362,10 +370,13 @@ async function runGeneratedTest(config) {
             null,
             [[[prompt]]]
           ],
-          "abra_t2v_10s",
-          aspectRatioValue,  // ← 唯一改动：原来是固定的 2，现在是变量
+          modelKey,
+          aspectRatioValue,
           null,
-          [null, null, null, null, uuid1, uuid2]
+          [null, null, null, null, uuid1, uuid2],
+          null,
+          null,
+          outputSpec
         ]
       ],
       [
@@ -456,8 +467,9 @@ async function runGeneratedTest(config) {
     // 步骤3: 轮询任务状态 (rpcids: jwpduf & Zzl0ze fallback)
     console.log("⏳ 开始轮询任务状态...");
     
-    const maxPolls = 80;
-    const pollInterval = 5000;
+    const pollInterval = Math.max(1000, (Number(config.pollIntervalSeconds) || 5) * 1000);
+    const maxWaitSeconds = Math.max(60, Number(config.maxWaitSeconds) || 600);
+    const maxPolls = Math.max(12, Math.ceil((maxWaitSeconds * 1000) / pollInterval));
     let pollCount = 0;
     let taskStatus = null;
     let isComplete = false;
@@ -467,6 +479,7 @@ async function runGeneratedTest(config) {
       pollCount++;
       console.log(`🔄 轮询第 ${pollCount}/${maxPolls} 次...`);
       
+      // jwpduf 请求格式: [null, null, [[mediaUUID]]]
       const pollPayloadArray = [null, null, [[mediaUUID]]];
       const pollResponse = await sendBatchExecute("jwpduf", pollPayloadArray, params, projectId);
       const pollParsed = parseBatchExecuteResponse(pollResponse);
@@ -648,6 +661,8 @@ async function runGeneratedTest(config) {
       elapsedFormatted: `${Math.floor(elapsedMs / 1000)}秒`,
       input: { 
         prompt,
+        modelKey,
+        outputResolution,
         aspectRatio,
         aspectRatioValue
       },

@@ -3476,6 +3476,15 @@ async function runVideoWorkflowLegacy(tabId, p, at, runtime) {
   let reqItem;
   const aspectRatio = p.extension_video_aspect_ratio || "VIDEO_ASPECT_RATIO_LANDSCAPE";
   let modelKey = p.extension_model_key || "veo_3_1_t2v_fast";
+  // Flow 2026-08-28 起要求每个 request 都带 outputSpec.resolution：缺失时请求会被
+  // 接受，但生成阶段返回 MEDIA_GENERATION_STATUS_FAILED / INVALID_ARGUMENT。
+  // 1080p/4k 依旧按 720p 生成（之后单独走 upsample），所以这里只有 360p / 720p。
+  const outputSpec = {
+    resolution: String(p.extension_video_output_resolution || "").trim() || "VIDEO_RESOLUTION_720P"
+  };
+  const withOutputSpec = (item) => ({ outputSpec, ...item });
+  // 同上：textInput 统一用 structuredPrompt（旧的 { prompt } 形式已不被接受）。
+  const textInput = { structuredPrompt: { parts: [{ text: prompt }] } };
   let r2vVideoUpload = null;
 
   try {
@@ -3522,13 +3531,13 @@ async function runVideoWorkflowLegacy(tabId, p, at, runtime) {
     } else {
       submitUrl = URLS.videoR2V;
     }
-    reqItem = {
+    reqItem = withOutputSpec({
       aspectRatio, seed: randSeed(),
-      textInput: { structuredPrompt: { parts: [{ text: prompt }] } },
+      textInput,
       videoModelKey: modelKey,
       referenceImages: refs,
       metadata: { sceneId: crypto.randomUUID() }
-    };
+    });
     if (r2vVideoUpload) {
       reqItem.videoInput = {
         mediaId: r2vVideoUpload.mediaServerId,
@@ -3547,14 +3556,16 @@ async function runVideoWorkflowLegacy(tabId, p, at, runtime) {
     }
     if (ids[1]) {
       submitUrl = URLS.videoI2VStartEnd;
-      reqItem = { aspectRatio, seed: randSeed(), textInput: { prompt }, videoModelKey: modelKey, startImage: { mediaId: ids[0] }, endImage: { mediaId: ids[1] }, metadata: { sceneId: crypto.randomUUID() } };
+      reqItem = withOutputSpec({ aspectRatio, seed: randSeed(), textInput, videoModelKey: modelKey, startImage: { mediaId: ids[0] }, endImage: { mediaId: ids[1] }, metadata: { sceneId: crypto.randomUUID() } });
     } else {
       submitUrl = URLS.videoI2VStart;
+      // omni 的首尾帧键是 `omni_flash_i2v_{N}s_first_last`（不含 `_fl`），这里不会被误改；
+      // veo 系列的 `_fl` 键在只有首帧时降级为普通 i2v 键。
       modelKey = stripI2vFl(modelKey);
-      reqItem = { aspectRatio, seed: randSeed(), textInput: { prompt }, videoModelKey: modelKey, startImage: { mediaId: ids[0] }, metadata: { sceneId: crypto.randomUUID() } };
+      reqItem = withOutputSpec({ aspectRatio, seed: randSeed(), textInput, videoModelKey: modelKey, startImage: { mediaId: ids[0] }, metadata: { sceneId: crypto.randomUUID() } });
     }
   } else {
-    reqItem = { aspectRatio, seed: randSeed(), textInput: { prompt }, videoModelKey: modelKey, metadata: { sceneId: crypto.randomUUID() } };
+    reqItem = withOutputSpec({ aspectRatio, seed: randSeed(), textInput, videoModelKey: modelKey, metadata: { sceneId: crypto.randomUUID() } });
   }
 
   await runtime.progress(10, { stage: "submit_task", video_mode: mode });
@@ -3580,6 +3591,9 @@ async function runVideoWorkflowLegacy(tabId, p, at, runtime) {
         batchId: crypto.randomUUID(),
         audioFailurePreference: "BLOCK_SILENCED_VIDEOS"
       };
+      // Flow 已全面切到 v2 model config：t2v/i2v/start-end/r2v 的每个提交都要带
+      // useV2ModelConfig，否则模型键解析失败、生成阶段以 INVALID_ARGUMENT 结束。
+      // 例外：视频编辑（abra_edit，videoEdit 端点）沿用旧行为，不带该字段。
       const body = mode === "r2v"
         ? {
             mediaGenerationContext,
@@ -3587,7 +3601,7 @@ async function runVideoWorkflowLegacy(tabId, p, at, runtime) {
             requests: [reqItem],
             ...(r2vVideoUpload ? {} : { useV2ModelConfig: true })
           }
-        : { mediaGenerationContext, clientContext, requests: [reqItem] };
+        : { mediaGenerationContext, clientContext, requests: [reqItem], useV2ModelConfig: true };
       await runtime.progress(10, { stage: "submit_task", video_mode: mode, attempt: attempt + 1, max_attempts: maxVideoSubmitAttempts, timeout_ms: videoSubmitTimeoutMs, user_paygate_tier: userPaygateTier });
       const tx = await pageFetchJson(tabId, submitUrl, { method: "POST", headers: authHeaders(at), body, attempts: 1, timeoutMs: videoSubmitTimeoutMs });
       if (tx.status >= 400) throw new Error(`VEO video submit failed: ${compactErrorResponse(tx)}`);
@@ -3649,48 +3663,61 @@ async function runVideoWorkflowLegacy(tabId, p, at, runtime) {
 // New Flow browser-console implementation. The legacy REST implementation is
 // retained above for rollback only and is never selected by runVeoTask.
 async function runVideoWorkflow(tabId, p, at, runtime) {
-  const imageUrls = [
-    ...(Array.isArray(p.ingredients_urls) ? p.ingredients_urls : []),
-    ...(Array.isArray(p.i2v_urls) ? p.i2v_urls : [])
-  ]
-    .map(x => String(x || "").trim()).filter(Boolean);
+  const mode = String(p.video_mode || "t2v").toLowerCase();
+  const imageUrls = (
+    (mode === "i2v" || mode === "start_end")
+      ? (Array.isArray(p.i2v_urls) && p.i2v_urls.length ? p.i2v_urls : (Array.isArray(p.ingredients_urls) ? p.ingredients_urls : []))
+      : (Array.isArray(p.ingredients_urls) && p.ingredients_urls.length ? p.ingredients_urls : (Array.isArray(p.i2v_urls) ? p.i2v_urls : []))
+  ).map(x => String(x || "").trim()).filter(Boolean);
   const videoUrls = (Array.isArray(p.ingredients_video_urls) ? p.ingredients_video_urls :
     (p.ingredients_video_url ? [p.ingredients_video_url] : []))
     .map(x => String(x || "").trim()).filter(Boolean);
-  const mode = String(p.video_mode || "t2v").toLowerCase();
-
-  // Video + image editing is intentionally left as an explicit branch until
-  // the new console workflow for video inputs is available.
-  if (videoUrls.length) {
-    await runtime.progress(10, { stage: "video_image_branch_not_implemented", video_count: videoUrls.length, image_count: imageUrls.length });
-    throw new Error("VEO video+image generation is not implemented yet");
-  }
+  const audioRefs = (Array.isArray(p.ingredients_audio_refs) ? p.ingredients_audio_refs :
+    (Array.isArray(p.audio_urls) ? p.audio_urls : []))
+    .map(x => String(x || "").trim()).filter(Boolean);
 
   const aspect = String(p.extension_video_aspect_ratio || "VIDEO_ASPECT_RATIO_LANDSCAPE");
   const aspectRatio = /PORTRAIT|9:16|VERTICAL/i.test(aspect) ? "9:16" : "16:9";
   const prompt = String(p.prompt || "").trim();
   if (!prompt) throw new Error("VEO video prompt is empty");
   if (imageUrls.length > 9) throw new Error("VEO reference images support at most 9 images");
+  if (audioRefs.length > 5) throw new Error("VEO reference audios support at most 5 audio references");
+  if (videoUrls.length > 1) throw new Error("VEO reference video supports at most 1 video");
 
-  const useImages = imageUrls.length > 0 || mode === "r2v" || mode === "i2v";
-  const scriptName = useImages ? "image2video_injected.txt" : "text2video_injected.txt";
-  await runtime.progress(10, { stage: "load_injected_script", video_mode: useImages ? "r2v" : "t2v", image_count: imageUrls.length });
+  const useMultiScript = mode !== "t2v" || imageUrls.length > 0 || videoUrls.length > 0 || audioRefs.length > 0;
+  const scriptName = useMultiScript ? "image2video_injected.txt" : "text2video_injected.txt";
+  await runtime.progress(10, {
+    stage: "load_injected_script",
+    video_mode: mode,
+    image_count: imageUrls.length,
+    audio_count: audioRefs.length,
+    video_count: videoUrls.length,
+  });
   const scriptPath = await loadVeoInjectedVideoScript(tabId, scriptName);
-  const isFirstLast = (Array.isArray(p.i2v_urls) && p.i2v_urls.length >= 2) || mode === "start_end" || mode === "first_last";
-  const duration = Number(p.duration || p.duration_seconds || p.video_duration || 8);
   const config = {
     prompt,
     project_id: String(p.project_id || ""),
     aspectRatio,
-    referenceImageUrls: imageUrls.slice(0, 9),
-    duration: [4, 6, 8, 10].includes(duration) ? duration : 8,
     videoMode: mode,
-    isFirstLast,
-    modelKey: p.extension_model_key || "",
+    modelKey: String(p.extension_model_key || ""),
+    outputResolution: String(p.extension_video_output_resolution || "VIDEO_RESOLUTION_720P"),
+    referenceImageUrls: imageUrls.slice(0, 9),
+    referenceAudioRefs: audioRefs.slice(0, 5),
+    referenceVideoUrl: videoUrls[0] || "",
+    videoDurationSeconds: Number(p.ingredients_video_duration_seconds || p.video_reference_duration_seconds || 0) || 0,
+    startFrameIndex: Number(p.ingredients_video_start_frame_index || p.video_reference_start_frame_index || 0) || 0,
+    endFrameIndex: p.ingredients_video_end_frame_index != null ? Number(p.ingredients_video_end_frame_index) : null,
     maxWaitSeconds: Number(p.max_wait_seconds || p.timeout_seconds || 600),
     pollIntervalSeconds: Number(p.poll_interval_seconds || 5),
   };
-  await runtime.progress(15, { stage: "execute_injected_script", video_mode: useImages ? "r2v" : "t2v", image_count: imageUrls.length });
+  await runtime.progress(15, {
+    stage: "execute_injected_script",
+    video_mode: mode,
+    model_key: config.modelKey,
+    image_count: imageUrls.length,
+    audio_count: audioRefs.length,
+    video_count: videoUrls.length,
+  });
   const result = await runInjectedVeoVideo(tabId, scriptPath, config);
   if (!result.ok) {
     const rawSnippet = result.rawResponse ? ` | raw: ${String(result.rawResponse).substring(0, 300)}` : "";
@@ -3698,15 +3725,15 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   }
   const videoUrl = String(result.video_url || result.share_url || result.videoUrl || result.result?.videoUrl || "").trim();
   if (!videoUrl) throw new Error("VEO injected video generation returned no video URL");
-  await runtime.progress(100, { stage: "done", video_url: videoUrl, video_mode: useImages ? "r2v" : "t2v" });
+  await runtime.progress(100, { stage: "done", video_url: videoUrl, video_mode: mode });
   return {
     type: "veo_workflow_video",
-    message: useImages ? "VEO 多图生视频完成" : "VEO 文生视频完成",
+    message: `VEO video (${mode}) completed`,
     share_url: videoUrl,
     video_url: videoUrl,
     thumb_url: imageUrls[0] || "",
-    video_type: useImages ? "r2v" : "t2v",
-    model_key: p.extension_model_key || undefined,
+    video_type: mode,
+    model_key: p.extension_model_key || config.modelKey || undefined,
     aspect_ratio: p.extension_video_aspect_ratio || (aspectRatio === "9:16" ? "VIDEO_ASPECT_RATIO_PORTRAIT" : "VIDEO_ASPECT_RATIO_LANDSCAPE"),
     project_id: String(p.project_id || ""),
     generated_media_id: result.result?.mediaUUID || result.mediaUUID || undefined,

@@ -270,6 +270,20 @@ class Config:
         return str(self._config.get("extension_executor", {}).get("bridge_token", "") or "")
 
     @property
+    def extension_allow_loopback(self) -> bool:
+        """允许把 127.0.0.1/localhost 当作有效的 base_url。
+
+        指纹浏览器与 Python 后端在同一台机器时（独立服务器没有内网 IP 的情况），
+        走回环地址是最优解：Chromium 默认对 loopback 不走代理，可以绕开窗口
+        SOCKS 代理导致的 ERR_SOCKS_CONNECTION_FAILED。
+        """
+        import os
+        raw = os.getenv("FPB_EXTENSION_ALLOW_LOOPBACK", "")
+        if raw.strip():
+            return raw.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(self._config.get("extension_executor", {}).get("allow_loopback", False))
+
+    @property
     def extension_bridge_url(self) -> str:
         """浏览器插件连接 Python 后端的 WebSocket 地址。
 

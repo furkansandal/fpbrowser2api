@@ -1,4 +1,4 @@
-<#
+﻿<#
 fpbrowser2api Windows PowerShell service script.
 
 Usage:

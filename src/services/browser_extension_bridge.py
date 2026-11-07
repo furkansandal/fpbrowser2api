@@ -105,7 +105,7 @@ def get_default_extension_bridge_url(browser_base_url: Optional[str] = None) -> 
     3. 本机 ws://127.0.0.1:{server_port}/api/extension/ws。
     """
     raw = config.extension_bridge_url
-    if raw and not _is_loopback_url(raw):
+    if raw and (config.extension_allow_loopback or not _is_loopback_url(raw)):
         return raw
     derived = _bridge_url_from_browser_base(browser_base_url)
     if derived:

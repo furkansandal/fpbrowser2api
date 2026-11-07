@@ -16,7 +16,13 @@ log_to_file = false
 [extension_executor]
 # 是否全局默认使用浏览器插件执行器；false 时可在单个任务 payload 里传 executor="extension" 启用
 enabled = true
-base_url = "127.0.0.1:8000"
+# 必须用 localhost（不要用 127.0.0.1）：Roxy 的代理绕过列表按主机名匹配，
+# 实测窗口挂 SOCKS 代理时 localhost:8000 可直连，而 127.0.0.1:8000 仍会走代理
+# 并报 ERR_SOCKS_CONNECTION_FAILED。
+base_url = "localhost:8000"
+# 指纹浏览器(Roxy)与本服务在同一台机器时置为 true，允许 loopback 作为有效 base_url。
+# 浏览器在另一台机器上时改为 false，并把 base_url 填成对方可访问的 IP:端口。
+allow_loopback = true
 # 指纹浏览器插件连接 Python 后端的 WebSocket 地址为f"ws://{base_url}/api/extension/ws"
 # 插件配置中转页：Python 先打开f"http://{base_url}/"页面写入 fpb_* 与 redirect_url，插件连接 WS 后再跳转目标站点。
 # 可选鉴权 token；留空则不校验

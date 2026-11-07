@@ -116,7 +116,7 @@ def get_default_extension_launcher_url(browser_base_url: Optional[str] = None) -
     4. 本机 ``server_port``。
     """
     raw = config.extension_launcher_url
-    if raw and not _is_loopback_url(raw):
+    if raw and (config.extension_allow_loopback or not _is_loopback_url(raw)):
         return raw
 
     derived = _launcher_url_from_browser_base(browser_base_url)
