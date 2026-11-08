@@ -252,12 +252,15 @@ async function runGeneratedTest(config) {
     }
   }
 
-  let _recaptchaQueue = Promise.resolve();
-
   function getRecaptchaToken(action) {
     const run = async () => {
       if (!window.grecaptcha || !window.grecaptcha.enterprise) {
         throw new Error("grecaptcha.enterprise not found");
+      }
+      const minGapMs = 350;
+      const elapsed = Date.now() - (Number(window.__fp_last_recaptcha_ts) || 0);
+      if (elapsed < minGapMs) {
+        await new Promise(r => setTimeout(r, minGapMs - elapsed));
       }
       const sitekey = resolveSitekey();
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -265,16 +268,20 @@ async function runGeneratedTest(config) {
           await waitReady(2500);
           const widgetId = await ensureWidget(sitekey);
           const token = await executeWithAssignNeuter(widgetId, action);
+          window.__fp_last_recaptcha_ts = Date.now();
           if (token) return String(token);
         } catch (err) {
           console.warn(`[getRecaptchaToken] widget execute attempt ${attempt} failed:`, err);
         }
         await new Promise(r => setTimeout(r, 600));
       }
-      return await executeWithAssignNeuter(sitekey, action);
+      const fallbackToken = await executeWithAssignNeuter(sitekey, action);
+      window.__fp_last_recaptcha_ts = Date.now();
+      return fallbackToken;
     };
-    const next = _recaptchaQueue.then(run, run);
-    _recaptchaQueue = next.catch(() => {});
+    const prev = window.__fp_recaptcha_queue || Promise.resolve();
+    const next = prev.then(run, run);
+    window.__fp_recaptcha_queue = next.catch(() => {});
     return next;
   }
 
@@ -506,56 +513,58 @@ async function runGeneratedTest(config) {
   async function uploadImage(imageUrl, params, projectId, index) {
     console.log(`📤 上传第 ${index + 1} 张图片...`);
     const imageBase64 = await downloadAndConvertToJpeg(imageUrl);
-    const uploadRecaptchaToken = await getRecaptchaToken("IMAGE_GENERATION");
-    
-    const uuid1 = generateUUID();
-    const uuid2 = generateUUID();
-    
-    const uploadPayloadArray = [
-      [null, 22, null, null, null, projectId, null, null, null, null, [uploadRecaptchaToken, 1]],
-      imageBase64,
-      "image/jpeg",
-      1,
-      null,
-      null,
-      null,
-      null,
-      `image-${index + 1}.jpg`,
-      null,
-      uuid1,
-      uuid2
-    ];
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const uploadRecaptchaToken = await getRecaptchaToken("IMAGE_GENERATION");
+      const uuid1 = generateUUID();
+      const uuid2 = generateUUID();
 
-    const uploadResponse = await sendBatchExecute("maseQ", uploadPayloadArray, params, projectId);
-    const uploadParsed = parseBatchExecuteResponse(uploadResponse);
-    
-    if (!uploadParsed || uploadParsed.length === 0) {
-      throw new Error(`❌ 上传第 ${index + 1} 张图片失败：响应为空`);
-    }
-    
-    let mediaUUID = null;
-    
-    for (const item of uploadParsed) {
-      if (item && item[0] === "wrb.fr" && item[1] === "maseQ" && item[2]) {
-        try {
-          const data = JSON.parse(item[2]);
-          
-          if (data && data[0] && data[0][0]) {
-            mediaUUID = data[0][0];
-            console.log(`✅ 第 ${index + 1} 张图片上传成功，UUID:`, mediaUUID);
+      const uploadPayloadArray = [
+        [null, 22, null, null, null, projectId, null, null, null, null, [uploadRecaptchaToken, 1]],
+        imageBase64,
+        "image/jpeg",
+        1,
+        null,
+        null,
+        null,
+        null,
+        `image-${index + 1}.jpg`,
+        null,
+        uuid1,
+        uuid2
+      ];
+
+      const uploadResponse = await sendBatchExecute("maseQ", uploadPayloadArray, params, projectId);
+      const uploadParsed = parseBatchExecuteResponse(uploadResponse);
+
+      let mediaUUID = null;
+      if (uploadParsed && uploadParsed.length > 0) {
+        for (const item of uploadParsed) {
+          if (item && item[0] === "wrb.fr" && item[1] === "maseQ" && item[2]) {
+            try {
+              const data = JSON.parse(item[2]);
+              if (data && data[0] && data[0][0]) {
+                mediaUUID = data[0][0];
+                console.log(`✅ 第 ${index + 1} 张图片上传成功，UUID:`, mediaUUID);
+              }
+            } catch (e) {
+              console.error(`❌ 解析第 ${index + 1} 张图片UUID失败:`, e.message);
+            }
+            break;
           }
-        } catch (e) {
-          console.error(`❌ 解析第 ${index + 1} 张图片UUID失败:`, e.message);
         }
-        break;
+      }
+
+      if (mediaUUID) {
+        return mediaUUID;
+      }
+
+      if (attempt < 3) {
+        console.warn(`⚠️ 第 ${index + 1} 张图片上传未返回UUID (attempt ${attempt}/3)，等待重试...`);
+        await new Promise(r => setTimeout(r, 1500 * attempt));
       }
     }
-    
-    if (!mediaUUID) {
-      throw new Error(`❌ 上传第 ${index + 1} 张图片失败：无法提取媒体UUID`);
-    }
-    
-    return mediaUUID;
+
+    throw new Error(`❌ 上传第 ${index + 1} 张图片失败：无法提取媒体UUID`);
   }
 
   async function probeVideoDuration(blob) {
@@ -912,6 +921,14 @@ async function runGeneratedTest(config) {
       const fallbackModelKey = activeModelKey.replace("_relaxed", "");
       console.warn(`⚠️ 模型 ${activeModelKey} 返回 NOT_FOUND/code 5，自动降级重试: ${fallbackModelKey}`);
       activeModelKey = fallbackModelKey;
+      subResult = await submitCreateTask(activeModelKey);
+    }
+
+    for (let retry = 1; retry <= 2 && !subResult.mediaUUID; retry++) {
+      const combined = `${subResult.createResponse || ""} ${subResult.rpcErrorDetail || ""}`;
+      if (!/PUBLIC_ERROR_UNUSUAL_ACTIVITY|UNUSUAL_ACTIVITY/i.test(combined)) break;
+      console.warn(`⚠️ 创建任务遇到 PUBLIC_ERROR_UNUSUAL_ACTIVITY，等待 ${retry * 2500}ms 后刷新 reCAPTCHA 重试 (${retry}/2)...`);
+      await new Promise(r => setTimeout(r, retry * 2500));
       subResult = await submitCreateTask(activeModelKey);
     }
 

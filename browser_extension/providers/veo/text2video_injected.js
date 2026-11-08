@@ -219,12 +219,15 @@ async function runGeneratedTest(config) {
     }
   }
 
-  let _recaptchaQueue = Promise.resolve();
-
   function getRecaptchaToken(action) {
     const run = async () => {
       if (!window.grecaptcha || !window.grecaptcha.enterprise) {
         throw new Error("grecaptcha.enterprise not found");
+      }
+      const minGapMs = 350;
+      const elapsed = Date.now() - (Number(window.__fp_last_recaptcha_ts) || 0);
+      if (elapsed < minGapMs) {
+        await new Promise(r => setTimeout(r, minGapMs - elapsed));
       }
       const sitekey = resolveSitekey();
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -232,16 +235,20 @@ async function runGeneratedTest(config) {
           await waitReady(2500);
           const widgetId = await ensureWidget(sitekey);
           const token = await executeWithAssignNeuter(widgetId, action);
+          window.__fp_last_recaptcha_ts = Date.now();
           if (token) return String(token);
         } catch (err) {
           console.warn(`[getRecaptchaToken] widget execute attempt ${attempt} failed:`, err);
         }
         await new Promise(r => setTimeout(r, 600));
       }
-      return await executeWithAssignNeuter(sitekey, action);
+      const fallbackToken = await executeWithAssignNeuter(sitekey, action);
+      window.__fp_last_recaptcha_ts = Date.now();
+      return fallbackToken;
     };
-    const next = _recaptchaQueue.then(run, run);
-    _recaptchaQueue = next.catch(() => {});
+    const prev = window.__fp_recaptcha_queue || Promise.resolve();
+    const next = prev.then(run, run);
+    window.__fp_recaptcha_queue = next.catch(() => {});
     return next;
   }
 
@@ -492,6 +499,14 @@ async function runGeneratedTest(config) {
       const fallbackModelKey = activeModelKey.replace("_relaxed", "");
       console.warn(`⚠️ 模型 ${activeModelKey} 返回 NOT_FOUND/code 5，自动降级重试: ${fallbackModelKey}`);
       activeModelKey = fallbackModelKey;
+      subResult = await submitCreateTask(activeModelKey);
+    }
+
+    for (let retry = 1; retry <= 2 && !subResult.mediaUUID; retry++) {
+      const combined = `${subResult.createResponse || ""} ${subResult.rpcErrorDetail || ""}`;
+      if (!/PUBLIC_ERROR_UNUSUAL_ACTIVITY|UNUSUAL_ACTIVITY/i.test(combined)) break;
+      console.warn(`⚠️ 创建任务遇到 PUBLIC_ERROR_UNUSUAL_ACTIVITY，等待 ${retry * 2500}ms 后刷新 reCAPTCHA 重试 (${retry}/2)...`);
+      await new Promise(r => setTimeout(r, retry * 2500));
       subResult = await submitCreateTask(activeModelKey);
     }
 
