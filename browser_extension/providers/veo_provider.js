@@ -3694,6 +3694,9 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
     video_count: videoUrls.length,
   });
   const scriptPath = await loadVeoInjectedVideoScript(tabId, scriptName);
+  const wantUpsample = Boolean(p.extension_video_want_upsample);
+  const upsampleResolution = String(p.extension_video_upsample_resolution || "").trim();
+  const upsamplerKey = String(p.extension_video_upsampler_key || "").trim();
   const config = {
     prompt,
     project_id: String(p.project_id || ""),
@@ -3701,6 +3704,9 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
     videoMode: mode,
     modelKey: String(p.extension_model_key || ""),
     outputResolution: String(p.extension_video_output_resolution || "VIDEO_RESOLUTION_720P"),
+    wantUpsample,
+    upsampleResolution,
+    upsamplerKey,
     referenceImageUrls: imageUrls.slice(0, 9),
     referenceAudioRefs: audioRefs.slice(0, 5),
     referenceVideoUrl: videoUrls[0] || "",
@@ -3714,6 +3720,8 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
     stage: "execute_injected_script",
     video_mode: mode,
     model_key: config.modelKey,
+    want_upsample: wantUpsample,
+    upsample_resolution: upsampleResolution || undefined,
     image_count: imageUrls.length,
     audio_count: audioRefs.length,
     video_count: videoUrls.length,
@@ -3725,19 +3733,29 @@ async function runVideoWorkflow(tabId, p, at, runtime) {
   }
   const videoUrl = String(result.video_url || result.share_url || result.videoUrl || result.result?.videoUrl || "").trim();
   if (!videoUrl) throw new Error("VEO injected video generation returned no video URL");
-  await runtime.progress(100, { stage: "done", video_url: videoUrl, video_mode: mode });
+  const originVideoUrl = String(result.origin_video_url || result.originVideoUrl || result.result?.originVideoUrl || "").trim();
+  const upsampleOk = result.upsample_ok !== undefined ? result.upsample_ok : (result.upsampleOk !== undefined ? result.upsampleOk : result.result?.upsampleOk);
+  const resolvedUpsampleResolution = String(result.upsample_resolution || result.upsampleResolution || result.result?.upsampleResolution || upsampleResolution || "").trim();
+  const upsampleMediaId = String(result.upsample_media_id || result.upsampleMediaUUID || result.result?.upsampleMediaUUID || result.result?.upsampleMediaId || "").trim();
+  const upsampleError = String(result.upsample_error || result.upsampleError || result.result?.upsampleError || "").trim();
+  await runtime.progress(100, { stage: "done", video_url: videoUrl, video_mode: mode, upsample_ok: upsampleOk });
   return {
     type: "veo_workflow_video",
     message: `VEO video (${mode}) completed`,
     share_url: videoUrl,
     video_url: videoUrl,
+    origin_video_url: originVideoUrl || undefined,
     thumb_url: imageUrls[0] || "",
     video_type: mode,
-    model_key: p.extension_model_key || config.modelKey || undefined,
+    model_key: result.result?.modelKey || p.extension_model_key || config.modelKey || undefined,
     aspect_ratio: p.extension_video_aspect_ratio || (aspectRatio === "9:16" ? "VIDEO_ASPECT_RATIO_PORTRAIT" : "VIDEO_ASPECT_RATIO_LANDSCAPE"),
     project_id: String(p.project_id || ""),
     generated_media_id: result.result?.mediaUUID || result.mediaUUID || undefined,
     generated_workflow_id: result.result?.workflowId || result.workflow_id || undefined,
+    upsample_ok: upsampleOk !== undefined ? Boolean(upsampleOk) : undefined,
+    upsample_resolution: resolvedUpsampleResolution || undefined,
+    upsample_media_id: upsampleMediaId || undefined,
+    upsample_error: upsampleError || undefined,
     workflow_archived: false,
     injected_result: result,
   };

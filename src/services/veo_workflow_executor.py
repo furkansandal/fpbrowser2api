@@ -1060,24 +1060,27 @@ async def _veo_materialize_image_urls_for_extension(
     payload: Dict[str, Any],
     progress_cb: ProgressCB,
     log_file: Optional[Path],
+    semaphore: Optional[asyncio.Semaphore] = None,
 ) -> List[str]:
     if not urls or not _veo_extension_local_image_cache_enabled(payload):
         return list(urls or [])
     srcs = [str(u or "").strip() for u in urls if str(u or "").strip()]
     if not srcs:
         return []
-    tasks = [
-        _veo_materialize_image_for_extension(
-            u,
-            kind=kind,
-            index=i,
-            total=len(srcs),
-            progress_cb=progress_cb,
-            log_file=log_file,
-        )
-        for i, u in enumerate(srcs)
-    ]
-    return list(await asyncio.gather(*tasks))
+    sem = semaphore or asyncio.Semaphore(4)
+
+    async def _one(i: int, u: str) -> str:
+        async with sem:
+            return await _veo_materialize_image_for_extension(
+                u,
+                kind=kind,
+                index=i,
+                total=len(srcs),
+                progress_cb=progress_cb,
+                log_file=log_file,
+            )
+
+    return list(await asyncio.gather(*(_one(i, u) for i, u in enumerate(srcs))))
 
 
 async def _veo_materialize_video_for_extension(
@@ -6116,19 +6119,30 @@ def _veo_resolve_video_output_resolution(
 
     默认 720p，不放大。360p 亦不放大。1080p / 4k 时做视频放大。
     """
+    payload = payload or {}
     raw = payload.get("resolution") or payload.get("video_resolution")
-    if raw is None or str(raw).strip() == "":
+    s = str(raw or "").strip().lower().replace(" ", "")
+    if not s and _veo_truthy_payload_flag(payload.get("upscale_1080p")):
+        s = "1080p"
+    if not s:
         return ("720p", False, None, None)
-    s = str(raw).strip().lower().replace(" ", "")
+    # 360p 是 omni_flash 的原生模型键（`*_360p`），直接生成，不做放大。
     if s in ("360p", "360", "sd"):
         return ("360p", False, None, None)
-    if s in ("4k", "2160", "uhd", "4096", "3840"):
-        return ("4K", True, "VIDEO_RESOLUTION_4K", "veo_3_1_upsampler_4k")
-    if s in ("1080p", "1080", "fhd"):
-        return ("1080p", True, "VIDEO_RESOLUTION_1080P", "veo_3_1_upsampler_1080p")
-    # 360p 是 omni_flash 的原生模型键（`*_360p`），直接生成，不做放大。
-    if s in ("360p", "360"):
-        return ("360p", False, None, None)
+    if s in ("4k", "2160", "2160p", "uhd", "4096", "3840"):
+        return (
+            "4K",
+            True,
+            "VIDEO_RESOLUTION_4K",
+            veo_model_registry.UPSAMPLER_KEYS.get(veo_model_registry.RESOLUTION_4K, "veo_3_1_upsampler_4k"),
+        )
+    if s in ("1080p", "1080", "fhd") or (s == "720p" and _veo_truthy_payload_flag(payload.get("upscale_1080p"))):
+        return (
+            "1080p",
+            True,
+            "VIDEO_RESOLUTION_1080P",
+            veo_model_registry.UPSAMPLER_KEYS.get(veo_model_registry.RESOLUTION_1080P, "veo_3_1_upsampler_1080p"),
+        )
     return ("720p", False, None, None)
 
 # ---------------------------------------------------------------------------
@@ -6518,33 +6532,49 @@ async def veo_workflow(
             i2v_urls = _masked_image_refs[_ingredients_count:]
         elif not _face_mosaic_enabled and (ingredients_urls or i2v_urls or ingredients_video_urls):
             append_log(log_file, "[veo][reference-mosaic] skipped by config")
-        if _veo_extension_local_image_cache_enabled(payload):
-            if ingredients_urls:
-                ingredients_urls = await _veo_materialize_image_urls_for_extension(
-                    ingredients_urls,
-                    kind="ingredients",
-                    payload=payload,
-                    progress_cb=progress_cb,
-                    log_file=log_file,
-                )
-            if i2v_urls:
-                i2v_urls = await _veo_materialize_image_urls_for_extension(
-                    i2v_urls,
-                    kind="i2v",
-                    payload=payload,
-                    progress_cb=progress_cb,
-                    log_file=log_file,
-                )
-            if _ext_i2i_urls:
-                _ext_i2i_urls = await _veo_materialize_image_urls_for_extension(
-                    _ext_i2i_urls,
-                    kind="image_reference",
-                    payload=payload,
-                    progress_cb=progress_cb,
-                    log_file=log_file,
-                )
-        _ext_video_reference_meta: Dict[str, Any] = {}
-        if ingredients_video_urls:
+        _localize_sem = asyncio.Semaphore(4)
+        _cache_enabled = _veo_extension_local_image_cache_enabled(payload)
+
+        async def _loc_ingredients_images() -> List[str]:
+            if not _cache_enabled or not ingredients_urls:
+                return list(ingredients_urls)
+            return await _veo_materialize_image_urls_for_extension(
+                ingredients_urls,
+                kind="ingredients",
+                payload=payload,
+                progress_cb=progress_cb,
+                log_file=log_file,
+                semaphore=_localize_sem,
+            )
+
+        async def _loc_i2v_images() -> List[str]:
+            if not _cache_enabled or not i2v_urls:
+                return list(i2v_urls)
+            return await _veo_materialize_image_urls_for_extension(
+                i2v_urls,
+                kind="i2v",
+                payload=payload,
+                progress_cb=progress_cb,
+                log_file=log_file,
+                semaphore=_localize_sem,
+            )
+
+        async def _loc_i2i_images() -> List[str]:
+            if not _cache_enabled or not _ext_i2i_urls:
+                return list(_ext_i2i_urls)
+            return await _veo_materialize_image_urls_for_extension(
+                _ext_i2i_urls,
+                kind="image_reference",
+                payload=payload,
+                progress_cb=progress_cb,
+                log_file=log_file,
+                semaphore=_localize_sem,
+            )
+
+        async def _loc_video_reference() -> Tuple[List[str], Dict[str, Any]]:
+            nonlocal _masked_face_reference_count
+            if not ingredients_video_urls:
+                return ([], {})
             source_video_url = str(ingredients_video_urls[0] or "").strip()
             video_url_for_extension = source_video_url
             if _face_mosaic_enabled:
@@ -6556,23 +6586,22 @@ async def veo_workflow(
                     kind="video",
                 )
                 _masked_face_reference_count += _video_faces
-            localized_video_url = await _veo_materialize_video_for_extension(
-                video_url_for_extension,
-                kind="ingredients_video",
-                progress_cb=progress_cb,
-                log_file=log_file,
-            )
-            if _veo_extension_local_image_cache_enabled(payload):
-                ingredients_video_urls = [localized_video_url]
-            else:
-                ingredients_video_urls = [video_url_for_extension]
+            async with _localize_sem:
+                localized_video_url = await _veo_materialize_video_for_extension(
+                    video_url_for_extension,
+                    kind="ingredients_video",
+                    progress_cb=progress_cb,
+                    log_file=log_file,
+                )
+            resolved_video_urls = [localized_video_url] if _cache_enabled else [video_url_for_extension]
+            video_meta: Dict[str, Any] = {}
             _video_ref_url = str(localized_video_url or "").strip()
             _video_ref_path = _veo_local_asset_path_from_url(_video_ref_url)
             if _video_ref_path:
-                _ext_video_reference_meta = await _veo_probe_local_video_metadata(_video_ref_path)
-                if _ext_video_reference_meta:
+                video_meta = await _veo_probe_local_video_metadata(_video_ref_path)
+                if video_meta:
                     _veo_assert_reference_video_duration(
-                        _ext_video_reference_meta,
+                        video_meta,
                         source=_video_ref_url,
                         max_seconds=15.0 if want_edit else 30.0,
                     )
@@ -6581,10 +6610,10 @@ async def veo_workflow(
                             3,
                             {
                                 "stage": "reference_video_metadata",
-                                "duration_seconds": _ext_video_reference_meta.get("duration_seconds"),
-                                "fps": _ext_video_reference_meta.get("fps"),
-                                "frame_count": _ext_video_reference_meta.get("frame_count"),
-                                "end_frame_index": _ext_video_reference_meta.get("end_frame_index"),
+                                "duration_seconds": video_meta.get("duration_seconds"),
+                                "fps": video_meta.get("fps"),
+                                "frame_count": video_meta.get("frame_count"),
+                                "end_frame_index": video_meta.get("end_frame_index"),
                             },
                         )
                     except Exception:
@@ -6592,11 +6621,24 @@ async def veo_workflow(
                     append_log(
                         log_file,
                         "[veo][extension][video-cache] metadata "
-                        f"duration={_ext_video_reference_meta.get('duration_seconds')} "
-                        f"fps={_ext_video_reference_meta.get('fps')} "
-                        f"frames={_ext_video_reference_meta.get('frame_count')} "
-                        f"end_frame_index={_ext_video_reference_meta.get('end_frame_index')}",
+                        f"duration={video_meta.get('duration_seconds')} "
+                        f"fps={video_meta.get('fps')} "
+                        f"frames={video_meta.get('frame_count')} "
+                        f"end_frame_index={video_meta.get('end_frame_index')}",
                     )
+            return (resolved_video_urls, video_meta)
+
+        (
+            ingredients_urls,
+            i2v_urls,
+            _ext_i2i_urls,
+            (ingredients_video_urls, _ext_video_reference_meta),
+        ) = await asyncio.gather(
+            _loc_ingredients_images(),
+            _loc_i2v_images(),
+            _loc_i2i_images(),
+            _loc_video_reference(),
+        )
         ext_payload = dict(payload)
         if not image_mode and _masked_face_reference_count > 0:
             ext_payload["prompt"] = f"{prompt}\n注意：生成视频中的人物脸部不允许有马赛克，必须还原自然人物面部。"
@@ -6781,6 +6823,19 @@ async def veo_workflow(
             ):
                 _ext_result = dict(_ext_result)
                 _ext_result["thumb_url"] = _public_thumb
+            if _ext_video_want_upsample:
+                _ext_result = dict(_ext_result)
+                _ext_result.setdefault("resolution", _ext_video_resolution_label)
+                _upsample_ok = _ext_result.get("upsample_ok")
+                _upsample_err = _ext_result.get("upsample_error")
+                _origin_vid = _ext_result.get("origin_video_url")
+                append_log(
+                    log_file,
+                    f"[veo][extension] video upsample result ok={_upsample_ok!r} "
+                    f"target={_ext_video_upsample_target!r} "
+                    f"origin_video_url={safe_trim(str(_origin_vid or ''), 200)!r} "
+                    f"error={safe_trim(str(_upsample_err or ''), 200)!r}",
+                )
         if isinstance(_ext_result, dict) and image_mode and _ext_want_external_4k:
             _ext_result = await _veo_external_upscale_2k_to_4k(
                 _ext_result,

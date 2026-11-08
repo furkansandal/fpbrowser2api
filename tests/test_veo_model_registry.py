@@ -189,14 +189,36 @@ class TestRegistryFullCoverage(unittest.TestCase):
         self.assertEqual(reg.API_MODEL_TO_FAMILY["veo-3-1-fast"], "veo_fast")
         self.assertEqual(reg.API_MODEL_TO_FAMILY["veo-3-1-lite"], "veo_lite")
         self.assertEqual(reg.API_MODEL_TO_FAMILY["veo-3-1-lite-low"], "veo_lite_low")
-        self.assertEqual(reg.API_MODEL_TO_FAMILY["veo-omni-flash"], "omni_flash")
-        self.assertEqual(reg.API_MODEL_TO_FAMILY["veo-omni-1-1-flash"], "omni_flash")
-        self.assertEqual(reg.API_MODEL_TO_FAMILY["veo-omni-flash-video-edit"], "omni_flash")
-        self.assertEqual(reg.API_MODEL_TO_FAMILY["veo-omni-1-2-flash"], "omni_1_2_flash")
-        self.assertEqual(reg.API_MODEL_TO_FAMILY["veo-omni-flash-1-2"], "omni_1_2_flash")
-        self.assertEqual(reg.API_MODEL_TO_FAMILY["veo-omni-1-2-flash-video-edit"], "omni_1_2_flash")
-        self.assertEqual(reg.API_MODEL_TO_FAMILY["veo-omni-1-2-flash-video-extend"], "omni_1_2_flash")
-        self.assertEqual(reg.API_MODEL_TO_FAMILY["veo-omni-flash-video-extend"], "omni_1_2_flash")
+        for alias in (
+            "veo-omni-flash",
+            "veo-omni-1-1-flash",
+            "veo-omni-1.1-flash",
+            "veo-omni-flash-1-1",
+            "veo-omni-flash-1.1",
+            "omni-1-1-flash",
+            "omni-1.1-flash",
+            "veo-omni-flash-video-edit",
+            "veo-omni-1-1-flash-video-edit",
+            "veo-omni-1.1-flash-video-edit",
+            "omni-1.1-flash-video-edit",
+        ):
+            self.assertEqual(reg.API_MODEL_TO_FAMILY[alias], "omni_flash", alias)
+        for alias in (
+            "veo-omni-1-2-flash",
+            "veo-omni-1.2-flash",
+            "veo-omni-flash-1-2",
+            "veo-omni-flash-1.2",
+            "omni-1-2-flash",
+            "omni-1.2-flash",
+            "veo-omni-1-2-flash-video-edit",
+            "veo-omni-1.2-flash-video-edit",
+            "omni-1.2-flash-video-edit",
+            "veo-omni-1-2-flash-video-extend",
+            "veo-omni-1.2-flash-video-extend",
+            "omni-1.2-flash-video-extend",
+            "veo-omni-flash-video-extend",
+        ):
+            self.assertEqual(reg.API_MODEL_TO_FAMILY[alias], "omni_1_2_flash", alias)
 
 
 class TestRegistryUnsupported(unittest.TestCase):
@@ -425,6 +447,44 @@ class TestApiNormalizeVideoPayload(unittest.TestCase):
         self.assertEqual(payload1["duration"], 10)
         _t2, payload2 = _NORMALIZE({"model": "veo-omni-1-2-flash", "prompt": "x"})
         self.assertEqual(payload2["duration"], 10)
+
+    def test_omni_dot_aliases_and_1080p_variants(self):
+        # Omni 1.1 dot alias
+        _t, p11 = _NORMALIZE({"model": "omni-1.1-flash", "prompt": "x", "duration": 6})
+        self.assertEqual(p11["veo_family"], "omni_flash")
+        self.assertEqual(p11["duration"], 6)
+        self.assertEqual(p11["resolution"], "720p")
+
+        # Omni 1.2 dot alias + 13s duration
+        _t, p12 = _NORMALIZE({"model": "omni-1.2-flash", "prompt": "x", "duration": 13})
+        self.assertEqual(p12["veo_family"], "omni_1_2_flash")
+        self.assertEqual(p12["duration"], 13)
+        self.assertEqual(p12["resolution"], "720p")
+
+        # -1080p suffix sets upscale_1080p=True and defaults resolution="1080p"
+        _t, p1080 = _NORMALIZE({"model": "veo-omni-1.2-flash-1080p", "prompt": "x", "duration": 9})
+        self.assertEqual(p1080["veo_family"], "omni_1_2_flash")
+        self.assertTrue(p1080.get("upscale_1080p"))
+        self.assertEqual(p1080["resolution"], "1080p")
+
+        _t, p11_1080 = _NORMALIZE({"model": "omni-1.1-flash-1080p", "prompt": "x", "duration": 8})
+        self.assertEqual(p11_1080["veo_family"], "omni_flash")
+        self.assertTrue(p11_1080.get("upscale_1080p"))
+        self.assertEqual(p11_1080["resolution"], "1080p")
+
+        _t, pedit_1080 = _NORMALIZE(
+            {"model": "veo-omni-1.2-flash-video-edit-1080p", "prompt": "edit", "video_url": "https://example.com/in.mp4"}
+        )
+        self.assertEqual(pedit_1080["veo_family"], "omni_1_2_flash")
+        self.assertEqual(pedit_1080["video_mode"], "edit")
+        self.assertEqual(pedit_1080["resolution"], "1080p")
+
+        _t, pext_1080 = _NORMALIZE(
+            {"model": "veo-omni-1.2-flash-video-extend-1080p", "prompt": "extend", "video_url": "https://example.com/in.mp4"}
+        )
+        self.assertEqual(pext_1080["veo_family"], "omni_1_2_flash")
+        self.assertEqual(pext_1080["video_mode"], "extend")
+        self.assertEqual(pext_1080["resolution"], "1080p")
 
 
 class TestNative360p(unittest.TestCase):
@@ -658,6 +718,72 @@ class TestVeoWorkflowExecutorModes(unittest.TestCase):
         # 8. Video URL collection (video_url & extend_video_url)
         vids = _veo_collect_ingredients_video_urls({"extend_video_url": "https://example.com/ext.mp4"})
         self.assertEqual(vids, ["https://example.com/ext.mp4"])
+
+    def test_resolve_video_output_resolution_and_upsampler_keys(self):
+        from src.services.veo_workflow_executor import _veo_resolve_video_output_resolution
+
+        self.assertEqual(
+            _veo_resolve_video_output_resolution({"resolution": "360p"}),
+            ("360p", False, None, None),
+        )
+        self.assertEqual(
+            _veo_resolve_video_output_resolution({"resolution": "720p"}),
+            ("720p", False, None, None),
+        )
+        self.assertEqual(
+            _veo_resolve_video_output_resolution({"resolution": "1080p"}),
+            ("1080p", True, "VIDEO_RESOLUTION_1080P", "veo_3_1_upsampler_1080p"),
+        )
+        self.assertEqual(
+            _veo_resolve_video_output_resolution({"resolution": "4k"}),
+            ("4K", True, "VIDEO_RESOLUTION_4K", "veo_3_1_upsampler_4k"),
+        )
+        self.assertEqual(
+            _veo_resolve_video_output_resolution({"upscale_1080p": True}),
+            ("1080p", True, "VIDEO_RESOLUTION_1080P", "veo_3_1_upsampler_1080p"),
+        )
+        self.assertEqual(
+            _veo_resolve_video_output_resolution({"resolution": "720p", "upscale_1080p": True}),
+            ("1080p", True, "VIDEO_RESOLUTION_1080P", "veo_3_1_upsampler_1080p"),
+        )
+
+    def test_parallel_image_materialization_with_semaphore(self):
+        import asyncio
+        from unittest.mock import patch
+        from src.services import veo_workflow_executor as vwe
+
+        active = 0
+        max_active = 0
+
+        async def _fake_materialize_one(u, *, kind, index, total, progress_cb, log_file):
+            nonlocal active, max_active
+            active += 1
+            if active > max_active:
+                max_active = active
+            await asyncio.sleep(0.01)
+            active -= 1
+            return f"http://127.0.0.1:8000/assets/veo_image_cache/{index}.jpg"
+
+        async def _run():
+            sem = asyncio.Semaphore(2)
+            with patch.object(vwe, "_veo_extension_local_image_cache_enabled", return_value=True), patch.object(
+                vwe, "_veo_materialize_image_for_extension", side_effect=_fake_materialize_one
+            ):
+                urls = [f"https://example.com/{i}.jpg" for i in range(6)]
+                out = await vwe._veo_materialize_image_urls_for_extension(
+                    urls,
+                    kind="ingredients",
+                    payload={},
+                    progress_cb=vwe._noop_progress_cb,
+                    log_file=None,
+                    semaphore=sem,
+                )
+                return out
+
+        res = asyncio.run(_run())
+        self.assertEqual(len(res), 6)
+        self.assertLessEqual(max_active, 2)
+        self.assertGreaterEqual(max_active, 2)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,9 @@ The JSON in the Test Config box is passed as config. Keep this list even when so
 - config.videoMode: string - "i2v" | "start_end" | "r2v" | "edit" | "extend"
 - config.modelKey: string - Flow videoModelKey (e.g. "macaron_cookie_r2v_10s")
 - config.outputResolution: string - "VIDEO_RESOLUTION_720P" | "VIDEO_RESOLUTION_360P"
+- config.wantUpsample: boolean - 是否执行 1080p / 4K 放大
+- config.upsampleResolution: string - "VIDEO_RESOLUTION_1080P" | "VIDEO_RESOLUTION_4K"
+- config.upsamplerKey: string - "veo_3_1_upsampler_1080p" | "veo_3_1_upsampler_4k"
 - config.referenceImageUrls: array - 参考图片URL数组（0-9张）
 - config.referenceAudioRefs: array - 参考音频/音色数组（0-5个，如 "voices/puck"）
 - config.referenceVideoUrl: string - 参考视频URL（edit / extend 模式）
@@ -249,23 +252,30 @@ async function runGeneratedTest(config) {
     }
   }
 
-  async function getRecaptchaToken(action) {
-    if (!window.grecaptcha || !window.grecaptcha.enterprise) {
-      throw new Error("grecaptcha.enterprise not found");
-    }
-    const sitekey = resolveSitekey();
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        await waitReady(2500);
-        const widgetId = await ensureWidget(sitekey);
-        const token = await executeWithAssignNeuter(widgetId, action);
-        if (token) return String(token);
-      } catch (err) {
-        console.warn(`[getRecaptchaToken] widget execute attempt ${attempt} failed:`, err);
+  let _recaptchaQueue = Promise.resolve();
+
+  function getRecaptchaToken(action) {
+    const run = async () => {
+      if (!window.grecaptcha || !window.grecaptcha.enterprise) {
+        throw new Error("grecaptcha.enterprise not found");
       }
-      await new Promise(r => setTimeout(r, 600));
-    }
-    return await executeWithAssignNeuter(sitekey, action);
+      const sitekey = resolveSitekey();
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          await waitReady(2500);
+          const widgetId = await ensureWidget(sitekey);
+          const token = await executeWithAssignNeuter(widgetId, action);
+          if (token) return String(token);
+        } catch (err) {
+          console.warn(`[getRecaptchaToken] widget execute attempt ${attempt} failed:`, err);
+        }
+        await new Promise(r => setTimeout(r, 600));
+      }
+      return await executeWithAssignNeuter(sitekey, action);
+    };
+    const next = _recaptchaQueue.then(run, run);
+    _recaptchaQueue = next.catch(() => {});
+    return next;
   }
 
   function buildBatchExecuteUrl(rpcids, params, projectId) {
@@ -365,6 +375,63 @@ async function runGeneratedTest(config) {
       videoUrl: match[0].replace(/[),]+$/, ""),
       decodedResponse: decoded
     };
+  }
+
+  function isNotFoundOrCode5(responseText, errorDetail) {
+    const combined = `${String(responseText || "")} ${String(errorDetail || "")}`;
+    return /NOT_FOUND|not found|code\s*[=:]\s*5|\[\s*"er"\s*,[^\]]*,\s*5\b|\[\s*5\s*\]/i.test(combined);
+  }
+
+  function extractMediaUUIDFromRpcResponse(parsedLines, targetRpcId, excludeUUIDs = []) {
+    let mediaUUID = null;
+    let foundRpcItem = false;
+    let rpcErrorDetail = "";
+    const excludeSet = new Set(
+      (excludeUUIDs || []).filter(Boolean).map(x => String(x).toLowerCase())
+    );
+
+    if (Array.isArray(parsedLines)) {
+      for (const item of parsedLines) {
+        if (item && item[0] === "wrb.fr" && item[1] === targetRpcId) {
+          foundRpcItem = true;
+          if (item[2]) {
+            const responseStr = String(item[2]);
+            try {
+              const parsedData = JSON.parse(responseStr);
+              if (Array.isArray(parsedData)) {
+                if (typeof parsedData[0] === "string" && parsedData[0].length >= 32 && !excludeSet.has(parsedData[0].toLowerCase())) {
+                  mediaUUID = parsedData[0];
+                } else if (Array.isArray(parsedData[0]) && typeof parsedData[0][0] === "string" && parsedData[0][0].length >= 32 && !excludeSet.has(parsedData[0][0].toLowerCase())) {
+                  mediaUUID = parsedData[0][0];
+                }
+              }
+            } catch (_) {}
+
+            if (!mediaUUID) {
+              const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+              const rawMatches = responseStr.match(uuidPattern) || [];
+              const filteredUUIDs = rawMatches.filter(u => !excludeSet.has(u.toLowerCase()));
+              if (rawMatches.length >= 2 && !excludeSet.has(rawMatches[1].toLowerCase())) {
+                mediaUUID = rawMatches[1];
+                console.log(`✅ 成功提取视频媒体UUID (${targetRpcId} allUUIDs[1]):`, mediaUUID);
+              } else if (filteredUUIDs.length >= 1) {
+                mediaUUID = filteredUUIDs[0];
+                console.log(`✅ 成功提取视频媒体UUID (${targetRpcId} filtered[0]):`, mediaUUID);
+              }
+            }
+            if (mediaUUID) {
+              console.log(`✅ 成功提取视频媒体UUID (${targetRpcId}):`, mediaUUID);
+            } else {
+              rpcErrorDetail = responseStr.substring(0, 300);
+            }
+          } else {
+            rpcErrorDetail = "item[2] is empty, item: " + JSON.stringify(item).substring(0, 300);
+          }
+          break;
+        }
+      }
+    }
+    return { mediaUUID, foundRpcItem, rpcErrorDetail };
   }
 
   async function downloadAndConvertToJpeg(imageUrl) {
@@ -635,39 +702,36 @@ async function runGeneratedTest(config) {
     console.log("✅ 参数准备完成");
     console.log("  - 项目ID:", projectId);
     
-    // 步骤1: 批量上传参考图片
-    const imageUUIDs = [];
-    if (referenceImageUrls.length > 0) {
-      console.log(`📤 开始批量上传 ${referenceImageUrls.length} 张参考图片...`);
-      for (let i = 0; i < referenceImageUrls.length; i++) {
-        const imageUrl = String(referenceImageUrls[i]).trim();
-        if (!imageUrl) {
-          throw new Error(`第 ${i + 1} 张图片URL为空`);
+    // 步骤1 & 1b: 并发批量上传参考图片 (最大并发 3，保持原始索引顺序) 与参考视频 (Promise.all)
+    const imageUUIDs = new Array(referenceImageUrls.length);
+    const uploadImagesTask = (async () => {
+      if (referenceImageUrls.length === 0) return;
+      console.log(`📤 开始并发上传 ${referenceImageUrls.length} 张参考图片 (最大并发: 3)...`);
+      const concurrency = Math.min(3, referenceImageUrls.length);
+      let nextIdx = 0;
+      const workers = Array.from({ length: concurrency }, async () => {
+        while (true) {
+          const i = nextIdx++;
+          if (i >= referenceImageUrls.length) break;
+          const imageUrl = String(referenceImageUrls[i]).trim();
+          if (!imageUrl) {
+            throw new Error(`第 ${i + 1} 张图片URL为空`);
+          }
+          const uuid = await uploadImage(imageUrl, params, projectId, i);
+          imageUUIDs[i] = uuid;
         }
-        const uuid = await uploadImage(imageUrl, params, projectId, i);
-        imageUUIDs.push(uuid);
-        if (i < referenceImageUrls.length - 1) {
-          await new Promise(r => setTimeout(r, 400));
-        }
-      }
+      });
+      await Promise.all(workers);
       console.log("✅ 所有图片上传完成！", imageUUIDs);
-    }
+    })();
 
-    // 步骤1b: 上传参考视频（edit / extend 模式）
-    let uploadedVideo = null;
-    if ((videoMode === "edit" || videoMode === "extend") && referenceVideoUrl) {
-      uploadedVideo = await uploadVideo(referenceVideoUrl, params, projectId);
-    }
+    const uploadVideoTask = ((videoMode === "edit" || videoMode === "extend") && referenceVideoUrl)
+      ? uploadVideo(referenceVideoUrl, params, projectId)
+      : Promise.resolve(null);
+
+    const [, uploadedVideo] = await Promise.all([uploadImagesTask, uploadVideoTask]);
     
-    // 步骤2: 获取视频生成专属 reCAPTCHA token
-    console.log("🔐 获取视频生成 reCAPTCHA token...");
-    const videoRecaptchaToken = await getRecaptchaToken("VIDEO_GENERATION");
-    console.log("✅ 视频生成 reCAPTCHA token 获取成功");
-    
-    // 步骤3: 根据 videoMode 构建对应的 Flow batchexecute RPC
-    const uuid1 = generateUUID().toUpperCase();
-    const uuid2 = generateUUID().toUpperCase();
-    const destination = [null, null, null, null, uuid1, uuid2];
+    // 步骤2 & 3: 根据 videoMode 构建对应的 Flow batchexecute RPC，并支持 _relaxed 自动降级重试
     const textInput = [null, null, [[[prompt]]]];
     const imageReferences = imageUUIDs.map(uuid => [null, uuid]);
     const audioReferences = referenceAudioRefs
@@ -682,13 +746,10 @@ async function runGeneratedTest(config) {
       edit: "macaron_cookie_edit",
       extend: "macaron_cookie_extend_8s",
     };
-    const modelKey = String(config.modelKey || defaultModelByMode[videoMode] || "macaron_cookie_r2v_10s").trim();
+    let activeModelKey = String(config.modelKey || defaultModelByMode[videoMode] || "macaron_cookie_r2v_10s").trim();
     const outputResolution = String(config.outputResolution || "VIDEO_RESOLUTION_720P").trim();
-    const is360p = modelKey.endsWith("_360p") || /360P/i.test(outputResolution);
+    const is360p = activeModelKey.endsWith("_360p") || /360P/i.test(outputResolution);
     const outputSpec = is360p ? [4] : null;
-
-    let rpcId = "MZZa6b";
-    let reqItem = null;
 
     const startFrameIndex = Math.max(0, Number(config.startFrameIndex || 0) || 0);
     const durSec = Math.round(Number(config.videoDurationSeconds || uploadedVideo?.durationSeconds || 4) || 4);
@@ -698,162 +759,152 @@ async function runGeneratedTest(config) {
       : Math.min(300, startFrameIndex + Math.round(durSec * 30));
     const endFrameIndex = Math.max(startFrameIndex + 1, computedEndFrame);
 
-    if (videoMode === "i2v") {
-      rpcId = "eb1hJf";
-      reqItem = [
-        textInput,
-        modelKey,
-        aspectRatioCode,
-        null,
-        [null, imageUUIDs[0]],
-        destination,
-        null,
-        null,
-        null,
-        outputSpec
-      ];
-    } else if (videoMode === "start_end") {
-      rpcId = "nprQif";
-      reqItem = [
-        textInput,
-        modelKey,
-        aspectRatioCode,
-        null,
-        [null, imageUUIDs[0]],
-        [null, imageUUIDs[1]],
-        destination,
-        null,
-        null
-      ];
-    } else if (videoMode === "edit") {
-      rpcId = "jIps6";
-      reqItem = [
-        [null, uploadedVideo.videoMediaId, startFrameIndex, endFrameIndex],
-        textInput,
-        modelKey,
-        aspectRatioCode,
-        destination,
-        null,
-        null,
-        null,
-        imageReferences,
-        audioReferences,
-        [],
-        [],
-        outputSpec
-      ];
-    } else if (videoMode === "extend") {
-      rpcId = "fZytfe";
-      reqItem = [
-        [null, uploadedVideo.videoMediaId],
-        textInput,
-        modelKey,
-        aspectRatioCode,
-        null,
-        destination,
-        null,
-        null,
-        imageReferences,
-        audioReferences,
-        [],
-        [],
-        outputSpec
-      ];
-    } else {
-      // r2v (References)
-      rpcId = "MZZa6b";
-      reqItem = [
-        textInput,
-        imageReferences,
-        modelKey,
-        aspectRatioCode,
-        null,
-        destination,
-        null,
-        audioReferences.length > 0 ? audioReferences : null,
-        null,
-        [],
-        [],
-        outputSpec
-      ];
+    let rpcId = "MZZa6b";
+    if (videoMode === "i2v") rpcId = "eb1hJf";
+    else if (videoMode === "start_end") rpcId = "nprQif";
+    else if (videoMode === "edit") rpcId = "jIps6";
+    else if (videoMode === "extend") rpcId = "fZytfe";
+
+    function buildReqItem(modelKeyToUse, destination) {
+      if (videoMode === "i2v") {
+        return [
+          textInput,
+          modelKeyToUse,
+          aspectRatioCode,
+          null,
+          [null, imageUUIDs[0]],
+          destination,
+          null,
+          null,
+          null,
+          outputSpec
+        ];
+      } else if (videoMode === "start_end") {
+        return [
+          textInput,
+          modelKeyToUse,
+          aspectRatioCode,
+          null,
+          [null, imageUUIDs[0]],
+          [null, imageUUIDs[1]],
+          destination,
+          null,
+          outputSpec
+        ];
+      } else if (videoMode === "edit") {
+        return [
+          [null, uploadedVideo.videoMediaId, startFrameIndex, endFrameIndex],
+          textInput,
+          modelKeyToUse,
+          aspectRatioCode,
+          destination,
+          null,
+          null,
+          null,
+          imageReferences,
+          audioReferences,
+          [],
+          [],
+          outputSpec
+        ];
+      } else if (videoMode === "extend") {
+        return [
+          [null, uploadedVideo.videoMediaId],
+          textInput,
+          modelKeyToUse,
+          aspectRatioCode,
+          null,
+          destination,
+          null,
+          null,
+          imageReferences,
+          audioReferences,
+          [],
+          [],
+          outputSpec
+        ];
+      } else {
+        // r2v (References)
+        return [
+          textInput,
+          imageReferences,
+          modelKeyToUse,
+          aspectRatioCode,
+          null,
+          destination,
+          null,
+          audioReferences.length > 0 ? audioReferences : null,
+          null,
+          [],
+          [],
+          outputSpec
+        ];
+      }
     }
 
-    const createPayloadArray = [
-      [reqItem],
-      [
-        null,
-        22,
-        null,
-        null,
-        null,
-        projectId,
-        null,
-        null,
-        null,
-        null,
-        [videoRecaptchaToken, 1]
-      ],
-      [uuid2, 2]
-    ];
-    
-    console.log(`  - RPC: ${rpcId}, modelKey: ${modelKey}, mode: ${videoMode}`);
-    console.log("  - 完整payload预览:", JSON.stringify(createPayloadArray).substring(0, 240) + "...");
+    async function submitCreateTask(modelKeyToUse) {
+      console.log("🔐 获取视频生成 reCAPTCHA token...");
+      const videoRecaptchaToken = await getRecaptchaToken("VIDEO_GENERATION");
+      console.log("✅ 视频生成 reCAPTCHA token 获取成功");
 
-    const createResponse = await sendBatchExecute(rpcId, createPayloadArray, params, projectId);
-    
-    console.log("📋 原始响应:", createResponse.substring(0, 500));
-    
-    const createParsed = parseBatchExecuteResponse(createResponse);
+      const uuid1 = generateUUID().toUpperCase();
+      const uuid2 = generateUUID().toUpperCase();
+      const destination = [null, null, null, null, uuid1, uuid2];
+      const reqItem = buildReqItem(modelKeyToUse, destination);
+
+      const createPayloadArray = [
+        [reqItem],
+        [
+          null,
+          22,
+          null,
+          null,
+          null,
+          projectId,
+          null,
+          null,
+          null,
+          null,
+          [videoRecaptchaToken, 1]
+        ],
+        [uuid2, 2]
+      ];
+
+      console.log(`  - RPC: ${rpcId}, modelKey: ${modelKeyToUse}, mode: ${videoMode}`);
+      console.log("  - 完整payload预览:", JSON.stringify(createPayloadArray).substring(0, 240) + "...");
+
+      const createResponse = await sendBatchExecute(rpcId, createPayloadArray, params, projectId);
+      console.log("📋 原始响应:", createResponse.substring(0, 500));
+      const createParsed = parseBatchExecuteResponse(createResponse);
+      const extracted = extractMediaUUIDFromRpcResponse(
+        createParsed,
+        rpcId,
+        [projectId, ...imageUUIDs, uploadedVideo?.videoMediaId]
+      );
+      return {
+        createResponse,
+        createParsed,
+        ...extracted,
+      };
+    }
+
+    let subResult = await submitCreateTask(activeModelKey);
+
+    if (!subResult.mediaUUID && activeModelKey.includes("_relaxed") && isNotFoundOrCode5(subResult.createResponse, subResult.rpcErrorDetail)) {
+      const fallbackModelKey = activeModelKey.replace("_relaxed", "");
+      console.warn(`⚠️ 模型 ${activeModelKey} 返回 NOT_FOUND/code 5，自动降级重试: ${fallbackModelKey}`);
+      activeModelKey = fallbackModelKey;
+      subResult = await submitCreateTask(activeModelKey);
+    }
+
+    const { createResponse, createParsed, mediaUUID, foundRpcItem, rpcErrorDetail } = subResult;
     
     if (!createParsed || createParsed.length === 0) {
       return { 
         ok: false, 
         error: "创建视频任务失败：响应为空",
-        rawResponse: createResponse.substring(0, 1000)
+        rawResponse: String(createResponse || "").substring(0, 1000)
       };
-    }
-    
-    let mediaUUID = null;
-    let foundRpcItem = false;
-    let rpcErrorDetail = "";
-    
-    for (const item of createParsed) {
-      if (item && item[0] === "wrb.fr" && item[1] === rpcId) {
-        foundRpcItem = true;
-        if (item[2]) {
-          const responseStr = String(item[2]);
-          try {
-            const parsedData = JSON.parse(responseStr);
-            if (Array.isArray(parsedData)) {
-              if (typeof parsedData[0] === "string" && parsedData[0].length >= 32) {
-                mediaUUID = parsedData[0];
-              } else if (Array.isArray(parsedData[0]) && typeof parsedData[0][0] === "string" && parsedData[0][0].length >= 32) {
-                mediaUUID = parsedData[0][0];
-              }
-            }
-          } catch (_) {}
-
-          if (!mediaUUID) {
-            const uuidPattern = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-            const allUUIDs = responseStr.match(uuidPattern);
-            if (allUUIDs && allUUIDs.length >= 2) {
-              mediaUUID = allUUIDs[1];
-              console.log("✅ 成功提取视频媒体UUID (allUUIDs[1]):", mediaUUID);
-            } else if (allUUIDs && allUUIDs.length === 1) {
-              mediaUUID = allUUIDs[0];
-              console.log("✅ 成功提取视频媒体UUID (allUUIDs[0]):", mediaUUID);
-            }
-          }
-          if (mediaUUID) {
-            console.log("✅ 成功提取视频媒体UUID:", mediaUUID);
-          } else {
-            rpcErrorDetail = responseStr.substring(0, 300);
-          }
-        } else {
-          rpcErrorDetail = "item[2] is empty, item: " + JSON.stringify(item).substring(0, 300);
-        }
-        break;
-      }
     }
     
     if (!mediaUUID) {
@@ -879,6 +930,8 @@ async function runGeneratedTest(config) {
     let taskStatus = null;
     let isComplete = false;
     let videoUrl = null;
+    let resolvedMediaId = mediaUUID;
+    const uuidExactRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     
     while (pollCount < maxPolls && !isComplete) {
       pollCount++;
@@ -892,15 +945,13 @@ async function runGeneratedTest(config) {
         for (const item of pollParsed) {
           if (item && item[0] === "wrb.fr" && item[1] === "jwpduf" && item[2]) {
             const responseStr = String(item[2]);
-            if (responseStr.includes('"CAE"')) {
-              isComplete = true;
-              console.log("✅ 任务完成 (检测到 CAE 状态)！");
-              break;
-            }
             try {
               const data = JSON.parse(responseStr);
               if (data && data[2] && data[2][0]) {
                 const record = data[2][0];
+                if (typeof record[2] === "string" && uuidExactRegex.test(record[2])) {
+                  resolvedMediaId = record[2];
+                }
                 if (record[3] === "CAE") {
                   isComplete = true;
                   console.log("✅ 任务完成 (record[3] === 'CAE')！");
@@ -961,6 +1012,11 @@ async function runGeneratedTest(config) {
             } catch (e) {
               console.warn("⚠️ 解析轮询响应失败:", e.message);
             }
+            if (!isComplete && responseStr.includes('"CAE"')) {
+              isComplete = true;
+              console.log("✅ 任务完成 (检测到 CAE 状态)！");
+              break;
+            }
           }
         }
       }
@@ -968,7 +1024,7 @@ async function runGeneratedTest(config) {
       // 每 3 次轮询主动检查一次项目媒体列表 (Zzl0ze) 和 as29s
       if (isComplete || pollCount % 3 === 0 || pollCount >= maxPolls - 2) {
         try {
-          const urlResp = await sendBatchExecute("as29s", [mediaUUID], params, projectId);
+          const urlResp = await sendBatchExecute("as29s", [resolvedMediaId], params, projectId);
           const parsed = extractVideoUrl(urlResp);
           if (parsed && parsed.videoUrl) {
             videoUrl = parsed.videoUrl;
@@ -987,6 +1043,7 @@ async function runGeneratedTest(config) {
             const m = snippet.match(/null,null,\\?"([0-9a-fA-F-]{36})\\?"/);
             if (m && m[1]) {
               const realMediaId = m[1];
+              resolvedMediaId = realMediaId;
               console.log("🔍 从项目列表解析出真实 mediaId:", realMediaId);
               const realUrlResp = await sendBatchExecute("as29s", [realMediaId], params, projectId);
               const realParsed = extractVideoUrl(realUrlResp);
@@ -1025,7 +1082,7 @@ async function runGeneratedTest(config) {
       for (let attempt = 1; attempt <= maxUrlAttempts; attempt++) {
         console.log(`🔍 正在读取视频地址，第 ${attempt}/${maxUrlAttempts} 次`);
         
-        const urlPayloadArray = [mediaUUID];
+        const urlPayloadArray = [resolvedMediaId];
         const urlResponse = await sendBatchExecute("as29s", urlPayloadArray, params, projectId);
         
         const parsed = extractVideoUrl(urlResponse);
@@ -1046,6 +1103,7 @@ async function runGeneratedTest(config) {
             const m = snippet.match(/null,null,\\?"([0-9a-fA-F-]{36})\\?"/);
             if (m && m[1]) {
               const realMediaId = m[1];
+              resolvedMediaId = realMediaId;
               console.log("🔍 从项目列表解析出真实 mediaId:", realMediaId);
               const realUrlResp = await sendBatchExecute("as29s", [realMediaId], params, projectId);
               const realParsed = extractVideoUrl(realUrlResp);
@@ -1074,6 +1132,202 @@ async function runGeneratedTest(config) {
         mediaUUID
       };
     }
+
+    // 步骤7: Flow 原生视频超分放大 (p0UkFb) 支持 1080p / 4K
+    const wantUpsample = Boolean(config.wantUpsample) || /1080|4K/i.test(String(config.upsampleResolution || ""));
+    let originVideoUrl = null;
+    let upsampleOk = undefined;
+    let upsampleError = undefined;
+    let upsampleMediaUUID = null;
+    let upsampleResolutionLabel = String(config.upsampleResolution || "").trim();
+
+    if (wantUpsample) {
+      try {
+        // 如果 resolvedMediaId 仍等于提交返回的 mediaUUID，尝试再从 Zzl0ze 解析一次真实 mediaId
+        if (resolvedMediaId === mediaUUID) {
+          try {
+            const listPayload = [`projects/${projectId}`, null, null, null, [1]];
+            const listResp = await sendBatchExecute("Zzl0ze", listPayload, params, projectId);
+            const start = listResp.indexOf(mediaUUID);
+            if (start !== -1) {
+              const snippet = listResp.slice(start, start + 800);
+              const m = snippet.match(/null,null,\\?"([0-9a-fA-F-]{36})\\?"/);
+              if (m && m[1]) {
+                resolvedMediaId = m[1];
+              }
+            }
+          } catch (_) {}
+        }
+
+        const is4K = /4K/i.test(String(config.upsampleResolution || "")) || /4k/i.test(String(config.upsamplerKey || ""));
+        const resolutionValue = is4K ? 4 : 3;
+        const upsamplerModelKey = String(config.upsamplerKey || "").trim() || (resolutionValue === 4 ? "veo_3_1_upsampler_4k" : "veo_3_1_upsampler_1080p");
+        if (!upsampleResolutionLabel) {
+          upsampleResolutionLabel = resolutionValue === 4 ? "VIDEO_RESOLUTION_4K" : "VIDEO_RESOLUTION_1080P";
+        }
+
+        console.log(`🚀 开始视频放大 (p0UkFb): target=${upsampleResolutionLabel}, model=${upsamplerModelKey}, mediaId=${resolvedMediaId}`);
+        const upsampleRecaptchaToken = await getRecaptchaToken("VIDEO_GENERATION");
+        const upUuid1 = generateUUID().toUpperCase();
+        const upUuid2 = generateUUID().toUpperCase();
+        const seed = Math.floor(Math.random() * 2147483647) + 1;
+
+        const upsampleReq = [
+          [null, resolvedMediaId],
+          null,
+          aspectRatioCode,
+          seed,
+          [null, null, null, null, upUuid1, upUuid2],
+          null,
+          resolutionValue,
+          null
+        ];
+        while (upsampleReq.length < 31) {
+          upsampleReq.push(null);
+        }
+        upsampleReq.push(upsamplerModelKey);
+
+        const upsamplePayloadArray = [
+          [upsampleReq],
+          [null, 22, null, null, null, projectId, null, null, null, null, [upsampleRecaptchaToken, 1]],
+          [upUuid2, 2]
+        ];
+
+        const upsampleResponse = await sendBatchExecute("p0UkFb", upsamplePayloadArray, params, projectId);
+        const directExtract = extractVideoUrl(upsampleResponse);
+        let upsampledVideoUrl = directExtract.videoUrl || null;
+
+        if (!upsampledVideoUrl) {
+          const upsampleParsed = parseBatchExecuteResponse(upsampleResponse);
+          const upExtracted = extractMediaUUIDFromRpcResponse(upsampleParsed, "p0UkFb", [projectId, resolvedMediaId, mediaUUID]);
+          upsampleMediaUUID = upExtracted.mediaUUID;
+
+          if (!upsampleMediaUUID) {
+            throw new Error(`p0UkFb 未返回有效的放大任务UUID (${upExtracted.rpcErrorDetail || "no UUID"})`);
+          }
+
+          console.log("✅ 放大任务创建成功, upsampleMediaUUID:", upsampleMediaUUID);
+          let upPollCount = 0;
+          let upComplete = false;
+          let resolvedUpsampleMediaId = upsampleMediaUUID;
+
+          while (upPollCount < maxPolls && !upComplete) {
+            upPollCount++;
+            console.log(`🔄 放大轮询第 ${upPollCount}/${maxPolls} 次...`);
+            const upPollResp = await sendBatchExecute("jwpduf", [null, null, [[upsampleMediaUUID]]], params, projectId);
+            const upPollParsed = parseBatchExecuteResponse(upPollResp);
+
+            if (upPollParsed && upPollParsed.length > 0) {
+              for (const item of upPollParsed) {
+                if (item && item[0] === "wrb.fr" && item[1] === "jwpduf" && item[2]) {
+                  const responseStr = String(item[2]);
+                  try {
+                    const data = JSON.parse(responseStr);
+                    if (data && data[2] && data[2][0]) {
+                      const record = data[2][0];
+                      if (typeof record[2] === "string" && uuidExactRegex.test(record[2])) {
+                        resolvedUpsampleMediaId = record[2];
+                      }
+                      if (record[3] === "CAE") {
+                        upComplete = true;
+                        break;
+                      }
+                      if (record[5] && record[5][8]) {
+                        const statusInfo = record[5][8];
+                        const st = Array.isArray(statusInfo) ? statusInfo[0] : statusInfo;
+                        if (st === 4 || st === 5) {
+                          const errCode = (Array.isArray(statusInfo) && Array.isArray(statusInfo[1]) && statusInfo[1][1]) || `STATUS_${st}`;
+                          const errDetails = (Array.isArray(statusInfo) && Array.isArray(statusInfo[2])) ? statusInfo[2].join(", ") : "";
+                          if (!String(errDetails).includes("Media not found") && !String(errCode).includes("NOT_FOUND")) {
+                            throw new Error(`视频放大失败: ${errCode} ${errDetails}`.trim());
+                          }
+                        }
+                        if (st === 3) {
+                          upComplete = true;
+                          break;
+                        }
+                      }
+                    }
+                  } catch (innerErr) {
+                    if (/视频放大失败/.test(String(innerErr && innerErr.message || ""))) {
+                      throw innerErr;
+                    }
+                  }
+                  if (!upComplete && responseStr.includes('"CAE"')) {
+                    upComplete = true;
+                    break;
+                  }
+                }
+              }
+            }
+
+            if (upComplete || upPollCount % 3 === 0 || upPollCount >= maxPolls - 2) {
+              try {
+                const uResp = await sendBatchExecute("as29s", [resolvedUpsampleMediaId], params, projectId);
+                const uParsed = extractVideoUrl(uResp);
+                if (uParsed && uParsed.videoUrl) {
+                  upsampledVideoUrl = uParsed.videoUrl;
+                  upComplete = true;
+                  break;
+                }
+              } catch (_) {}
+
+              try {
+                const listPayload = [`projects/${projectId}`, null, null, null, [1]];
+                const listResp = await sendBatchExecute("Zzl0ze", listPayload, params, projectId);
+                const start = listResp.indexOf(upsampleMediaUUID);
+                if (start !== -1) {
+                  const snippet = listResp.slice(start, start + 800);
+                  const m = snippet.match(/null,null,\\?"([0-9a-fA-F-]{36})\\?"/);
+                  if (m && m[1]) {
+                    resolvedUpsampleMediaId = m[1];
+                    const realUrlResp = await sendBatchExecute("as29s", [resolvedUpsampleMediaId], params, projectId);
+                    const realParsed = extractVideoUrl(realUrlResp);
+                    if (realParsed && realParsed.videoUrl) {
+                      upsampledVideoUrl = realParsed.videoUrl;
+                      upComplete = true;
+                      break;
+                    }
+                  }
+                }
+              } catch (_) {}
+            }
+
+            if (!upComplete && upPollCount < maxPolls) {
+              await new Promise(resolve => setTimeout(resolve, pollInterval));
+            }
+          }
+
+          if (!upsampledVideoUrl && upComplete) {
+            await new Promise(resolve => setTimeout(resolve, 2500));
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              try {
+                const uResp = await sendBatchExecute("as29s", [resolvedUpsampleMediaId], params, projectId);
+                const uParsed = extractVideoUrl(uResp);
+                if (uParsed && uParsed.videoUrl) {
+                  upsampledVideoUrl = uParsed.videoUrl;
+                  break;
+                }
+              } catch (_) {}
+              if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 3000));
+            }
+          }
+        }
+
+        if (upsampledVideoUrl) {
+          console.log("✅ 视频超分放大成功:", upsampledVideoUrl);
+          originVideoUrl = videoUrl;
+          videoUrl = upsampledVideoUrl;
+          upsampleOk = true;
+        } else {
+          throw new Error("放大任务未返回有效视频URL");
+        }
+      } catch (upErr) {
+        upsampleOk = false;
+        upsampleError = String(upErr && upErr.message || upErr);
+        console.warn("⚠️ 视频放大失败，降级返回 720p 原视频:", upsampleError);
+      }
+    }
     
     const elapsedMs = Date.now() - startTime;
     
@@ -1082,11 +1336,19 @@ async function runGeneratedTest(config) {
       message: `视频任务 (${videoMode}) 完成`,
       elapsedMs,
       elapsedFormatted: `${Math.floor(elapsedMs / 1000)}秒`,
+      video_url: videoUrl,
+      origin_video_url: originVideoUrl || undefined,
+      upsample_ok: upsampleOk,
+      upsample_resolution: wantUpsample ? upsampleResolutionLabel : undefined,
+      upsample_media_id: upsampleMediaUUID || undefined,
+      upsample_error: upsampleError || undefined,
       input: { 
         prompt,
         videoMode,
-        modelKey,
+        modelKey: activeModelKey,
         outputResolution,
+        wantUpsample,
+        upsampleResolution: upsampleResolutionLabel || undefined,
         referenceImageCount: referenceImageUrls.length,
         referenceImageUrls,
         referenceAudioRefs,
@@ -1099,7 +1361,14 @@ async function runGeneratedTest(config) {
         imageUUIDs,
         videoMediaId: uploadedVideo?.videoMediaId || null,
         mediaUUID,
+        resolvedMediaId,
+        modelKey: activeModelKey,
         videoUrl,
+        originVideoUrl: originVideoUrl || undefined,
+        upsampleOk,
+        upsampleResolution: wantUpsample ? upsampleResolutionLabel : undefined,
+        upsampleMediaUUID: upsampleMediaUUID || undefined,
+        upsampleError: upsampleError || undefined,
         pollCount,
         finalStatus: taskStatus
       },

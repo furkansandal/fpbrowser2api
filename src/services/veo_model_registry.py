@@ -45,20 +45,44 @@ API_MODEL_TO_FAMILY: Dict[str, str] = {
     "veo-3-1-lite": FAMILY_LITE,
     "veo-3-1-lite-low": FAMILY_LITE_LOW,
     # Omni 1.1 Flash (`abra`)
-    "veo-omni-flash": FAMILY_OMNI,
-    "veo-omni-1-1-flash": FAMILY_OMNI,
-    "veo-omni-flash-1-1": FAMILY_OMNI,
-    "veo-omni-flash-video-edit": FAMILY_OMNI,
-    "veo-omni-1-1-flash-video-edit": FAMILY_OMNI,
+    "veo-omni-flash": FAMILY_OMNI_1_1,
+    "omni-1.1-flash": FAMILY_OMNI_1_1,
+    "omni-1-1-flash": FAMILY_OMNI_1_1,
+    "veo-omni-1.1-flash": FAMILY_OMNI_1_1,
+    "veo-omni-1-1-flash": FAMILY_OMNI_1_1,
+    "veo-omni-flash-1.1": FAMILY_OMNI_1_1,
+    "veo-omni-flash-1-1": FAMILY_OMNI_1_1,
+    "veo-omni-flash-video-edit": FAMILY_OMNI_1_1,
+    "omni-1.1-flash-video-edit": FAMILY_OMNI_1_1,
+    "veo-omni-1.1-flash-video-edit": FAMILY_OMNI_1_1,
+    "veo-omni-1-1-flash-video-edit": FAMILY_OMNI_1_1,
+    "veo-omni-flash-1.1-video-edit": FAMILY_OMNI_1_1,
+    "veo-omni-flash-1-1-video-edit": FAMILY_OMNI_1_1,
     # Omni 1.2 Flash (`macaron_cookie`)
+    "omni-1.2-flash": FAMILY_OMNI_1_2,
+    "omni-1-2-flash": FAMILY_OMNI_1_2,
+    "veo-omni-1.2-flash": FAMILY_OMNI_1_2,
     "veo-omni-1-2-flash": FAMILY_OMNI_1_2,
+    "veo-omni-flash-1.2": FAMILY_OMNI_1_2,
     "veo-omni-flash-1-2": FAMILY_OMNI_1_2,
+    "omni-1.2-flash-video-edit": FAMILY_OMNI_1_2,
+    "veo-omni-1.2-flash-video-edit": FAMILY_OMNI_1_2,
     "veo-omni-1-2-flash-video-edit": FAMILY_OMNI_1_2,
+    "veo-omni-flash-1.2-video-edit": FAMILY_OMNI_1_2,
     "veo-omni-flash-1-2-video-edit": FAMILY_OMNI_1_2,
+    "omni-1.2-flash-video-extend": FAMILY_OMNI_1_2,
+    "veo-omni-1.2-flash-video-extend": FAMILY_OMNI_1_2,
     "veo-omni-1-2-flash-video-extend": FAMILY_OMNI_1_2,
+    "veo-omni-flash-1.2-video-extend": FAMILY_OMNI_1_2,
     "veo-omni-flash-1-2-video-extend": FAMILY_OMNI_1_2,
     "veo-omni-flash-video-extend": FAMILY_OMNI_1_2,
 }
+
+OMNI_API_MODELS: Tuple[str, ...] = tuple(
+    model_name
+    for model_name, fam in API_MODEL_TO_FAMILY.items()
+    if fam in OMNI_FAMILIES
+)
 
 # ---------------------------------------------------------------------------
 # 3. 生成模式常量
@@ -377,6 +401,8 @@ _REGISTRY_360P: Dict[Tuple[str, str], Dict[int, ModelEntry]] = {
 # 分辨率常量：360p 走 `_REGISTRY_360P`，其余（720p 及需放大的 1080p/4k）走 `_REGISTRY`。
 RESOLUTION_360P = "360p"
 RESOLUTION_720P = "720p"
+RESOLUTION_1080P = "1080p"
+RESOLUTION_4K = "4k"
 
 
 def supports_360p(family: str) -> bool:
@@ -393,8 +419,8 @@ def _table_for(resolution: str) -> Dict[Tuple[str, str], Dict[int, ModelEntry]]:
 # ---------------------------------------------------------------------------
 
 UPSAMPLER_KEYS: Dict[str, str] = {
-    "1080p": "veo_3_1_upsampler_1080p",
-    "4k": "veo_3_1_upsampler_4k",
+    RESOLUTION_1080P: "veo_3_1_upsampler_1080p",
+    RESOLUTION_4K: "veo_3_1_upsampler_4k",
 }
 
 # 方向常量
