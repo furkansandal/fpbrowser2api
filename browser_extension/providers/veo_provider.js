@@ -2041,6 +2041,17 @@ async function cleanupProjectWorkflowsBeforeRun(tabId, _at, projectId, runtime) 
   const report = async (progress, data) => {
     try { await runtime.progress(progress, data); } catch (_) {}
   };
+  const otherActiveTasks = countOtherActiveVeoTaskRuns(runtime);
+  if (otherActiveTasks > 0) {
+    await report(6, {
+      stage: "cleanup_project_media_skipped",
+      reason: "other_tasks_running",
+      project_id: pid,
+      active_veo_tasks: activeVeoTaskRuns.size,
+      other_active_veo_tasks: otherActiveTasks
+    });
+    return { skipped: true, reason: "other_tasks_running" };
+  }
   try {
     await report(6, { stage: "cleanup_project_media", project_id: pid });
     const [{ result }] = await chrome.scripting.executeScript({
@@ -2120,6 +2131,7 @@ async function cleanupProjectWorkflowsBeforeRun(tabId, _at, projectId, runtime) 
           };
           const listText = await requestRpc("Zzl0ze", JSON.stringify([`projects/${projectId}`, null, null, null, [0]]));
           const mediaItems = [];
+          const nowSec = Math.floor(Date.now() / 1000);
           for (const line of listText.split(/\r?\n/).map(value => value.trim()).filter(Boolean)) {
             if (!line.startsWith("[[")) continue;
             try {
@@ -2130,16 +2142,18 @@ async function cleanupProjectWorkflowsBeforeRun(tabId, _at, projectId, runtime) 
               const items = Array.isArray(payload && payload[1]) ? payload[1] : [];
               for (const item of items) {
                 if (!Array.isArray(item) || !item[0] || !Array.isArray(item[3])) continue;
+                const createdSec = Number(item?.[3]?.[1]?.[0] || 0);
                 mediaItems.push({
                   id: String(item[0]),
                   filename: String(item[3][0] || "unknown"),
                   isArchived: item[3][2] === true,
+                  createdSec,
                   projectId: String(item[4] || projectId)
                 });
               }
             } catch (_) {}
           }
-          const pending = mediaItems.filter(item => !item.isArchived);
+          const pending = mediaItems.filter(item => !item.isArchived && (!item.createdSec || (nowSec - item.createdSec > 120)));
           const results = { total: mediaItems.length, to_archive_count: pending.length, archived: 0, errors: [] };
           for (let i = 0; i < pending.length; i++) {
             const item = pending[i];
