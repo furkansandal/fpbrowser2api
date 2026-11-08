@@ -807,7 +807,7 @@ async function runGeneratedTest(config) {
           [null, imageUUIDs[1]],
           destination,
           null,
-          outputSpec
+          null
         ];
       } else if (videoMode === "edit") {
         return [
